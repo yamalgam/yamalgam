@@ -53,6 +53,9 @@ site/node_modules/
 .commit.md
 commit.txt
 
+# Private memory (never committed)
+PRIVATE_MEMORY.md
+
 # scratch script and scratch directory
 # for little tests, scripts or notes
 scratch
