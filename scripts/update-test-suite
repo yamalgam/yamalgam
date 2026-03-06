@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# update-test-suite - Refresh vendored YAML Test Suite snapshot
+#
+# Usage:
+#   update-test-suite
+#
+# Clones the latest YAML Test Suite and replaces vendor/yaml-test-suite/
+# with a fresh snapshot. Records the commit SHA for traceability.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEST="$PROJECT_ROOT/vendor/yaml-test-suite"
+
+echo "Fetching latest YAML Test Suite..."
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+git clone --depth 1 https://github.com/yaml/yaml-test-suite.git "$TMP/yaml-test-suite"
+rm -rf "$DEST"
+cp -r "$TMP/yaml-test-suite/src" "$DEST"
+
+# Record the commit hash for traceability
+HASH=$(git -C "$TMP/yaml-test-suite" rev-parse HEAD)
+echo "$HASH" > "$DEST/COMMIT_SHA"
+echo "Vendored yaml-test-suite at $HASH"
