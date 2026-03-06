@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 
-use yamalgam_compare::{CompareResult, SpanSnapshot, TokenSnapshot, compare_token_streams};
+use yamalgam_compare::{
+    CompareResult, SpanSnapshot, TokenSnapshot, compare_token_streams, run_rust_scanner,
+};
 
 #[test]
 fn identical_streams_match() {
@@ -88,4 +90,14 @@ fn different_kinds_produce_mismatch() {
         result,
         CompareResult::TokenMismatch { index: 0, .. }
     ));
+}
+
+#[test]
+fn rust_scanner_produces_stream_markers() {
+    let tokens = run_rust_scanner(b"key: value").unwrap();
+    assert_eq!(tokens.len(), 2);
+    assert_eq!(tokens[0].kind, "StreamStart");
+    assert_eq!(tokens[1].kind, "StreamEnd");
+    assert!(tokens[0].value.is_none());
+    assert!(tokens[1].value.is_none());
 }

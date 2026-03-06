@@ -125,6 +125,21 @@ pub fn run_c_tokenizer(input: &[u8]) -> Result<Vec<TokenSnapshot>, String> {
     Ok(tokens)
 }
 
+/// Convert a C harness token type name (`SCREAMING_SNAKE_CASE`) to
+/// the PascalCase used by Rust's `TokenKind` debug representation.
+fn normalize_c_token_kind(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                let mut s = first.to_uppercase().to_string();
+                s.extend(chars.map(|c| c.to_ascii_lowercase()));
+                s
+            })
+        })
+        .collect()
+}
+
 /// Parse a single JSON line from the C harness into a [`TokenSnapshot`].
 fn parse_c_token_line(line: &str) -> Result<TokenSnapshot, String> {
     let obj: serde_json::Value =
@@ -133,8 +148,8 @@ fn parse_c_token_line(line: &str) -> Result<TokenSnapshot, String> {
     let kind = obj
         .get("type")
         .and_then(|v| v.as_str())
-        .ok_or("missing 'type' field")?
-        .to_string();
+        .ok_or("missing 'type' field")?;
+    let kind = normalize_c_token_kind(kind);
 
     let value = obj
         .get("value")
@@ -168,22 +183,48 @@ fn parse_c_token_line(line: &str) -> Result<TokenSnapshot, String> {
 
 /// Run the Rust scanner on the same input.
 ///
-/// Converts each [`yamalgam_scanner::Token`] to a [`TokenSnapshot`].
-///
-/// Currently returns `Err` because the scanner has no state machine yet —
-/// that's expected. This stub will be filled in as the scanner matures.
+/// Decodes the input, runs the scanner, and converts each
+/// [`yamalgam_scanner::Token`] to a [`TokenSnapshot`].
 ///
 /// # Errors
 ///
-/// Returns an error string describing the scanner failure.
+/// Returns an error string on encoding failures or scan errors.
 pub fn run_rust_scanner(input: &[u8]) -> Result<Vec<TokenSnapshot>, String> {
-    // Validate that we can at least decode the input.
-    let _input = yamalgam_scanner::input::Input::from_bytes(input)
+    let decoded = yamalgam_scanner::input::Input::from_bytes(input)
         .map_err(|diag| format!("input decode error: {}", diag.message))?;
 
-    // The scanner has no state machine yet — return an error indicating that.
-    // This will be replaced with real scanning once the state machine is built.
-    Err("scanner not yet implemented: no state machine".to_string())
+    let scanner = yamalgam_scanner::scanner::Scanner::new(decoded.as_str());
+    let mut tokens = Vec::new();
+
+    for result in scanner {
+        let token = result.map_err(|e| e.to_string())?;
+        tokens.push(token_to_snapshot(&token));
+    }
+
+    Ok(tokens)
+}
+
+/// Convert a Rust scanner token to an implementation-neutral snapshot.
+fn token_to_snapshot(token: &yamalgam_scanner::Token<'_>) -> TokenSnapshot {
+    let kind = format!("{:?}", token.kind);
+    let value = if token.atom.data.is_empty() {
+        None
+    } else {
+        Some(token.atom.data.to_string())
+    };
+    TokenSnapshot {
+        kind,
+        value,
+        style: None,
+        span: SpanSnapshot {
+            line: token.atom.span.start.line,
+            column: token.atom.span.start.column,
+            offset: token.atom.span.start.offset,
+            end_line: token.atom.span.end.line,
+            end_column: token.atom.span.end.column,
+            end_offset: token.atom.span.end.offset,
+        },
+    }
 }
 
 /// Compare both implementations on the same input.

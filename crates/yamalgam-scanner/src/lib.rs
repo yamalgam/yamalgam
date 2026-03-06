@@ -8,6 +8,7 @@
 
 pub mod input;
 pub mod reader;
+pub mod scanner;
 
 mod atom;
 mod style;
