@@ -29,9 +29,12 @@ pub struct ObservabilityConfig {
 
 impl ObservabilityConfig {
     /// Create config from environment variables with optional overrides.
-    pub fn from_env_with_overrides(log_dir: Option<PathBuf>) -> Self {
+    ///
+    /// `service_name` identifies the binary for log file naming (e.g.,
+    /// `"yamalgam"` or `"yamalgam-mcp"`).
+    pub fn from_env_with_overrides(service_name: &str, log_dir: Option<PathBuf>) -> Self {
         Self {
-            service: env!("CARGO_PKG_NAME").to_string(),
+            service: service_name.to_string(),
             log_dir,
         }
     }

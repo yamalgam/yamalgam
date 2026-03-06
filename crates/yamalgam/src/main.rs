@@ -6,8 +6,8 @@ use clap::Parser;
 use tracing::debug;
 use yamalgam::{Cli, Commands, commands};
 use yamalgam_core::config::ConfigLoader;
+use yamalgam_core::observability;
 
-mod observability;
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     cli.color.apply();
@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
     let (config, config_sources) = loader.load().context("failed to load configuration")?;
 
     let obs_config = observability::ObservabilityConfig::from_env_with_overrides(
+        env!("CARGO_PKG_NAME"),
         config
             .log_dir
             .as_ref()

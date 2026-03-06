@@ -28,6 +28,8 @@ pub mod diagnostic;
 
 pub mod error;
 
+pub mod observability;
+
 pub use config::{Config, ConfigLoader, LogLevel};
 
 pub use diagnostic::{Diagnostic, Label, Mark, Severity, Span};
