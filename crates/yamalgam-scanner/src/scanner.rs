@@ -496,6 +496,167 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    // -- Block scalars --
+
+    /// Fetch a literal (`|`) or folded (`>`) block scalar.
+    ///
+    /// Parses the header (indicator, optional chomp/indent), then reads
+    /// content lines respecting indentation. Applies chomp rules and
+    /// folding (for `>`) to produce the final scalar value.
+    // cref: fy_fetch_block_scalar (fy-parse.c), fy_reader_fetch_block_scalar_handle (fy-reader.c)
+    fn fetch_block_scalar(&mut self, indicator: char) {
+        let start_mark = self.reader.mark();
+        let is_literal = indicator == '|';
+        self.reader.advance(); // skip | or >
+
+        // Parse header: optional chomp and/or indent digit (either order).
+        let mut chomp = Chomp::Clip;
+        let mut explicit_indent: Option<usize> = None;
+        for _ in 0..2 {
+            match self.reader.peek() {
+                Some('+') => {
+                    chomp = Chomp::Keep;
+                    self.reader.advance();
+                }
+                Some('-') => {
+                    chomp = Chomp::Strip;
+                    self.reader.advance();
+                }
+                Some(c) if c.is_ascii_digit() && c != '0' => {
+                    explicit_indent = Some((c as u32 - '0' as u32) as usize);
+                    self.reader.advance();
+                }
+                _ => break,
+            }
+        }
+
+        // Skip rest of header line (whitespace, comment).
+        self.skip_to_next_line();
+
+        // Determine content indentation.
+        let content_indent =
+            explicit_indent.unwrap_or_else(|| self.detect_block_indent_lookahead());
+
+        // Read content lines using lookahead to avoid consuming non-content lines.
+        let mut content = String::new();
+        let mut trailing_empty: usize = 0;
+
+        loop {
+            if self.reader.is_eof() {
+                break;
+            }
+
+            // Lookahead: count leading spaces without advancing.
+            let mut spaces = 0;
+            while self.reader.peek_at(spaces) == Some(' ') {
+                spaces += 1;
+            }
+
+            match self.reader.peek_at(spaces) {
+                // Empty/blank line.
+                Some('\n' | '\r') => {
+                    trailing_empty += 1;
+                    self.reader.advance_by(spaces);
+                    self.reader.advance(); // consume newline
+                }
+                // EOF after spaces only.
+                None => break,
+                // Content line.
+                _ => {
+                    if spaces < content_indent {
+                        // Under-indented → end of block (don't consume).
+                        break;
+                    }
+
+                    // Flush pending empty lines into content.
+                    for _ in 0..trailing_empty {
+                        content.push('\n');
+                    }
+                    trailing_empty = 0;
+
+                    // Skip indent spaces.
+                    self.reader.advance_by(content_indent);
+
+                    // Read line content (may include extra indent for folded).
+                    let line_start = self.reader.mark().offset;
+                    while !self.reader.is_eof() && !matches!(self.reader.peek(), Some('\n' | '\r'))
+                    {
+                        self.reader.advance();
+                    }
+                    let line_end = self.reader.mark().offset;
+                    content.push_str(self.reader.slice(line_start, line_end));
+                    content.push('\n');
+
+                    // Consume the newline.
+                    if !self.reader.is_eof() {
+                        self.reader.advance();
+                    }
+                }
+            }
+        }
+
+        // Apply folding for `>`.
+        if !is_literal {
+            content = fold_block_scalar(&content);
+        }
+
+        // Apply chomp to trailing newlines.
+        match chomp {
+            Chomp::Strip => {
+                let trimmed_len = content.trim_end_matches('\n').len();
+                content.truncate(trimmed_len);
+            }
+            Chomp::Clip => {
+                // Exactly one trailing newline (if any content exists).
+                let trimmed_len = content.trim_end_matches('\n').len();
+                content.truncate(trimmed_len);
+                if !content.is_empty() {
+                    content.push('\n');
+                }
+            }
+            Chomp::Keep => {
+                for _ in 0..trailing_empty {
+                    content.push('\n');
+                }
+            }
+        }
+
+        let end_mark = self.reader.mark();
+        let style = if is_literal {
+            ScalarStyle::Literal
+        } else {
+            ScalarStyle::Folded
+        };
+        let scalar = Self::scalar_token(Cow::Owned(content), style, start_mark, end_mark);
+        self.queue.push_back(scalar);
+    }
+
+    /// Detect block scalar content indentation by peeking ahead
+    /// to the first non-empty line.
+    fn detect_block_indent_lookahead(&self) -> usize {
+        let mut pos = 0;
+        loop {
+            let mut spaces = 0;
+            while self.reader.peek_at(pos) == Some(' ') {
+                spaces += 1;
+                pos += 1;
+            }
+            match self.reader.peek_at(pos) {
+                None => return spaces.max(1),
+                Some('\n') => {
+                    pos += 1;
+                }
+                Some('\r') => {
+                    pos += 1;
+                    if self.reader.peek_at(pos) == Some('\n') {
+                        pos += 1;
+                    }
+                }
+                _ => return spaces.max(1),
+            }
+        }
+    }
+
     // -- Quoted scalars --
 
     /// Fetch a single-quoted scalar (`'...'`).
@@ -855,6 +1016,12 @@ impl<'input> Scanner<'input> {
                 }
             }
 
+            // Block scalars (not in flow context).
+            if self.flow_level == 0 && (c == '|' || c == '>') {
+                self.fetch_block_scalar(c);
+                continue;
+            }
+
             // Quoted scalars.
             if c == '\'' {
                 self.fetch_single_quoted_scalar();
@@ -886,6 +1053,40 @@ const fn is_blank(c: Option<char>) -> bool {
 /// Returns `true` if the character is a YAML line break.
 const fn is_linebreak(c: char) -> bool {
     c == '\n' || c == '\r'
+}
+
+/// Fold a block scalar: replace single newlines between same-indent
+/// lines with spaces, preserving newlines around more-indented or empty lines.
+// cref: fy_atom_format_text_block (fy-atom.c) — folded mode
+fn fold_block_scalar(content: &str) -> String {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut result = String::with_capacity(content.len());
+    // Last element after split is "" if content ends with \n.
+    let line_count = if lines.last() == Some(&"") {
+        lines.len() - 1
+    } else {
+        lines.len()
+    };
+
+    for i in 0..line_count {
+        let line = lines[i];
+        if i > 0 {
+            let prev = lines[i - 1];
+            // Preserve newline if either line is empty or more-indented.
+            if prev.is_empty() || line.is_empty() || prev.starts_with(' ') || line.starts_with(' ')
+            {
+                result.push('\n');
+            } else {
+                result.push(' ');
+            }
+        }
+        result.push_str(line);
+    }
+
+    if content.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 impl<'input> Iterator for Scanner<'input> {
