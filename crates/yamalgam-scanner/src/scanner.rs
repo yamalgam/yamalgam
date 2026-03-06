@@ -3,8 +3,9 @@
 //! Converts decoded UTF-8 input into a stream of [`Token`]s. The scanner is
 //! modeled as an iterator that yields `Result<Token, ScanError>`.
 //!
-//! Currently handles stream markers and document markers
-//! (`---`, `...`, `%YAML`, `%TAG`). Content tokens are skipped.
+//! Currently handles stream markers, document markers
+//! (`---`, `...`, `%YAML`, `%TAG`), and flow indicators
+//! (`[`, `]`, `{`, `}`, `,`). Other content tokens are skipped.
 
 use std::borrow::Cow;
 
@@ -51,6 +52,9 @@ impl std::error::Error for ScanError {}
 pub struct Scanner<'input> {
     reader: Reader<'input>,
     state: State,
+    /// Nesting depth of flow collections (`[`/`{` increments, `]`/`}` decrements).
+    // cref: fy_parser.flow_level
+    flow_level: u32,
 }
 
 impl<'input> Scanner<'input> {
@@ -60,6 +64,7 @@ impl<'input> Scanner<'input> {
         Self {
             reader: Reader::new(input),
             state: State::Start,
+            flow_level: 0,
         }
     }
 
@@ -289,6 +294,45 @@ impl<'input> Scanner<'input> {
         Ok(self.data_token(TokenKind::TagDirective, tag_data, data_start, data_end))
     }
 
+    /// Consume `[` or `{` and emit a flow collection start token.
+    // cref: fy_fetch_flow_collection_mark_start (fy-parse.c:2432)
+    fn fetch_flow_collection_start(&mut self, c: char) -> Token<'input> {
+        let kind = if c == '[' {
+            TokenKind::FlowSequenceStart
+        } else {
+            TokenKind::FlowMappingStart
+        };
+        let start = self.reader.mark();
+        self.reader.advance();
+        let end = self.reader.mark();
+        self.flow_level += 1;
+        self.marker_token(kind, start, end)
+    }
+
+    /// Consume `]` or `}` and emit a flow collection end token.
+    // cref: fy_fetch_flow_collection_mark_end (fy-parse.c:2518)
+    fn fetch_flow_collection_end(&mut self, c: char) -> Token<'input> {
+        let kind = if c == ']' {
+            TokenKind::FlowSequenceEnd
+        } else {
+            TokenKind::FlowMappingEnd
+        };
+        let start = self.reader.mark();
+        self.reader.advance();
+        let end = self.reader.mark();
+        self.flow_level = self.flow_level.saturating_sub(1);
+        self.marker_token(kind, start, end)
+    }
+
+    /// Consume `,` and emit a flow entry token.
+    // cref: fy_parse_handle_comma (fy-parse.c:1174)
+    fn fetch_flow_entry(&mut self) -> Token<'input> {
+        let start = self.reader.mark();
+        self.reader.advance();
+        let end = self.reader.mark();
+        self.marker_token(TokenKind::FlowEntry, start, end)
+    }
+
     /// Check if the next `n` characters match `prefix`.
     fn check_prefix(&self, prefix: &str) -> bool {
         prefix
@@ -328,6 +372,7 @@ impl<'input> Scanner<'input> {
                 return Some(Ok(self.fetch_stream_end()));
             }
 
+            let c = self.reader.peek().unwrap();
             let col = self.reader.mark().column;
 
             if col == 0 {
@@ -339,13 +384,31 @@ impl<'input> Scanner<'input> {
                     return Some(Ok(self.fetch_document_indicator(TokenKind::DocumentEnd)));
                 }
                 // Directives: %YAML or %TAG
-                if self.reader.peek() == Some('%') {
+                if c == '%' {
                     return Some(self.fetch_directive());
                 }
             }
 
-            // Unknown content — skip to next line and try again.
-            self.skip_to_next_line();
+            // Flow collection indicators: [ ] { } ,
+            // cref: fy_fetch_tokens (fy-parse.c:5364-5394)
+            if c == '[' || c == '{' {
+                return Some(Ok(self.fetch_flow_collection_start(c)));
+            }
+            if c == ']' || c == '}' {
+                return Some(Ok(self.fetch_flow_collection_end(c)));
+            }
+            if c == ',' {
+                return Some(Ok(self.fetch_flow_entry()));
+            }
+
+            // Unknown content — skip past it.
+            if self.flow_level > 0 {
+                // Inside flow context, skip one character at a time.
+                self.reader.advance();
+            } else {
+                // In block context, skip to the next line.
+                self.skip_to_next_line();
+            }
         }
     }
 }

@@ -257,6 +257,107 @@ fn tag_directive_named_handle() {
     assert_eq!(tokens[1].1, "!e! tag:example.com,2000:app/");
 }
 
+// === Flow indicators ===
+
+#[test]
+fn flow_sequence_empty() {
+    assert_eq!(
+        kinds("[]"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::FlowSequenceStart,
+            TokenKind::FlowSequenceEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn flow_mapping_empty() {
+    assert_eq!(
+        kinds("{}"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::FlowMappingStart,
+            TokenKind::FlowMappingEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn flow_entry_comma() {
+    // Scalars between commas are skipped; commas produce FlowEntry.
+    assert_eq!(
+        kinds("[a, b, c]"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::FlowSequenceStart,
+            TokenKind::FlowEntry,
+            TokenKind::FlowEntry,
+            TokenKind::FlowSequenceEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn nested_flow_collections() {
+    assert_eq!(
+        kinds("[[]]"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::FlowSequenceStart,
+            TokenKind::FlowSequenceStart,
+            TokenKind::FlowSequenceEnd,
+            TokenKind::FlowSequenceEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn flow_mapping_in_sequence() {
+    assert_eq!(
+        kinds("[{}]"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::FlowSequenceStart,
+            TokenKind::FlowMappingStart,
+            TokenKind::FlowMappingEnd,
+            TokenKind::FlowSequenceEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn flow_sequence_span_single_char() {
+    let scanner = Scanner::new("[]\n");
+    let tokens = scanner.collect::<Result<Vec<_>, _>>().unwrap();
+    let open = &tokens[1];
+    let close = &tokens[2];
+
+    assert_eq!(open.atom.span.start.offset, 0);
+    assert_eq!(open.atom.span.end.offset, 1);
+    assert_eq!(close.atom.span.start.offset, 1);
+    assert_eq!(close.atom.span.end.offset, 2);
+}
+
+#[test]
+fn flow_indicators_after_document_start() {
+    assert_eq!(
+        kinds("---\n[]\n"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::DocumentStart,
+            TokenKind::FlowSequenceStart,
+            TokenKind::FlowSequenceEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
 #[test]
 fn version_directive_yaml_11() {
     let tokens = scan("%YAML 1.1\n---\n");
