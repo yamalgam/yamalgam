@@ -88,6 +88,27 @@ impl<'input> Reader<'input> {
         }
     }
 
+    /// Advance the reader by `n` characters.
+    ///
+    /// Equivalent to calling [`advance()`](Self::advance) `n` times.
+    pub fn advance_by(&mut self, n: usize) {
+        for _ in 0..n {
+            if self.advance().is_none() {
+                break;
+            }
+        }
+    }
+
+    /// Borrow a substring from `start_offset` to `end_offset` (byte offsets).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the offsets are out of bounds or not on UTF-8 boundaries.
+    #[must_use]
+    pub fn slice(&self, start_offset: usize, end_offset: usize) -> &'input str {
+        &self.input[start_offset..end_offset]
+    }
+
     /// Returns `true` if the reader has reached the end of input.
     #[must_use]
     pub const fn is_eof(&self) -> bool {
