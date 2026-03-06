@@ -1,0 +1,20 @@
+[package]
+name = "yamalgam-scanner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "YAML scanner/tokenizer ported from libfyaml"
+publish = false
+
+[dependencies]
+bitflags = "2"
+encoding_rs = "0.8"
+thiserror = "2.0"
+yamalgam-core = { path = "../yamalgam-core" }
+
+[dev-dependencies]
+pretty_assertions = "1"
+
+[lints]
+workspace = true

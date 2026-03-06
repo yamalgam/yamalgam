@@ -13,7 +13,7 @@
 //! ```no_run
 //! use yamalgam_core::{Config, ConfigLoader};
 //!
-//! let config = ConfigLoader::new()
+//! let (config, _sources) = ConfigLoader::new()
 //!     .with_user_config(true)
 //!     .load()
 //!     .expect("Failed to load configuration");
@@ -24,8 +24,12 @@
 
 pub mod config;
 
+pub mod diagnostic;
+
 pub mod error;
 
 pub use config::{Config, ConfigLoader, LogLevel};
+
+pub use diagnostic::{Diagnostic, Label, Mark, Severity, Span};
 
 pub use error::{ConfigError, ConfigResult};
