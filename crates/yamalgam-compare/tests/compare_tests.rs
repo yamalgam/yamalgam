@@ -93,11 +93,9 @@ fn different_kinds_produce_mismatch() {
 }
 
 #[test]
-fn rust_scanner_produces_stream_markers() {
+fn rust_scanner_produces_stream_and_block_tokens() {
     let tokens = run_rust_scanner(b"key: value").unwrap();
-    assert_eq!(tokens.len(), 2);
     assert_eq!(tokens[0].kind, "StreamStart");
-    assert_eq!(tokens[1].kind, "StreamEnd");
-    assert!(tokens[0].value.is_none());
-    assert!(tokens[1].value.is_none());
+    assert!(tokens.iter().any(|t| t.kind == "Value"));
+    assert_eq!(tokens.last().unwrap().kind, "StreamEnd");
 }

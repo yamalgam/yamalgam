@@ -4,10 +4,13 @@
 //! modeled as an iterator that yields `Result<Token, ScanError>`.
 //!
 //! Currently handles stream markers, document markers
-//! (`---`, `...`, `%YAML`, `%TAG`), and flow indicators
-//! (`[`, `]`, `{`, `}`, `,`). Other content tokens are skipped.
+//! (`---`, `...`, `%YAML`, `%TAG`), flow indicators
+//! (`[`, `]`, `{`, `}`, `,`), and block indicators
+//! (`-`, `?`, `:`, indent-based `BlockSequenceStart`/`BlockMappingStart`/`BlockEnd`).
+//! Scalar and other content tokens are skipped.
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 
 use yamalgam_core::Span;
 
@@ -55,6 +58,14 @@ pub struct Scanner<'input> {
     /// Nesting depth of flow collections (`[`/`{` increments, `]`/`}` decrements).
     // cref: fy_parser.flow_level
     flow_level: u32,
+    /// Current block indentation level. `-1` means "no block context yet".
+    // cref: fy_parser.indent
+    indent: i32,
+    /// Stack of previous indentation levels for unrolling.
+    // cref: fy_indent list in fy_parser
+    indent_stack: Vec<i32>,
+    /// Queued tokens waiting to be yielded (e.g., BlockSequenceStart before BlockEntry).
+    queue: VecDeque<Token<'input>>,
 }
 
 impl<'input> Scanner<'input> {
@@ -65,12 +76,16 @@ impl<'input> Scanner<'input> {
             reader: Reader::new(input),
             state: State::Start,
             flow_level: 0,
+            indent: -1,
+            indent_stack: Vec::new(),
+            queue: VecDeque::new(),
         }
     }
 
+    // -- Token constructors --
+
     /// Build a token with an empty atom spanning from `start` to `end`.
     fn marker_token(
-        &self,
         kind: TokenKind,
         start: yamalgam_core::Mark,
         end: yamalgam_core::Mark,
@@ -89,7 +104,6 @@ impl<'input> Scanner<'input> {
 
     /// Build a token with borrowed atom data spanning from `start` to `end`.
     fn data_token(
-        &self,
         kind: TokenKind,
         data: &'input str,
         start: yamalgam_core::Mark,
@@ -107,12 +121,14 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    // -- Stream markers --
+
     /// Emit `StreamStart` and transition to `Stream`.
     // cref: fy_fetch_stream_start (fy-parse.c:1921)
     fn fetch_stream_start(&mut self) -> Token<'input> {
         let mark = self.reader.mark();
         self.state = State::Stream;
-        self.marker_token(TokenKind::StreamStart, mark, mark)
+        Self::marker_token(TokenKind::StreamStart, mark, mark)
     }
 
     /// Emit `StreamEnd` and transition to `Done`.
@@ -120,17 +136,15 @@ impl<'input> Scanner<'input> {
     fn fetch_stream_end(&mut self) -> Token<'input> {
         let mark = self.reader.mark();
         self.state = State::Done;
-        self.marker_token(TokenKind::StreamEnd, mark, mark)
+        Self::marker_token(TokenKind::StreamEnd, mark, mark)
     }
 
+    // -- Whitespace/comment skipping --
+
     /// Skip whitespace, comments, and newlines between tokens.
-    ///
-    /// After this returns, the reader is positioned at the first character
-    /// that could start a token (or at EOF).
     // cref: fy_scan_to_next_token (fy-parse.c:1260)
     fn scan_to_next_token(&mut self) {
         loop {
-            // Skip whitespace (space, tab).
             while let Some(c) = self.reader.peek() {
                 if c == ' ' || c == '\t' {
                     self.reader.advance();
@@ -139,7 +153,6 @@ impl<'input> Scanner<'input> {
                 }
             }
 
-            // Skip comment (# to end of line).
             if self.reader.peek() == Some('#') {
                 while let Some(c) = self.reader.peek() {
                     if c == '\n' || c == '\r' {
@@ -149,7 +162,6 @@ impl<'input> Scanner<'input> {
                 }
             }
 
-            // Skip newline and loop to handle the next line.
             match self.reader.peek() {
                 Some('\n' | '\r') => {
                     self.reader.advance();
@@ -159,8 +171,46 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    // -- Indent management --
+
+    /// Push the current indent level and emit a block collection start token
+    /// if the column is deeper than the current indent.
+    ///
+    /// Returns `true` if a new indent level was pushed.
+    // cref: fy_push_indent (fy-parse.c) + BLOCK_SEQUENCE_START/BLOCK_MAPPING_START emit
+    fn roll_indent(&mut self, column: i32, is_mapping: bool) {
+        if self.flow_level > 0 || column <= self.indent {
+            return;
+        }
+        self.indent_stack.push(self.indent);
+        self.indent = column;
+        let mark = self.reader.mark();
+        let kind = if is_mapping {
+            TokenKind::BlockMappingStart
+        } else {
+            TokenKind::BlockSequenceStart
+        };
+        self.queue.push_back(Self::marker_token(kind, mark, mark));
+    }
+
+    /// Emit `BlockEnd` tokens for each indent level deeper than `column`.
+    // cref: fy_parse_unroll_indent (fy-parse.c:1592)
+    fn unroll_indent(&mut self, column: i32) {
+        if self.flow_level > 0 {
+            return;
+        }
+        while self.indent > column {
+            let mark = self.reader.mark();
+            self.queue
+                .push_back(Self::marker_token(TokenKind::BlockEnd, mark, mark));
+            self.indent = self.indent_stack.pop().unwrap_or(-1);
+        }
+    }
+
+    // -- Document markers --
+
     /// Check if the reader is positioned at `---` followed by blank/EOF.
-    // cref: fy_fetch_tokens (fy-parse.c:5326) — "---" check
+    // cref: fy_fetch_tokens (fy-parse.c:5326)
     fn is_document_start(&self) -> bool {
         self.reader.peek() == Some('-')
             && self.reader.peek_at(1) == Some('-')
@@ -169,7 +219,7 @@ impl<'input> Scanner<'input> {
     }
 
     /// Check if the reader is positioned at `...` followed by blank/EOF.
-    // cref: fy_fetch_tokens (fy-parse.c:5328) — "..." check
+    // cref: fy_fetch_tokens (fy-parse.c:5328)
     fn is_document_end(&self) -> bool {
         self.reader.peek() == Some('.')
             && self.reader.peek_at(1) == Some('.')
@@ -183,24 +233,20 @@ impl<'input> Scanner<'input> {
         let start = self.reader.mark();
         self.reader.advance_by(3);
         let end = self.reader.mark();
-        self.marker_token(kind, start, end)
+        Self::marker_token(kind, start, end)
     }
 
+    // -- Directives --
+
     /// Scan a `%YAML` or `%TAG` directive.
-    ///
-    /// Called when the `%` has been detected at column 0.
-    /// The `%` has NOT been consumed yet.
     // cref: fy_scan_directive (fy-parse.c:2197)
     fn fetch_directive(&mut self) -> Result<Token<'input>, ScanError> {
-        // Skip past '%'
-        self.reader.advance();
-
+        self.reader.advance(); // skip '%'
         if self.check_prefix("YAML") && is_blank(self.reader.peek_at(4)) {
             self.fetch_version_directive()
         } else if self.check_prefix("TAG") && is_blank(self.reader.peek_at(3)) {
             self.fetch_tag_directive()
         } else {
-            // Unknown directive — skip to end of line.
             self.skip_to_next_line();
             Err(ScanError {
                 message: "unknown directive".to_string(),
@@ -208,16 +254,11 @@ impl<'input> Scanner<'input> {
         }
     }
 
-    /// Scan `%YAML x.y` — reader is past `%`, positioned at `YAML`.
-    // cref: fy_scan_directive (fy-parse.c:2275) — version directive branch
+    /// Scan `%YAML x.y`.
+    // cref: fy_scan_directive (fy-parse.c:2275)
     fn fetch_version_directive(&mut self) -> Result<Token<'input>, ScanError> {
-        // Skip "YAML"
-        self.reader.advance_by(4);
-
-        // Skip whitespace after YAML
+        self.reader.advance_by(4); // skip "YAML"
         self.skip_blanks();
-
-        // Parse version: digits.digits
         let ver_start = self.reader.mark();
         while let Some(c) = self.reader.peek() {
             if c.is_ascii_digit() || c == '.' {
@@ -227,42 +268,33 @@ impl<'input> Scanner<'input> {
             }
         }
         let ver_end = self.reader.mark();
-
         if ver_start.offset == ver_end.offset {
             return Err(ScanError {
                 message: "expected version after %YAML".to_string(),
             });
         }
-
         let version_str = self.reader.slice(ver_start.offset, ver_end.offset);
-
-        // Skip rest of line (trailing whitespace, comments).
         self.skip_to_next_line();
-
-        Ok(self.data_token(TokenKind::VersionDirective, version_str, ver_start, ver_end))
+        Ok(Self::data_token(
+            TokenKind::VersionDirective,
+            version_str,
+            ver_start,
+            ver_end,
+        ))
     }
 
-    /// Scan `%TAG handle prefix` — reader is past `%`, positioned at `TAG`.
-    // cref: fy_scan_directive (fy-parse.c:2296) — tag directive branch
+    /// Scan `%TAG handle prefix`.
+    // cref: fy_scan_directive (fy-parse.c:2296)
     fn fetch_tag_directive(&mut self) -> Result<Token<'input>, ScanError> {
-        // Skip "TAG"
-        self.reader.advance_by(3);
-
-        // Skip whitespace after TAG
+        self.reader.advance_by(3); // skip "TAG"
         self.skip_blanks();
-
-        // Capture the full "handle prefix" portion.
         let data_start = self.reader.mark();
-
-        // Scan tag handle: ! or !! or !name!
         if self.reader.peek() != Some('!') {
             return Err(ScanError {
                 message: "expected '!' at start of tag handle".to_string(),
             });
         }
-        self.reader.advance(); // skip '!'
-
-        // Read handle body (alphanumeric/-) until '!' or whitespace.
+        self.reader.advance();
         while let Some(c) = self.reader.peek() {
             if c == '!' {
                 self.reader.advance();
@@ -273,11 +305,7 @@ impl<'input> Scanner<'input> {
             }
             self.reader.advance();
         }
-
-        // Skip whitespace between handle and prefix.
         self.skip_blanks();
-
-        // Read tag prefix (URI) until whitespace/newline/EOF.
         while let Some(c) = self.reader.peek() {
             if is_blank(Some(c)) || is_linebreak(c) {
                 break;
@@ -285,14 +313,17 @@ impl<'input> Scanner<'input> {
             self.reader.advance();
         }
         let data_end = self.reader.mark();
-
         let tag_data = self.reader.slice(data_start.offset, data_end.offset);
-
-        // Skip rest of line.
         self.skip_to_next_line();
-
-        Ok(self.data_token(TokenKind::TagDirective, tag_data, data_start, data_end))
+        Ok(Self::data_token(
+            TokenKind::TagDirective,
+            tag_data,
+            data_start,
+            data_end,
+        ))
     }
+
+    // -- Flow indicators --
 
     /// Consume `[` or `{` and emit a flow collection start token.
     // cref: fy_fetch_flow_collection_mark_start (fy-parse.c:2432)
@@ -306,7 +337,7 @@ impl<'input> Scanner<'input> {
         self.reader.advance();
         let end = self.reader.mark();
         self.flow_level += 1;
-        self.marker_token(kind, start, end)
+        Self::marker_token(kind, start, end)
     }
 
     /// Consume `]` or `}` and emit a flow collection end token.
@@ -321,7 +352,7 @@ impl<'input> Scanner<'input> {
         self.reader.advance();
         let end = self.reader.mark();
         self.flow_level = self.flow_level.saturating_sub(1);
-        self.marker_token(kind, start, end)
+        Self::marker_token(kind, start, end)
     }
 
     /// Consume `,` and emit a flow entry token.
@@ -330,10 +361,48 @@ impl<'input> Scanner<'input> {
         let start = self.reader.mark();
         self.reader.advance();
         let end = self.reader.mark();
-        self.marker_token(TokenKind::FlowEntry, start, end)
+        Self::marker_token(TokenKind::FlowEntry, start, end)
     }
 
-    /// Check if the next `n` characters match `prefix`.
+    // -- Block indicators --
+
+    /// Fetch a block entry (`- `). May push `BlockSequenceStart` into the queue first.
+    // cref: fy_fetch_block_entry (fy-parse.c:2703)
+    fn fetch_block_entry(&mut self) {
+        let col = self.reader.mark().column as i32;
+        self.roll_indent(col, false);
+        let start = self.reader.mark();
+        self.reader.advance(); // skip '-'
+        let end = self.reader.mark();
+        self.queue
+            .push_back(Self::marker_token(TokenKind::BlockEntry, start, end));
+    }
+
+    /// Fetch an explicit key (`? `). May push `BlockMappingStart` into the queue first.
+    // cref: fy_fetch_key (fy-parse.c:2818)
+    fn fetch_key(&mut self) {
+        let col = self.reader.mark().column as i32;
+        self.roll_indent(col, true);
+        let start = self.reader.mark();
+        self.reader.advance(); // skip '?'
+        let end = self.reader.mark();
+        self.queue
+            .push_back(Self::marker_token(TokenKind::Key, start, end));
+    }
+
+    /// Fetch a value indicator (`: `).
+    // cref: fy_fetch_value (fy-parse.c:2931)
+    fn fetch_value(&mut self) {
+        let start = self.reader.mark();
+        self.reader.advance(); // skip ':'
+        let end = self.reader.mark();
+        self.queue
+            .push_back(Self::marker_token(TokenKind::Value, start, end));
+    }
+
+    // -- Helpers --
+
+    /// Check if the next characters match `prefix`.
     fn check_prefix(&self, prefix: &str) -> bool {
         prefix
             .chars()
@@ -359,61 +428,108 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    // -- Main fetch loop --
+
     /// Fetch the next token from the stream.
     ///
-    /// Skips whitespace/comments, then checks for document indicators,
-    /// directives, and EOF. Unrecognized content is skipped line by line.
+    /// Skips whitespace/comments, manages indent levels, then checks for
+    /// document indicators, directives, flow indicators, block indicators,
+    /// and EOF. Unrecognized content is skipped.
     // cref: fy_fetch_tokens (fy-parse.c:5250)
     fn fetch_next_token(&mut self) -> Option<Result<Token<'input>, ScanError>> {
         loop {
+            // Drain queued tokens first.
+            if let Some(token) = self.queue.pop_front() {
+                return Some(Ok(token));
+            }
+
             self.scan_to_next_token();
 
             if self.reader.is_eof() {
-                return Some(Ok(self.fetch_stream_end()));
+                self.unroll_indent(-1);
+                let end = self.fetch_stream_end();
+                self.queue.push_back(end);
+                continue;
             }
 
             let c = self.reader.peek().unwrap();
             let col = self.reader.mark().column;
 
-            if col == 0 {
-                // Document indicators: --- or ...
-                if self.is_document_start() {
-                    return Some(Ok(self.fetch_document_indicator(TokenKind::DocumentStart)));
-                }
-                if self.is_document_end() {
-                    return Some(Ok(self.fetch_document_indicator(TokenKind::DocumentEnd)));
-                }
-                // Directives: %YAML or %TAG
-                if c == '%' {
-                    return Some(self.fetch_directive());
+            // In block mode, unroll indent to current column.
+            if self.flow_level == 0 {
+                self.unroll_indent(col as i32);
+                if !self.queue.is_empty() {
+                    continue;
                 }
             }
 
-            // Flow collection indicators: [ ] { } ,
+            // Document indicators at column 0 (unroll fully first).
+            if col == 0 {
+                if self.is_document_start() {
+                    self.unroll_indent(-1);
+                    let token = self.fetch_document_indicator(TokenKind::DocumentStart);
+                    self.queue.push_back(token);
+                    continue;
+                }
+                if self.is_document_end() {
+                    self.unroll_indent(-1);
+                    let token = self.fetch_document_indicator(TokenKind::DocumentEnd);
+                    self.queue.push_back(token);
+                    continue;
+                }
+                if c == '%' {
+                    match self.fetch_directive() {
+                        Ok(token) => {
+                            self.queue.push_back(token);
+                            continue;
+                        }
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+            }
+
+            // Flow collection indicators.
             // cref: fy_fetch_tokens (fy-parse.c:5364-5394)
             if c == '[' || c == '{' {
-                return Some(Ok(self.fetch_flow_collection_start(c)));
+                let token = self.fetch_flow_collection_start(c);
+                self.queue.push_back(token);
+                continue;
             }
             if c == ']' || c == '}' {
-                return Some(Ok(self.fetch_flow_collection_end(c)));
+                let token = self.fetch_flow_collection_end(c);
+                self.queue.push_back(token);
+                continue;
             }
             if c == ',' {
-                return Some(Ok(self.fetch_flow_entry()));
+                let token = self.fetch_flow_entry();
+                self.queue.push_back(token);
+                continue;
+            }
+
+            // Block indicators (not in flow context).
+            // cref: fy_fetch_tokens (fy-parse.c:5396-5441)
+            if self.flow_level == 0 {
+                if c == '-' && is_blank_or_end(self.reader.peek_at(1)) {
+                    self.fetch_block_entry();
+                    continue;
+                }
+                if c == '?' && is_blank_or_end(self.reader.peek_at(1)) {
+                    self.fetch_key();
+                    continue;
+                }
+                if c == ':' && is_blank_or_end(self.reader.peek_at(1)) {
+                    self.fetch_value();
+                    continue;
+                }
             }
 
             // Unknown content — skip past it.
-            if self.flow_level > 0 {
-                // Inside flow context, skip one character at a time.
-                self.reader.advance();
-            } else {
-                // In block context, skip to the next line.
-                self.skip_to_next_line();
-            }
+            self.reader.advance();
         }
     }
 }
 
-/// Returns `true` if the character is a blank (space or tab) or absent (EOF).
+/// Returns `true` if the character is a blank (space or tab) or absent (EOF/newline).
 const fn is_blank_or_end(c: Option<char>) -> bool {
     matches!(c, None | Some(' ' | '\t' | '\n' | '\r'))
 }
@@ -432,6 +548,10 @@ impl<'input> Iterator for Scanner<'input> {
     type Item = Result<Token<'input>, ScanError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Drain queued tokens first.
+        if let Some(token) = self.queue.pop_front() {
+            return Some(Ok(token));
+        }
         match self.state {
             State::Start => Some(Ok(self.fetch_stream_start())),
             State::Stream => self.fetch_next_token(),
