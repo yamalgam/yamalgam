@@ -127,6 +127,14 @@ cov:
   @cargo llvm-cov report --html
   @cargo llvm-cov report --summary-only --json --output-path target/llvm-cov/summary.json
 
+# Update vendored YAML Test Suite snapshot
+update-test-suite:
+    scripts/update-test-suite
+
+# Run YAML Test Suite compliance tests
+test-compliance:
+    cargo nextest run -p yamalgam-compare --test compliance
+
 check: fmt clippy deny test doc-test
 
 # Watch for changes and run tests (requires cargo-watch)
