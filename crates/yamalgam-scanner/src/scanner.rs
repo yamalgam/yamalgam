@@ -526,6 +526,11 @@ impl<'input> Scanner<'input> {
         self.flow_level = self.flow_level.saturating_sub(1);
         self.enqueue(Self::marker_token(kind, start, end));
         self.simple_key_allowed = false;
+        // In flow context, `:` immediately after `]`/`}` is a value
+        // indicator (JSON-compatible, e.g., `{a: b}:value`).
+        if self.flow_level > 0 {
+            self.adjacent_value_offset = Some(self.reader.mark().offset);
+        }
     }
 
     /// Consume `,` and emit a flow entry token.
@@ -1515,6 +1520,9 @@ impl<'input> Scanner<'input> {
                     continue;
                 }
                 if c == '%' {
+                    // Directives end any open block context.
+                    self.remove_simple_key();
+                    self.unroll_indent(-1);
                     match self.fetch_directive() {
                         Ok(token) => {
                             self.enqueue(token);
