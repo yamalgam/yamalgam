@@ -965,6 +965,18 @@ fn content_after_document_end_errors() {
     );
 }
 
+#[test]
+fn comment_without_whitespace_not_consumed() {
+    // `#` without preceding whitespace is NOT a comment (YAML §6.4).
+    // After `]`, `#invalid` should cause an error, not be silently consumed.
+    let scanner = Scanner::new("[ a ]#invalid\n");
+    let results: Vec<_> = scanner.collect();
+    assert!(
+        results.iter().any(|r| r.is_err()),
+        "expected error for # without preceding whitespace"
+    );
+}
+
 // === Anchors and aliases ===
 
 #[test]
