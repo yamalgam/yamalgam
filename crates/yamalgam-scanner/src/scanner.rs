@@ -455,6 +455,27 @@ impl<'input> Scanner<'input> {
             });
         }
         let version_str = self.reader.slice(ver_start.offset, ver_end.offset);
+
+        // After the version, only whitespace + optional comment allowed.
+        // `%YAML 1.2 foo` (H7TQ) and `%YAML 1.1#...` (MUS6) are invalid.
+        {
+            let mut lookahead = 0;
+            while self.reader.peek_at(lookahead) == Some(' ')
+                || self.reader.peek_at(lookahead) == Some('\t')
+            {
+                lookahead += 1;
+            }
+            match self.reader.peek_at(lookahead) {
+                None | Some('\n' | '\r') => {}
+                Some('#') if lookahead > 0 => {}
+                Some(c) => {
+                    return Err(ScanError {
+                        message: format!("invalid character '{c}' after YAML version"),
+                    });
+                }
+            }
+        }
+
         self.skip_to_next_line();
         Ok(Self::data_token(
             TokenKind::VersionDirective,
@@ -1013,6 +1034,29 @@ impl<'input> Scanner<'input> {
                     self.reader.advance();
                 }
                 _ => break,
+            }
+        }
+
+        // Validate rest of header: only whitespace and optional comment allowed.
+        // cref: YAML 1.2 §8.1 — c-b-block-header = ( (c-indentation-indicator c-chomping-indicator)
+        //                      | (c-chomping-indicator c-indentation-indicator) ) s-b-comment
+        {
+            let mut lookahead = 0;
+            while self.reader.peek_at(lookahead) == Some(' ')
+                || self.reader.peek_at(lookahead) == Some('\t')
+            {
+                lookahead += 1;
+            }
+            match self.reader.peek_at(lookahead) {
+                None | Some('\n' | '\r') => {}
+                // `#` is only a comment when preceded by whitespace.
+                Some('#') if lookahead > 0 => {}
+                Some(c) => {
+                    self.error = Some(ScanError {
+                        message: format!("invalid character '{c}' in block scalar header"),
+                    });
+                    return;
+                }
             }
         }
 

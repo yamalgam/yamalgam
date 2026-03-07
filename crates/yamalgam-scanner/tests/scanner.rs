@@ -921,6 +921,28 @@ fn invalid_single_quote_escape_in_double_quoted_errors() {
     assert!(results.iter().any(|r| r.is_err()), "expected scan error");
 }
 
+#[test]
+fn block_scalar_invalid_header_char_errors() {
+    // Indent indicator `0` is invalid (must be 1-9, 2G84).
+    let scanner = Scanner::new("--- |0\n");
+    let results: Vec<_> = scanner.collect();
+    assert!(
+        results.iter().any(|r| r.is_err()),
+        "expected scan error for |0"
+    );
+}
+
+#[test]
+fn block_scalar_content_on_header_line_errors() {
+    // Content on the block scalar header line is invalid (S4GJ).
+    let scanner = Scanner::new("folded: > first line\n  second\n");
+    let results: Vec<_> = scanner.collect();
+    assert!(
+        results.iter().any(|r| r.is_err()),
+        "expected scan error for > with inline content"
+    );
+}
+
 // === Anchors and aliases ===
 
 #[test]
