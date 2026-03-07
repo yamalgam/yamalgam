@@ -66,6 +66,11 @@ struct SimpleKey {
     /// Used later for error reporting on invalid YAML.
     #[allow(dead_code)]
     required: bool,
+    /// True when this key was a JSON-like node (quoted scalar or flow
+    /// collection end). In flow context, `:` after a JSON-like key is
+    /// a value indicator regardless of what follows and can appear on
+    /// a subsequent line (YAML §7.4.2, production [153]).
+    json_key: bool,
 }
 
 /// YAML token scanner.
@@ -298,6 +303,15 @@ impl<'input> Scanner<'input> {
     /// when `:` is encountered later.
     // cref: fy_save_simple_key (fy-parse.c:1698)
     fn save_simple_key(&mut self, token_id: u64, mark: yamalgam_core::Mark) {
+        self.save_simple_key_ext(token_id, mark, false);
+    }
+
+    /// Save a simple key with explicit JSON-like flag.
+    ///
+    /// `json_key` should be `true` for quoted scalars and flow collection
+    /// starts — nodes where `:` is a value indicator regardless of what
+    /// follows (YAML §7.4.2, production [153]).
+    fn save_simple_key_ext(&mut self, token_id: u64, mark: yamalgam_core::Mark, json_key: bool) {
         if !self.simple_key_allowed {
             return;
         }
@@ -312,6 +326,7 @@ impl<'input> Scanner<'input> {
             token_id,
             flow_level: self.flow_level,
             required,
+            json_key,
         };
 
         // Replace any existing simple key at the same flow level.
@@ -506,7 +521,7 @@ impl<'input> Scanner<'input> {
         // Save simple key at current flow level BEFORE incrementing.
         let token = Self::marker_token(kind, start, end);
         let id = self.enqueue(token);
-        self.save_simple_key(id, start_mark);
+        self.save_simple_key_ext(id, start_mark, true);
         self.flow_level += 1;
         self.simple_key_allowed = true;
     }
@@ -903,8 +918,27 @@ impl<'input> Scanner<'input> {
         }
 
         let end_mark = self.reader.mark();
-        let tag_text = self.reader.slice(start_mark.offset, end_mark.offset);
-        let token = Self::data_token(TokenKind::Tag, tag_text, start_mark, end_mark);
+        let tag_raw = self.reader.slice(start_mark.offset, end_mark.offset);
+        // Decode URI percent-encoding in tag suffix (YAML §6.9.1).
+        // E.g., `!e!tag%21` → `!e!tag!`.
+        let tag_data: Cow<'input, str> = if tag_raw.contains('%') {
+            Cow::Owned(decode_tag_uri(tag_raw))
+        } else {
+            Cow::Borrowed(tag_raw)
+        };
+        let token = Token {
+            kind: TokenKind::Tag,
+            atom: Atom {
+                data: tag_data,
+                span: Span {
+                    start: start_mark,
+                    end: end_mark,
+                },
+                style: ScalarStyle::Plain,
+                chomp: Chomp::default(),
+                flags: AtomFlags::empty(),
+            },
+        };
         let id = self.enqueue(token);
         self.save_simple_key(id, start_mark);
         self.simple_key_allowed = false;
@@ -1025,6 +1059,14 @@ impl<'input> Scanner<'input> {
                 None if spaces <= content_indent => break,
                 // Content line (or blank line with significant trailing spaces).
                 _ => {
+                    // cref: fy_scan_block_scalar (fy-parse.c:3700)
+                    // Document indicators `---` / `...` at column 0 always
+                    // terminate block scalar content, even when content_indent
+                    // is 0 (i.e. block scalar at document level).
+                    if spaces == 0 && (self.is_document_start() || self.is_document_end()) {
+                        break;
+                    }
+
                     if spaces < content_indent {
                         // Under-indented → end of block (don't consume).
                         break;
@@ -1213,6 +1255,10 @@ impl<'input> Scanner<'input> {
 
         let mut result = String::new();
         let mut needs_owned = false;
+        // Byte offset into `result` below which content is protected from
+        // trailing-whitespace stripping.  Escape sequences like `\t` produce
+        // content characters that must survive line-fold trimming (YAML §6.1).
+        let mut escape_fence: usize = 0;
 
         loop {
             match self.reader.peek() {
@@ -1331,15 +1377,21 @@ impl<'input> Scanner<'input> {
                             result.push('\\');
                         }
                     }
+                    // Protect escape-produced content from trailing-whitespace
+                    // stripping on line fold (YAML §6.1 — escapes are content).
+                    escape_fence = result.len();
                 }
                 // Newline inside double-quoted scalar: fold per YAML 1.2 §6.5.
                 // Single newline between content → space.
                 // Empty lines (newline-only) → literal newline.
                 // Leading whitespace on continuation is trimmed.
-                // Trailing whitespace on the current line is excluded (§6.5).
+                // Trailing whitespace on the current line is excluded (§6.5),
+                // but escape-produced characters are content and must survive.
                 Some('\n' | '\r') => {
                     needs_owned = true;
-                    while result.ends_with(' ') || result.ends_with('\t') {
+                    while result.len() > escape_fence
+                        && (result.ends_with(' ') || result.ends_with('\t'))
+                    {
                         result.pop();
                     }
                     self.reader.advance(); // consume newline
@@ -1410,7 +1462,7 @@ impl<'input> Scanner<'input> {
     ) {
         let scalar = Self::scalar_token(data, style, start_mark, end_mark);
         let id = self.enqueue(scalar);
-        self.save_simple_key(id, start_mark);
+        self.save_simple_key_ext(id, start_mark, true);
         // Multi-line quoted scalars consume newlines internally.
         self.simple_key_allowed = self.flow_level == 0 && end_mark.line > start_mark.line;
         // In flow context, `:` immediately after a quoted scalar is a
@@ -1573,8 +1625,9 @@ impl<'input> Scanner<'input> {
             // Value indicator `:` — in both block and flow context.
             // In block context: `:` must be followed by blank/EOF.
             // In flow context: `:` before a flow indicator doesn't need
-            // a trailing blank. After a quoted scalar or flow collection
-            // end, `:` is a value indicator regardless (JSON compat).
+            // a trailing blank. After a JSON-like key (quoted scalar or
+            // flow collection), `:` is a value indicator regardless of
+            // what follows, even across line breaks (YAML §7.4.2 [153]).
             // cref: fy_fetch_tokens (fy-parse.c:5426)
             if c == ':'
                 && (is_blank_or_end(self.reader.peek_at(1))
@@ -1582,7 +1635,11 @@ impl<'input> Scanner<'input> {
                         && (matches!(self.reader.peek_at(1), Some(',' | '[' | ']' | '{' | '}'))
                             || self
                                 .adjacent_value_offset
-                                .is_some_and(|off| off == self.reader.mark().offset))))
+                                .is_some_and(|off| off == self.reader.mark().offset)
+                            || self
+                                .simple_keys
+                                .last()
+                                .is_some_and(|s| s.flow_level == self.flow_level && s.json_key))))
             {
                 self.adjacent_value_offset = None;
                 self.fetch_value();
@@ -1629,6 +1686,40 @@ impl<'input> Scanner<'input> {
 /// Returns `true` if the character is a blank (space or tab) or absent (EOF/newline).
 const fn is_blank_or_end(c: Option<char>) -> bool {
     matches!(c, None | Some(' ' | '\t' | '\n' | '\r'))
+}
+
+/// Decode URI percent-encoding in a tag string (YAML §6.9.1).
+///
+/// `%XX` sequences (two hex digits) are decoded to the corresponding byte.
+/// Multi-byte UTF-8 sequences like `%C3%BC` are decoded correctly.
+/// Invalid sequences are left as-is.
+// cref: fy_tag_scan (fy-parse.c:2210)
+fn decode_tag_uri(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded_bytes = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2]))
+        {
+            decoded_bytes.push(hi << 4 | lo);
+            i += 3;
+            continue;
+        }
+        decoded_bytes.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(decoded_bytes).unwrap_or_else(|_| input.to_string())
+}
+
+const fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Returns `true` if the character is a blank (space or tab).

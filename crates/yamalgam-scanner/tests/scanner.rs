@@ -804,6 +804,93 @@ fn folded_more_indented_preserves_newlines() {
     assert_eq!(scalars[1].1, "a\n  b\nc\n");
 }
 
+#[test]
+fn block_scalar_terminates_at_document_end() {
+    // Block scalar content must stop at `...` at column 0 (YAML §9.1.2).
+    let tokens = scan("--- |\n%!PS-Adobe-2.0\n...\n---\n...\n");
+    let scalar = tokens.iter().find(|t| t.0 == TokenKind::Scalar).unwrap();
+    assert_eq!(scalar.1, "%!PS-Adobe-2.0\n");
+    assert!(tokens.iter().any(|t| t.0 == TokenKind::DocumentEnd));
+}
+
+#[test]
+fn block_scalar_terminates_at_document_start() {
+    // Block scalar content must stop at `---` at column 0 (YAML §9.1.2).
+    let tokens = scan("--- |\ncontent\n---\nother\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[0].1, "content\n");
+    assert_eq!(scalars[1].1, "other");
+}
+
+#[test]
+fn flow_json_key_colon_on_next_line() {
+    // YAML §7.4.2 [153]: after a JSON-like key (quoted scalar), `:` is a
+    // value indicator even on the next line, even without trailing whitespace.
+    let tokens = scan("{ \"foo\"\n  :bar }\n");
+    let k: Vec<_> = tokens.iter().map(|t| t.0).collect();
+    assert_eq!(
+        k,
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::FlowMappingStart,
+            TokenKind::Key,
+            TokenKind::Scalar,
+            TokenKind::Value,
+            TokenKind::Scalar,
+            TokenKind::FlowMappingEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+    assert_eq!(tokens[3].1, "foo");
+    assert_eq!(tokens[5].1, "bar");
+}
+
+#[test]
+fn flow_json_key_colon_after_comment_on_next_line() {
+    // Same as above but with a comment between key and value (K3WX).
+    let tokens = scan("{ \"foo\" # comment\n  :bar }\n");
+    let k: Vec<_> = tokens.iter().map(|t| t.0).collect();
+    assert_eq!(
+        k,
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::FlowMappingStart,
+            TokenKind::Key,
+            TokenKind::Scalar,
+            TokenKind::Value,
+            TokenKind::Scalar,
+            TokenKind::FlowMappingEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn double_quoted_escape_tab_survives_line_fold() {
+    // YAML §6.1: escape sequences produce content characters, not whitespace.
+    // `\t` before a line fold must not be stripped (DE56).
+    let tokens = scan("\"trailing\\t\n    tab\"\n");
+    let scalar = tokens.iter().find(|t| t.0 == TokenKind::Scalar).unwrap();
+    assert_eq!(scalar.1, "trailing\t tab");
+}
+
+#[test]
+fn double_quoted_literal_tab_stripped_on_fold() {
+    // Literal tab (not from escape) IS trailing whitespace and should be stripped.
+    let tokens = scan("\"trailing\t\n    tab\"\n");
+    let scalar = tokens.iter().find(|t| t.0 == TokenKind::Scalar).unwrap();
+    assert_eq!(scalar.1, "trailing tab");
+}
+
+#[test]
+fn tag_uri_percent_decoding() {
+    // YAML §6.9.1: percent-encoded characters in tag suffixes are decoded.
+    // `%21` → `!` (6CK3).
+    let tokens = scan("!e!tag%21 value\n");
+    let tag = tokens.iter().find(|t| t.0 == TokenKind::Tag).unwrap();
+    assert_eq!(tag.1, "!e!tag!");
+}
+
 // === Anchors and aliases ===
 
 #[test]
