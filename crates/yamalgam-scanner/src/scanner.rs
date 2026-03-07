@@ -488,11 +488,13 @@ impl<'input> Scanner<'input> {
     // -- Flow indicators --
 
     /// Consume `[` or `{` and emit a flow collection start token.
+    ///
+    /// The flow collection itself can be a simple key (e.g., `[a, b]: value`).
+    /// The simple key is saved at the CURRENT flow level (before incrementing)
+    /// so it can be resolved when `:` is found outside the collection.
     // cref: fy_fetch_flow_collection_mark_start (fy-parse.c:2432)
     fn fetch_flow_collection_start(&mut self, c: char) {
-        // A flow collection can be a simple key (e.g., `[a, b]: value`).
         let start_mark = self.reader.mark();
-        self.remove_simple_key();
         let kind = if c == '[' {
             TokenKind::FlowSequenceStart
         } else {
@@ -501,10 +503,11 @@ impl<'input> Scanner<'input> {
         let start = self.reader.mark();
         self.reader.advance();
         let end = self.reader.mark();
-        self.flow_level += 1;
+        // Save simple key at current flow level BEFORE incrementing.
         let token = Self::marker_token(kind, start, end);
         let id = self.enqueue(token);
         self.save_simple_key(id, start_mark);
+        self.flow_level += 1;
         self.simple_key_allowed = true;
     }
 
@@ -631,8 +634,9 @@ impl<'input> Scanner<'input> {
                 // No simple key — bare empty key (`: value`).
                 if self.flow_level == 0 {
                     self.roll_indent(col, true);
-                    self.enqueue(Self::marker_token(TokenKind::Key, mark, mark));
                 }
+                // Emit Key in both block and flow context for empty keys.
+                self.enqueue(Self::marker_token(TokenKind::Key, mark, mark));
                 self.simple_key_allowed = self.flow_level == 0;
             }
         }
@@ -918,8 +922,10 @@ impl<'input> Scanner<'input> {
         self.reader.advance(); // skip & or *
         let name_start = self.reader.mark();
 
+        // YAML 1.2 §6.9.2: anchor names end at whitespace or flow indicators.
+        // Colons are allowed in anchor names (e.g., `&a:b`, `*a:`).
         while let Some(c) = self.reader.peek() {
-            if c.is_ascii_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}' | ':') {
+            if c.is_ascii_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}') {
                 break;
             }
             self.reader.advance();
