@@ -1,16 +1,16 @@
 #![allow(missing_docs)]
 //! Compliance test harness: runs each YAML Test Suite case through both
-//! the C harness and the Rust scanner, then compares the token streams.
+//! the C harness and the Rust scanner/parser, then compares the outputs.
 //!
 //! Uses `datatest-stable` for file-driven test generation.
 //!
-//! Since the Rust scanner has no state machine yet, most tests will produce
-//! `CSuccessRustError`. This is expected — we are proving the infrastructure,
-//! not the scanner.
+//! Two test functions are registered:
+//! - `compliance_test`: token-level comparison via scanner
+//! - `event_compliance_test`: event-level comparison via parser
 
 use std::path::Path;
 
-use yamalgam_compare::{CompareResult, compare_input};
+use yamalgam_compare::{CompareEventResult, CompareResult, compare_events, compare_input};
 
 /// Extract the raw YAML input from a YAML Test Suite file.
 ///
@@ -120,8 +120,6 @@ fn compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let result = compare_input(yaml_input.as_bytes());
 
-    // We don't assert match/mismatch here because the Rust scanner isn't
-    // implemented yet. We just verify the harness runs without panicking.
     match &result {
         CompareResult::Match { token_count } => {
             eprintln!(
@@ -133,7 +131,6 @@ fn compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             rust_error,
             c_token_count,
         } => {
-            // Expected for now — scanner has no state machine.
             eprintln!(
                 "EXPECTED: {} (C produced {c_token_count} tokens, Rust: {rust_error})",
                 path.file_stem().unwrap().to_string_lossy()
@@ -183,6 +180,83 @@ fn compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn event_compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+
+    let yaml_input = match extract_yaml_input(&content) {
+        Some(input) => input,
+        None => {
+            eprintln!(
+                "EVENT_SKIP: no yaml input found in {}",
+                path.display()
+            );
+            return Ok(());
+        }
+    };
+
+    let result = compare_events(yaml_input.as_bytes());
+
+    match &result {
+        CompareEventResult::Match { event_count } => {
+            eprintln!(
+                "EVENT_PASS: {} ({event_count} events matched)",
+                path.file_stem().unwrap().to_string_lossy()
+            );
+        }
+        CompareEventResult::CSuccessRustError {
+            rust_error,
+            c_event_count,
+        } => {
+            eprintln!(
+                "EVENT_EXPECTED: {} (C produced {c_event_count} events, Rust: {rust_error})",
+                path.file_stem().unwrap().to_string_lossy()
+            );
+        }
+        CompareEventResult::BothErrorMatch => {
+            eprintln!(
+                "EVENT_PASS: {} (both errored, matching)",
+                path.file_stem().unwrap().to_string_lossy()
+            );
+        }
+        CompareEventResult::BothErrorMismatch {
+            c_error: _,
+            rust_error: _,
+        } => {
+            // Both implementations rejected the input — this is a pass
+            // regardless of differing error messages.
+            eprintln!(
+                "EVENT_PASS: {} (both errored)",
+                path.file_stem().unwrap().to_string_lossy()
+            );
+        }
+        CompareEventResult::RustSuccessCError {
+            c_error,
+            rust_event_count,
+        } => {
+            eprintln!(
+                "EVENT_UNEXPECTED: {} (Rust produced {rust_event_count} events, C: {c_error})",
+                path.file_stem().unwrap().to_string_lossy()
+            );
+        }
+        CompareEventResult::EventMismatch {
+            index,
+            c_event,
+            rust_event,
+            ..
+        } => {
+            eprintln!(
+                "EVENT_MISMATCH: {} at index {index} (C: {:?}, Rust: {:?})",
+                path.file_stem().unwrap().to_string_lossy(),
+                c_event.kind,
+                rust_event.kind
+            );
+        }
+    }
+
+    Ok(())
+}
+
 datatest_stable::harness! {
     { test = compliance_test, root = "../../vendor/yaml-test-suite", pattern = r"\.yaml$" },
+    { test = event_compliance_test, root = "../../vendor/yaml-test-suite", pattern = r"\.yaml$" },
 }

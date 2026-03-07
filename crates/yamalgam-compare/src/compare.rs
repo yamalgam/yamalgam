@@ -1,7 +1,8 @@
-//! Token stream comparison logic.
+//! Token and event stream comparison logic.
 
 use serde::{Deserialize, Serialize};
 
+use crate::event_snapshot::EventSnapshot;
 use crate::snapshot::TokenSnapshot;
 
 /// Number of preceding tokens to include as context in a mismatch report.
@@ -117,5 +118,131 @@ fn eof_sentinel() -> TokenSnapshot {
         value: None,
         style: None,
         span: crate::snapshot::SpanSnapshot::default(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Event stream comparison
+// ---------------------------------------------------------------------------
+
+/// Number of preceding events to include as context in a mismatch report.
+const EVENT_CONTEXT_WINDOW: usize = 5;
+
+/// Result of comparing event streams from two implementations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CompareEventResult {
+    /// Event streams are identical.
+    Match {
+        /// Number of events that matched.
+        event_count: usize,
+    },
+    /// Both produced errors with matching messages.
+    BothErrorMatch,
+    /// Both errored but with different messages/locations.
+    BothErrorMismatch {
+        /// Error from the C harness.
+        c_error: String,
+        /// Error from the Rust parser.
+        rust_error: String,
+    },
+    /// C succeeded, Rust errored.
+    CSuccessRustError {
+        /// Error from the Rust parser.
+        rust_error: String,
+        /// Number of events the C harness produced.
+        c_event_count: usize,
+    },
+    /// Rust succeeded, C errored.
+    RustSuccessCError {
+        /// Error from the C harness.
+        c_error: String,
+        /// Number of events the Rust parser produced.
+        rust_event_count: usize,
+    },
+    /// Event streams diverged at a specific point.
+    EventMismatch {
+        /// Zero-based index where the streams first diverge.
+        index: usize,
+        /// The C harness event at the divergence point.
+        c_event: EventSnapshot,
+        /// The Rust parser event at the divergence point.
+        rust_event: EventSnapshot,
+        /// Preceding events (up to [`EVENT_CONTEXT_WINDOW`]) for debugging context.
+        context: Vec<EventSnapshot>,
+    },
+}
+
+/// Compare two event streams element by element.
+///
+/// Walks both streams in lockstep. On the first event that differs,
+/// returns [`CompareEventResult::EventMismatch`] with context.
+///
+/// Comparison rules:
+/// - `kind` must match exactly
+/// - `value` must match exactly
+/// - `anchor` must match exactly
+/// - `implicit` must match exactly
+/// - `tag` is **skipped** — libfyaml resolves tags to URIs while yamalgam keeps shorthand forms
+pub fn compare_event_streams(
+    c_events: &[EventSnapshot],
+    rust_events: &[EventSnapshot],
+) -> CompareEventResult {
+    let common_len = c_events.len().min(rust_events.len());
+
+    for i in 0..common_len {
+        if !events_match(&c_events[i], &rust_events[i]) {
+            return CompareEventResult::EventMismatch {
+                index: i,
+                c_event: c_events[i].clone(),
+                rust_event: rust_events[i].clone(),
+                context: event_context_slice(c_events, i),
+            };
+        }
+    }
+
+    // If lengths differ, report mismatch at the end of the shorter stream.
+    if c_events.len() != rust_events.len() {
+        let i = common_len;
+        let (c_evt, rust_evt) = if i < c_events.len() {
+            (c_events[i].clone(), eof_event_sentinel())
+        } else {
+            (eof_event_sentinel(), rust_events[i].clone())
+        };
+        return CompareEventResult::EventMismatch {
+            index: i,
+            c_event: c_evt,
+            rust_event: rust_evt,
+            context: event_context_slice(c_events, i),
+        };
+    }
+
+    CompareEventResult::Match {
+        event_count: c_events.len(),
+    }
+}
+
+/// Compare two events, skipping tag comparison.
+///
+/// Two events match when their kind, value, anchor, and implicit all agree.
+/// Tags are intentionally skipped because libfyaml resolves tags to full URIs
+/// while yamalgam keeps the shorthand form.
+fn events_match(a: &EventSnapshot, b: &EventSnapshot) -> bool {
+    a.kind == b.kind && a.value == b.value && a.anchor == b.anchor && a.implicit == b.implicit
+}
+
+/// Extract up to [`EVENT_CONTEXT_WINDOW`] events preceding `index`.
+fn event_context_slice(events: &[EventSnapshot], index: usize) -> Vec<EventSnapshot> {
+    let start = index.saturating_sub(EVENT_CONTEXT_WINDOW);
+    events[start..index].to_vec()
+}
+
+/// Synthetic event representing the end of a shorter stream.
+fn eof_event_sentinel() -> EventSnapshot {
+    EventSnapshot {
+        kind: "<END_OF_STREAM>".to_string(),
+        anchor: None,
+        tag: None,
+        value: None,
+        implicit: None,
     }
 }
