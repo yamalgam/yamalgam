@@ -1,9 +1,9 @@
 /*
- * fyaml-tokenize: reads YAML from stdin and outputs tokens as JSON lines.
+ * fyaml-tokenize: reads YAML from stdin and outputs tokens or events as JSON lines.
  *
  * Uses libfyaml's low-level scanner API (fy_scan) to produce token-level
- * output, not event-level. This gives the finest granularity for comparing
- * against yamalgam's Rust scanner.
+ * output, or the high-level parser API (fy_parser_parse) for event-level
+ * output when --events is passed.
  *
  * Build: see accompanying Makefile
  */
@@ -48,6 +48,26 @@ static const char *token_type_name(enum fy_token_type type)
 	case FYTT_TAG:                  return "TAG";
 	case FYTT_SCALAR:               return "SCALAR";
 	default:                        return "UNKNOWN";
+	}
+}
+
+/* Map fy_event_type enum to string name. */
+// cref: enum fy_event_type (FYET_STREAM_START .. FYET_ALIAS)
+static const char *event_type_name(enum fy_event_type type)
+{
+	switch (type) {
+	case FYET_NONE:           return "None";
+	case FYET_STREAM_START:   return "StreamStart";
+	case FYET_STREAM_END:     return "StreamEnd";
+	case FYET_DOCUMENT_START: return "DocumentStart";
+	case FYET_DOCUMENT_END:   return "DocumentEnd";
+	case FYET_MAPPING_START:  return "MappingStart";
+	case FYET_MAPPING_END:    return "MappingEnd";
+	case FYET_SEQUENCE_START: return "SequenceStart";
+	case FYET_SEQUENCE_END:   return "SequenceEnd";
+	case FYET_SCALAR:         return "Scalar";
+	case FYET_ALIAS:          return "Alias";
+	default:                  return "Unknown";
 	}
 }
 
@@ -100,8 +120,13 @@ static char *read_stdin(size_t *out_len)
 
 int main(int argc, char **argv)
 {
-	(void)argc;
-	(void)argv;
+	/* Parse argv for --events flag */
+	int events_mode = 0;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--events") == 0) {
+			events_mode = 1;
+		}
+	}
 
 	/* Read all of stdin */
 	size_t input_len = 0;
@@ -136,106 +161,234 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* Initialize default document state so the scanner can resolve
-	   shorthand tag handles (! → !, !! → tag:yaml.org,2002:).
-	   Without this, fy_fetch_tag() fails because current_document_state is NULL. */
-	// cref: fy_parser_set_default_document_state(), fy_reset_document_state()
-	rc = fy_parser_set_default_document_state(fyp, NULL);
-	if (rc != 0) {
-		fprintf(stderr, "{\"error\": \"fy_parser_set_default_document_state failed\"}\n");
-		fy_parser_destroy(fyp);
-		free(input);
-		return 1;
-	}
-
-	/* Iterate tokens using the low-level scanner API */
-	// cref: fy_scan(), fy_scan_token_free()
-	// cref: fy_token_get_type(), fy_token_start_mark(), fy_token_end_mark()
-	// cref: fy_token_get_text()
 	int error = 0;
 	int saw_stream_end = 0;
-	struct fy_token *fyt;
-	while ((fyt = fy_scan(fyp)) != NULL) {
-		enum fy_token_type type = fy_token_get_type(fyt);
-		const char *type_str = token_type_name(type);
-		if (type == FYTT_STREAM_END)
-			saw_stream_end = 1;
 
-		/* Get start/end marks */
-		// cref: struct fy_mark { size_t input_pos; int line; int column; }
-		const struct fy_mark *sm = fy_token_start_mark(fyt);
-		const struct fy_mark *em = fy_token_end_mark(fyt);
+	if (events_mode) {
+		/* Event mode — use fy_parser_parse() high-level API.
+		   No fy_parser_set_default_document_state() needed here;
+		   the parser handles document state internally. */
+		// cref: fy_parser_parse(), fy_parser_event_free()
+		struct fy_event *fye;
+		while ((fye = fy_parser_parse(fyp)) != NULL) {
+			const char *type_str = event_type_name(fye->type);
 
-		/* Get text content for tokens that carry values.
-		   For TAG tokens, fy_token_get_text() returns the resolved URI
-		   (e.g. "tag:yaml.org,2002:str" for "!!str"). We reconstruct the
-		   raw shorthand form using handle + suffix to match yamalgam's
-		   scanner output. For TAG_DIRECTIVE, we format "handle prefix"
-		   with a space separator. */
-		size_t text_len = 0;
-		const char *text = NULL;
-		char tag_buf[1024];
-		if (type == FYTT_TAG) {
-			size_t h_len = 0, s_len = 0;
-			const char *handle = fy_tag_token_handle(fyt, &h_len);
-			const char *suffix = fy_tag_token_suffix(fyt, &s_len);
-			if (h_len == 0 && s_len > 0) {
-				/* Verbatim tag: !<uri> */
-				text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
-					"!<%.*s>", (int)s_len, suffix);
-			} else {
-				text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
-					"%.*s%.*s", (int)h_len, handle ? handle : "",
-					(int)s_len, suffix ? suffix : "");
+			fprintf(stdout, "{\"type\":\"%s\"", type_str);
+
+			/* Extract fields based on event type */
+			switch (fye->type) {
+			case FYET_DOCUMENT_START:
+				fprintf(stdout, ",\"implicit\":%s",
+					fye->document_start.implicit ? "true" : "false");
+				break;
+			case FYET_DOCUMENT_END:
+				fprintf(stdout, ",\"implicit\":%s",
+					fye->document_end.implicit ? "true" : "false");
+				break;
+			case FYET_SCALAR: {
+				/* Value */
+				size_t len = 0;
+				const char *text = fy_token_get_text(fye->scalar.value, &len);
+				if (text) {
+					fprintf(stdout, ",\"value\":\"");
+					json_escape(stdout, text, len);
+					fprintf(stdout, "\"");
+				} else {
+					fprintf(stdout, ",\"value\":\"\"");
+				}
+				/* Anchor */
+				if (fye->scalar.anchor) {
+					size_t alen = 0;
+					const char *atext = fy_token_get_text(fye->scalar.anchor, &alen);
+					if (atext) {
+						fprintf(stdout, ",\"anchor\":\"");
+						json_escape(stdout, atext, alen);
+						fprintf(stdout, "\"");
+					} else {
+						fprintf(stdout, ",\"anchor\":null");
+					}
+				} else {
+					fprintf(stdout, ",\"anchor\":null");
+				}
+				/* Tag */
+				if (fye->scalar.tag) {
+					size_t tlen = 0;
+					const char *ttext = fy_token_get_text(fye->scalar.tag, &tlen);
+					if (ttext) {
+						fprintf(stdout, ",\"tag\":\"");
+						json_escape(stdout, ttext, tlen);
+						fprintf(stdout, "\"");
+					} else {
+						fprintf(stdout, ",\"tag\":null");
+					}
+				} else {
+					fprintf(stdout, ",\"tag\":null");
+				}
+				break;
 			}
-			text = tag_buf;
-		} else if (type == FYTT_TAG_DIRECTIVE) {
-			size_t h_len = 0, p_len = 0;
-			const char *handle = fy_tag_directive_token_handle(fyt, &h_len);
-			const char *prefix = fy_tag_directive_token_prefix(fyt, &p_len);
-			text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
-				"%.*s %.*s", (int)h_len, handle ? handle : "",
-				(int)p_len, prefix ? prefix : "");
-			text = tag_buf;
-		} else if (type == FYTT_SCALAR || type == FYTT_ALIAS ||
-		           type == FYTT_ANCHOR || type == FYTT_VERSION_DIRECTIVE) {
-			text = fy_token_get_text(fyt, &text_len);
+			case FYET_ALIAS: {
+				if (fye->alias.anchor) {
+					size_t alen = 0;
+					const char *atext = fy_token_get_text(fye->alias.anchor, &alen);
+					if (atext) {
+						fprintf(stdout, ",\"name\":\"");
+						json_escape(stdout, atext, alen);
+						fprintf(stdout, "\"");
+					} else {
+						fprintf(stdout, ",\"name\":null");
+					}
+				} else {
+					fprintf(stdout, ",\"name\":null");
+				}
+				break;
+			}
+			case FYET_MAPPING_START:
+			case FYET_SEQUENCE_START: {
+				struct fy_token *anchor_tok = (fye->type == FYET_MAPPING_START)
+					? fye->mapping_start.anchor : fye->sequence_start.anchor;
+				struct fy_token *tag_tok = (fye->type == FYET_MAPPING_START)
+					? fye->mapping_start.tag : fye->sequence_start.tag;
+				if (anchor_tok) {
+					size_t alen = 0;
+					const char *atext = fy_token_get_text(anchor_tok, &alen);
+					if (atext) {
+						fprintf(stdout, ",\"anchor\":\"");
+						json_escape(stdout, atext, alen);
+						fprintf(stdout, "\"");
+					} else {
+						fprintf(stdout, ",\"anchor\":null");
+					}
+				} else {
+					fprintf(stdout, ",\"anchor\":null");
+				}
+				if (tag_tok) {
+					size_t tlen = 0;
+					const char *ttext = fy_token_get_text(tag_tok, &tlen);
+					if (ttext) {
+						fprintf(stdout, ",\"tag\":\"");
+						json_escape(stdout, ttext, tlen);
+						fprintf(stdout, "\"");
+					} else {
+						fprintf(stdout, ",\"tag\":null");
+					}
+				} else {
+					fprintf(stdout, ",\"tag\":null");
+				}
+				break;
+			}
+			default:
+				break;
+			}
+
+			fprintf(stdout, "}\n");
+
+			if (fye->type == FYET_STREAM_END)
+				saw_stream_end = 1;
+
+			fy_parser_event_free(fyp, fye);
+		}
+	} else {
+		/* Token mode — use fy_scan() low-level scanner API */
+
+		/* Initialize default document state so the scanner can resolve
+		   shorthand tag handles (! → !, !! → tag:yaml.org,2002:).
+		   Without this, fy_fetch_tag() fails because current_document_state is NULL. */
+		// cref: fy_parser_set_default_document_state(), fy_reset_document_state()
+		rc = fy_parser_set_default_document_state(fyp, NULL);
+		if (rc != 0) {
+			fprintf(stderr, "{\"error\": \"fy_parser_set_default_document_state failed\"}\n");
+			fy_parser_destroy(fyp);
+			free(input);
+			return 1;
 		}
 
-		/* Emit JSON line */
-		fprintf(stdout, "{\"type\":\"%s\",", type_str);
-		if (text) {
-			fprintf(stdout, "\"value\":\"");
-			json_escape(stdout, text, text_len);
-			fprintf(stdout, "\",");
-		} else {
-			fprintf(stdout, "\"value\":null,");
+		/* Iterate tokens using the low-level scanner API */
+		// cref: fy_scan(), fy_scan_token_free()
+		// cref: fy_token_get_type(), fy_token_start_mark(), fy_token_end_mark()
+		// cref: fy_token_get_text()
+		struct fy_token *fyt;
+		while ((fyt = fy_scan(fyp)) != NULL) {
+			enum fy_token_type type = fy_token_get_type(fyt);
+			const char *type_str = token_type_name(type);
+			if (type == FYTT_STREAM_END)
+				saw_stream_end = 1;
+
+			/* Get start/end marks */
+			// cref: struct fy_mark { size_t input_pos; int line; int column; }
+			const struct fy_mark *sm = fy_token_start_mark(fyt);
+			const struct fy_mark *em = fy_token_end_mark(fyt);
+
+			/* Get text content for tokens that carry values.
+			   For TAG tokens, fy_token_get_text() returns the resolved URI
+			   (e.g. "tag:yaml.org,2002:str" for "!!str"). We reconstruct the
+			   raw shorthand form using handle + suffix to match yamalgam's
+			   scanner output. For TAG_DIRECTIVE, we format "handle prefix"
+			   with a space separator. */
+			size_t text_len = 0;
+			const char *text = NULL;
+			char tag_buf[1024];
+			if (type == FYTT_TAG) {
+				size_t h_len = 0, s_len = 0;
+				const char *handle = fy_tag_token_handle(fyt, &h_len);
+				const char *suffix = fy_tag_token_suffix(fyt, &s_len);
+				if (h_len == 0 && s_len > 0) {
+					/* Verbatim tag: !<uri> */
+					text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
+						"!<%.*s>", (int)s_len, suffix);
+				} else {
+					text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
+						"%.*s%.*s", (int)h_len, handle ? handle : "",
+						(int)s_len, suffix ? suffix : "");
+				}
+				text = tag_buf;
+			} else if (type == FYTT_TAG_DIRECTIVE) {
+				size_t h_len = 0, p_len = 0;
+				const char *handle = fy_tag_directive_token_handle(fyt, &h_len);
+				const char *prefix = fy_tag_directive_token_prefix(fyt, &p_len);
+				text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
+					"%.*s %.*s", (int)h_len, handle ? handle : "",
+					(int)p_len, prefix ? prefix : "");
+				text = tag_buf;
+			} else if (type == FYTT_SCALAR || type == FYTT_ALIAS ||
+			           type == FYTT_ANCHOR || type == FYTT_VERSION_DIRECTIVE) {
+				text = fy_token_get_text(fyt, &text_len);
+			}
+
+			/* Emit JSON line */
+			fprintf(stdout, "{\"type\":\"%s\",", type_str);
+			if (text) {
+				fprintf(stdout, "\"value\":\"");
+				json_escape(stdout, text, text_len);
+				fprintf(stdout, "\",");
+			} else {
+				fprintf(stdout, "\"value\":null,");
+			}
+
+			if (sm) {
+				fprintf(stdout,
+					"\"line\":%d,\"column\":%d,\"offset\":%zu,",
+					sm->line, sm->column, sm->input_pos);
+			} else {
+				fprintf(stdout,
+					"\"line\":null,\"column\":null,\"offset\":null,");
+			}
+
+			if (em) {
+				fprintf(stdout,
+					"\"end_line\":%d,\"end_column\":%d,\"end_offset\":%zu",
+					em->line, em->column, em->input_pos);
+			} else {
+				fprintf(stdout,
+					"\"end_line\":null,\"end_column\":null,\"end_offset\":null");
+			}
+
+			fprintf(stdout, "}\n");
+
+			fy_scan_token_free(fyp, fyt);
 		}
-
-		if (sm) {
-			fprintf(stdout,
-				"\"line\":%d,\"column\":%d,\"offset\":%zu,",
-				sm->line, sm->column, sm->input_pos);
-		} else {
-			fprintf(stdout,
-				"\"line\":null,\"column\":null,\"offset\":null,");
-		}
-
-		if (em) {
-			fprintf(stdout,
-				"\"end_line\":%d,\"end_column\":%d,\"end_offset\":%zu",
-				em->line, em->column, em->input_pos);
-		} else {
-			fprintf(stdout,
-				"\"end_line\":null,\"end_column\":null,\"end_offset\":null");
-		}
-
-		fprintf(stdout, "}\n");
-
-		fy_scan_token_free(fyp, fyt);
 	}
 
-	/* fy_scan() returns NULL on both end-of-input and error.
+	/* fy_scan()/fy_parser_parse() returns NULL on both end-of-input and error.
 	   If we never saw STREAM_END, something went wrong. */
 	if (!saw_stream_end) {
 		fprintf(stderr, "{\"error\":\"scan terminated without STREAM_END\"}\n");

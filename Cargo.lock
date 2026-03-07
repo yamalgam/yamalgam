@@ -1566,6 +1566,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "yamalgam-core",
+ "yamalgam-parser",
  "yamalgam-scanner",
 ]
 
