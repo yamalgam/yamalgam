@@ -1,8 +1,10 @@
 //! YAML pull parser — consumes tokens, emits events.
 
+use std::borrow::Cow;
+
 use yamalgam_core::Span;
 use yamalgam_scanner::scanner::{ScanError, Scanner};
-use yamalgam_scanner::{Token, TokenKind};
+use yamalgam_scanner::{ScalarStyle, Token, TokenKind};
 
 use crate::error::ParseError;
 use crate::event::Event;
@@ -69,7 +71,6 @@ pub struct Parser<'input> {
     /// Current parser state.
     state: ParserState,
     /// Stack of saved states for nested structures.
-    #[allow(dead_code)] // Used once document/collection parsing lands.
     state_stack: Vec<ParserState>,
     /// One-token lookahead buffer.
     peeked: Option<Token<'input>>,
@@ -119,16 +120,25 @@ impl<'input> Parser<'input> {
 
     /// Push a state onto the state stack.
     // cref: fy-parse.c:5673-5686 (fy_parse_state_push)
-    #[allow(dead_code)] // Used once document/collection parsing lands.
     fn push_state(&mut self, state: ParserState) {
         self.state_stack.push(state);
     }
 
     /// Pop a state from the state stack, defaulting to `End`.
     // cref: fy-parse.c:5688-5702 (fy_parse_state_pop)
-    #[allow(dead_code)] // Used once document/collection parsing lands.
     fn pop_state(&mut self) -> ParserState {
         self.state_stack.pop().unwrap_or(ParserState::End)
+    }
+
+    /// Create an empty plain scalar event at the given span.
+    const fn emit_empty_scalar(span: Span) -> Event<'input> {
+        Event::Scalar {
+            anchor: None,
+            tag: None,
+            value: Cow::Borrowed(""),
+            style: ScalarStyle::Plain,
+            span,
+        }
     }
 
     /// Core dispatch: produce the next event based on the current state.
@@ -140,6 +150,11 @@ impl<'input> Parser<'input> {
 
         match self.state {
             ParserState::StreamStart => self.parse_stream_start(),
+            ParserState::ImplicitDocumentStart => self.parse_implicit_document_start(),
+            ParserState::DocumentStart => self.parse_document_start(),
+            ParserState::DocumentContent => self.parse_document_content(),
+            ParserState::DocumentEnd => self.parse_document_end(),
+            ParserState::BlockNode => self.parse_block_node(),
             ParserState::End => {
                 self.done = true;
                 Ok(None)
@@ -167,6 +182,200 @@ impl<'input> Parser<'input> {
                 expected: "StreamStart",
                 span: Span::default(),
             }),
+        }
+    }
+
+    /// Handle `ImplicitDocumentStart` state: process directives or begin a
+    /// document (implicitly or explicitly).
+    // cref: fy-parse.c:6156-6340
+    fn parse_implicit_document_start(&mut self) -> Result<Option<Event<'input>>, ParseError> {
+        let token = self.peek_token()?;
+        match token {
+            Some(t) if t.kind == TokenKind::VersionDirective => {
+                // Consume the directive token, emit as event, stay in same state.
+                let t = self.next_token()?.expect("peeked");
+                let (major, minor) = Self::parse_version_string(&t.atom.data, t.atom.span)?;
+                Ok(Some(Event::VersionDirective {
+                    major,
+                    minor,
+                    span: t.atom.span,
+                }))
+            }
+            Some(t) if t.kind == TokenKind::TagDirective => {
+                // Consume the directive token, emit as event, stay in same state.
+                let t = self.next_token()?.expect("peeked");
+                let (handle, prefix) = Self::parse_tag_directive_data(&t.atom.data);
+                Ok(Some(Event::TagDirective {
+                    handle: Cow::Owned(handle.to_string()),
+                    prefix: Cow::Owned(prefix.to_string()),
+                    span: t.atom.span,
+                }))
+            }
+            Some(t) if t.kind == TokenKind::DocumentStart => {
+                // Explicit `---` — transition to DocumentStart state.
+                self.state = ParserState::DocumentStart;
+                self.parse_document_start()
+            }
+            Some(t) if t.kind == TokenKind::StreamEnd => {
+                // Empty stream (no documents). Consume and emit StreamEnd.
+                let _t = self.next_token()?;
+                self.state = ParserState::End;
+                Ok(Some(Event::StreamEnd))
+            }
+            Some(t) => {
+                // Content token — this is an implicit document start.
+                // Don't consume the token; let BlockNode handle it.
+                let span = t.atom.span;
+                self.push_state(ParserState::DocumentEnd);
+                self.state = ParserState::BlockNode;
+                Ok(Some(Event::DocumentStart {
+                    implicit: true,
+                    span,
+                }))
+            }
+            None => Err(ParseError::UnexpectedEof {
+                expected: "document start or stream end",
+                span: Span::default(),
+            }),
+        }
+    }
+
+    /// Handle `DocumentStart` state: consume the `---` token and emit
+    /// an explicit `DocumentStart` event.
+    // cref: fy-parse.c:6262-6340
+    fn parse_document_start(&mut self) -> Result<Option<Event<'input>>, ParseError> {
+        let token = self.next_token()?;
+        match token {
+            Some(t) if t.kind == TokenKind::DocumentStart => {
+                self.push_state(ParserState::DocumentEnd);
+                self.state = ParserState::DocumentContent;
+                Ok(Some(Event::DocumentStart {
+                    implicit: false,
+                    span: t.atom.span,
+                }))
+            }
+            Some(t) => Err(ParseError::UnexpectedToken {
+                expected: "DocumentStart (---)",
+                got: t.kind,
+                span: t.atom.span,
+            }),
+            None => Err(ParseError::UnexpectedEof {
+                expected: "DocumentStart (---)",
+                span: Span::default(),
+            }),
+        }
+    }
+
+    /// Handle `DocumentContent` state: check if the document has content
+    /// or is empty.
+    // cref: fy-parse.c:6429-6455
+    fn parse_document_content(&mut self) -> Result<Option<Event<'input>>, ParseError> {
+        let token = self.peek_token()?;
+        match token {
+            Some(t)
+                if t.kind == TokenKind::DocumentEnd
+                    || t.kind == TokenKind::DocumentStart
+                    || t.kind == TokenKind::StreamEnd =>
+            {
+                // Empty document — emit empty scalar, pop to DocumentEnd.
+                let span = t.atom.span;
+                self.state = self.pop_state();
+                Ok(Some(Self::emit_empty_scalar(span)))
+            }
+            Some(_) => {
+                // Content-bearing token — transition to BlockNode.
+                self.state = ParserState::BlockNode;
+                self.parse_next()
+            }
+            None => Err(ParseError::UnexpectedEof {
+                expected: "document content or document end",
+                span: Span::default(),
+            }),
+        }
+    }
+
+    /// Handle `DocumentEnd` state: emit an implicit or explicit document
+    /// end event, then transition back to `ImplicitDocumentStart`.
+    // cref: fy-parse.c:6342-6428
+    fn parse_document_end(&mut self) -> Result<Option<Event<'input>>, ParseError> {
+        let token = self.peek_token()?;
+        match token {
+            Some(t) if t.kind == TokenKind::DocumentEnd => {
+                // Explicit `...` — consume and emit.
+                let t = self.next_token()?.expect("peeked");
+                self.state = ParserState::ImplicitDocumentStart;
+                Ok(Some(Event::DocumentEnd {
+                    implicit: false,
+                    span: t.atom.span,
+                }))
+            }
+            Some(t) => {
+                // Implicit document end — don't consume the token.
+                let span = t.atom.span;
+                self.state = ParserState::ImplicitDocumentStart;
+                Ok(Some(Event::DocumentEnd {
+                    implicit: true,
+                    span,
+                }))
+            }
+            None => Err(ParseError::UnexpectedEof {
+                expected: "document end or next document",
+                span: Span::default(),
+            }),
+        }
+    }
+
+    /// Handle `BlockNode` state (temporary): only handles scalars for now.
+    /// Will be expanded in later tasks to handle all block-level nodes.
+    fn parse_block_node(&mut self) -> Result<Option<Event<'input>>, ParseError> {
+        let token = self.peek_token()?;
+        match token {
+            Some(t) if t.kind == TokenKind::Scalar => {
+                let t = self.next_token()?.expect("peeked");
+                self.state = self.pop_state();
+                Ok(Some(Event::Scalar {
+                    anchor: None,
+                    tag: None,
+                    value: t.atom.data,
+                    style: t.atom.style,
+                    span: t.atom.span,
+                }))
+            }
+            _ => self.parse_catchall(),
+        }
+    }
+
+    /// Parse a `%YAML` version string like `"1.2"` into `(major, minor)`.
+    fn parse_version_string(data: &str, span: Span) -> Result<(u8, u8), ParseError> {
+        let parts: Vec<&str> = data.split('.').collect();
+        if parts.len() != 2 {
+            return Err(ParseError::UnexpectedToken {
+                expected: "version string (e.g. 1.2)",
+                got: TokenKind::VersionDirective,
+                span,
+            });
+        }
+        let major = parts[0].parse::<u8>().map_err(|_| ParseError::UnexpectedToken {
+            expected: "numeric major version",
+            got: TokenKind::VersionDirective,
+            span,
+        })?;
+        let minor = parts[1].parse::<u8>().map_err(|_| ParseError::UnexpectedToken {
+            expected: "numeric minor version",
+            got: TokenKind::VersionDirective,
+            span,
+        })?;
+        Ok((major, minor))
+    }
+
+    /// Split a `%TAG` directive's atom data into `(handle, prefix)`.
+    ///
+    /// The scanner emits e.g. `"!e! tag:example.com,2000:"` — split on
+    /// the first space.
+    fn parse_tag_directive_data(data: &str) -> (&str, &str) {
+        match data.split_once(' ') {
+            Some((handle, prefix)) => (handle, prefix),
+            None => (data, ""),
         }
     }
 
