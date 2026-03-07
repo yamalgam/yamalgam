@@ -109,6 +109,12 @@ impl<'input> Reader<'input> {
         &self.input[start_offset..end_offset]
     }
 
+    /// Returns the total byte length of the underlying input.
+    #[must_use]
+    pub const fn input_len(&self) -> usize {
+        self.input.len()
+    }
+
     /// Returns `true` if the reader has reached the end of input.
     #[must_use]
     pub const fn is_eof(&self) -> bool {

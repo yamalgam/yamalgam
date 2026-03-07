@@ -732,3 +732,74 @@ fn quoted_in_flow_sequence() {
     assert_eq!(tokens[2].1, "a");
     assert_eq!(tokens[4].1, "b");
 }
+
+// === Block scalars ===
+
+#[test]
+fn literal_block_scalar() {
+    let tokens = scan("text: |\n  line1\n  line2\n");
+    // Find the second scalar (the block scalar value).
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[0].1, "text");
+    assert_eq!(scalars[1].1, "line1\nline2\n");
+}
+
+#[test]
+fn folded_block_scalar() {
+    let tokens = scan("text: >\n  line1\n  line2\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[1].1, "line1 line2\n");
+}
+
+#[test]
+fn literal_strip_chomp() {
+    let tokens = scan("text: |-\n  line1\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[1].1, "line1");
+}
+
+#[test]
+fn literal_keep_chomp() {
+    let tokens = scan("text: |+\n  line1\n\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[1].1, "line1\n\n");
+}
+
+#[test]
+fn block_scalar_produces_correct_token_sequence() {
+    assert_eq!(
+        kinds("key: |\n  hello\n"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::BlockMappingStart,
+            TokenKind::Key,
+            TokenKind::Scalar,
+            TokenKind::Value,
+            TokenKind::Scalar,
+            TokenKind::BlockEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn literal_with_explicit_indent() {
+    let tokens = scan("text: |2\n  ab\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[1].1, "ab\n");
+}
+
+#[test]
+fn block_scalar_empty_lines_preserved() {
+    let tokens = scan("text: |\n  a\n\n  b\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[1].1, "a\n\nb\n");
+}
+
+#[test]
+fn folded_more_indented_preserves_newlines() {
+    // In folded scalars, more-indented lines preserve newlines.
+    let tokens = scan("text: >\n  a\n    b\n  c\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[1].1, "a\n  b\nc\n");
+}
