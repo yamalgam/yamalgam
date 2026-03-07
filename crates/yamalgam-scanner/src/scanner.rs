@@ -46,6 +46,28 @@ impl std::fmt::Display for ScanError {
 
 impl std::error::Error for ScanError {}
 
+/// A potential simple key saved on the simple key stack.
+///
+/// When the scanner encounters a scalar, anchor, alias, or tag, it might
+/// be a mapping key — but we can't know until we see `:`. This struct
+/// records where the potential key started so we can insert
+/// `BlockMappingStart` + `Key` retroactively when `:` is found.
+// cref: fy_simple_key (fy-parse.h:73)
+#[derive(Debug, Clone)]
+struct SimpleKey {
+    /// Position where the potential key token starts.
+    mark: yamalgam_core::Mark,
+    /// Monotonic ID of the token in the queue (for locating it later).
+    token_id: u64,
+    /// Flow nesting level when this key was saved.
+    flow_level: u32,
+    /// If true, this key MUST be resolved (error if purged).
+    /// Set when we're at the current block indent level.
+    /// Used later for error reporting on invalid YAML.
+    #[allow(dead_code)]
+    required: bool,
+}
+
 /// YAML token scanner.
 ///
 /// Wraps a [`Reader`] over decoded UTF-8 input and yields [`Token`]s via the
@@ -66,13 +88,26 @@ pub struct Scanner<'input> {
     indent_stack: Vec<i32>,
     /// Queued tokens waiting to be yielded (e.g., BlockSequenceStart before BlockEntry).
     queue: VecDeque<Token<'input>>,
-    /// Buffered anchor/tag tokens that might precede a simple key.
-    ///
-    /// When the scanner encounters `&anchor` or `!tag` before a scalar, it
-    /// can't know yet whether the scalar is a mapping key. These tokens are
-    /// held here until the next scalar resolves the ambiguity: if it's a key,
-    /// `BlockMappingStart` + `Key` are inserted before these prefix tokens.
-    pending_prefix: Vec<Token<'input>>,
+    /// Stack of potential simple keys (one per flow level).
+    // cref: fy_simple_key list in fy_parser
+    simple_keys: Vec<SimpleKey>,
+    /// Whether a simple key is allowed at the current position.
+    // cref: fy_parser.simple_key_allowed
+    simple_key_allowed: bool,
+    /// Column of a pending explicit key (`?`), or -1 if none.
+    /// When `:` is found at or before this column, it's the value
+    /// for the explicit key — don't emit another `Key`.
+    // cref: fy_parser.pending_complex_key_column
+    pending_complex_key_column: i32,
+    /// Reader offset where `:` would be "adjacent" to a JSON-like
+    /// construct (quoted scalar / flow collection end). Only valid at
+    /// exactly this offset — any whitespace consumed invalidates it.
+    // cref: fy_parse.c — flow_scalar adjacent value handling
+    adjacent_value_offset: Option<usize>,
+    /// Monotonic counter — each token pushed to the queue gets a unique ID.
+    next_token_id: u64,
+    /// Number of tokens consumed (popped) from the queue.
+    tokens_consumed: u64,
 }
 
 impl<'input> Scanner<'input> {
@@ -86,7 +121,12 @@ impl<'input> Scanner<'input> {
             indent: -1,
             indent_stack: Vec::new(),
             queue: VecDeque::new(),
-            pending_prefix: Vec::new(),
+            simple_keys: Vec::new(),
+            simple_key_allowed: true,
+            pending_complex_key_column: -1,
+            adjacent_value_offset: None,
+            next_token_id: 0,
+            tokens_consumed: 0,
         }
     }
 
@@ -169,6 +209,8 @@ impl<'input> Scanner<'input> {
     // -- Whitespace/comment skipping --
 
     /// Skip whitespace, comments, and newlines between tokens.
+    ///
+    /// In block context, crossing a newline re-enables simple keys.
     // cref: fy_scan_to_next_token (fy-parse.c:1260)
     fn scan_to_next_token(&mut self) {
         loop {
@@ -192,6 +234,11 @@ impl<'input> Scanner<'input> {
             match self.reader.peek() {
                 Some('\n' | '\r') => {
                     self.reader.advance();
+                    // In block context, a newline allows a new simple key.
+                    // cref: fy_scan_to_next_token (fy-parse.c:1312)
+                    if self.flow_level == 0 {
+                        self.simple_key_allowed = true;
+                    }
                 }
                 _ => break,
             }
@@ -217,7 +264,7 @@ impl<'input> Scanner<'input> {
         } else {
             TokenKind::BlockSequenceStart
         };
-        self.queue.push_back(Self::marker_token(kind, mark, mark));
+        self.enqueue(Self::marker_token(kind, mark, mark));
     }
 
     /// Emit `BlockEnd` tokens for each indent level deeper than `column`.
@@ -228,9 +275,95 @@ impl<'input> Scanner<'input> {
         }
         while self.indent > column {
             let mark = self.reader.mark();
-            self.queue
-                .push_back(Self::marker_token(TokenKind::BlockEnd, mark, mark));
+            self.enqueue(Self::marker_token(TokenKind::BlockEnd, mark, mark));
             self.indent = self.indent_stack.pop().unwrap_or(-1);
+        }
+    }
+
+    // -- Simple key management --
+
+    /// Push a token to the queue and return its monotonic ID.
+    fn enqueue(&mut self, token: Token<'input>) -> u64 {
+        let id = self.next_token_id;
+        self.next_token_id += 1;
+        self.queue.push_back(token);
+        id
+    }
+
+    /// Save a potential simple key at the current position.
+    ///
+    /// Called after pushing a token that might turn out to be a mapping key
+    /// (scalars, anchors, aliases, tags). The token's queue ID is recorded
+    /// so we can insert `Key` (and possibly `BlockMappingStart`) before it
+    /// when `:` is encountered later.
+    // cref: fy_save_simple_key (fy-parse.c:1698)
+    fn save_simple_key(&mut self, token_id: u64, mark: yamalgam_core::Mark) {
+        if !self.simple_key_allowed {
+            return;
+        }
+
+        self.purge_stale_simple_keys();
+
+        // A key is "required" if we're in block context at the current indent.
+        let required = self.flow_level == 0 && self.indent == mark.column as i32;
+
+        let sk = SimpleKey {
+            mark,
+            token_id,
+            flow_level: self.flow_level,
+            required,
+        };
+
+        // Replace any existing simple key at the same flow level.
+        if let Some(existing) = self
+            .simple_keys
+            .last()
+            .filter(|s| s.flow_level == self.flow_level)
+        {
+            // If the existing key was required and we're replacing it, that's
+            // fine — the new key supersedes it at the same position.
+            let _ = existing;
+            self.simple_keys.pop();
+        }
+
+        self.simple_keys.push(sk);
+    }
+
+    /// Remove stale simple keys that can no longer be valid.
+    ///
+    /// In block context, a simple key is stale if we've moved past its line.
+    /// In flow context, a simple key is stale if we've exited its flow level.
+    // cref: fy_purge_stale_simple_keys (fy-parse.c:1470)
+    fn purge_stale_simple_keys(&mut self) {
+        let current_line = self.reader.mark().line;
+        self.simple_keys.retain(|sk| {
+            if self.flow_level == 0 {
+                // Block context: keys must be on the same line.
+                current_line <= sk.mark.line
+            } else {
+                // Flow context: keys must be at <= current flow level.
+                sk.flow_level <= self.flow_level
+            }
+        });
+    }
+
+    /// Remove all simple keys at or above the current flow level.
+    // cref: fy_remove_simple_key (fy-parse.c:1652)
+    fn remove_simple_key(&mut self) {
+        self.simple_keys
+            .retain(|sk| sk.flow_level < self.flow_level);
+    }
+
+    /// Find the VecDeque index for a token with the given monotonic ID.
+    fn queue_position(&self, token_id: u64) -> Option<usize> {
+        if token_id < self.tokens_consumed {
+            return None; // Already consumed.
+        }
+        let pos = (token_id - self.tokens_consumed) as usize;
+        if pos < self.queue.len() {
+            Some(pos)
+        } else {
+            None
         }
     }
 
@@ -356,7 +489,10 @@ impl<'input> Scanner<'input> {
 
     /// Consume `[` or `{` and emit a flow collection start token.
     // cref: fy_fetch_flow_collection_mark_start (fy-parse.c:2432)
-    fn fetch_flow_collection_start(&mut self, c: char) -> Token<'input> {
+    fn fetch_flow_collection_start(&mut self, c: char) {
+        // A flow collection can be a simple key (e.g., `[a, b]: value`).
+        let start_mark = self.reader.mark();
+        self.remove_simple_key();
         let kind = if c == '[' {
             TokenKind::FlowSequenceStart
         } else {
@@ -366,12 +502,16 @@ impl<'input> Scanner<'input> {
         self.reader.advance();
         let end = self.reader.mark();
         self.flow_level += 1;
-        Self::marker_token(kind, start, end)
+        let token = Self::marker_token(kind, start, end);
+        let id = self.enqueue(token);
+        self.save_simple_key(id, start_mark);
+        self.simple_key_allowed = true;
     }
 
     /// Consume `]` or `}` and emit a flow collection end token.
     // cref: fy_fetch_flow_collection_mark_end (fy-parse.c:2518)
-    fn fetch_flow_collection_end(&mut self, c: char) -> Token<'input> {
+    fn fetch_flow_collection_end(&mut self, c: char) {
+        self.remove_simple_key();
         let kind = if c == ']' {
             TokenKind::FlowSequenceEnd
         } else {
@@ -381,16 +521,19 @@ impl<'input> Scanner<'input> {
         self.reader.advance();
         let end = self.reader.mark();
         self.flow_level = self.flow_level.saturating_sub(1);
-        Self::marker_token(kind, start, end)
+        self.enqueue(Self::marker_token(kind, start, end));
+        self.simple_key_allowed = false;
     }
 
     /// Consume `,` and emit a flow entry token.
     // cref: fy_parse_handle_comma (fy-parse.c:1174)
-    fn fetch_flow_entry(&mut self) -> Token<'input> {
+    fn fetch_flow_entry(&mut self) {
+        self.remove_simple_key();
         let start = self.reader.mark();
         self.reader.advance();
         let end = self.reader.mark();
-        Self::marker_token(TokenKind::FlowEntry, start, end)
+        self.enqueue(Self::marker_token(TokenKind::FlowEntry, start, end));
+        self.simple_key_allowed = true;
     }
 
     // -- Block indicators --
@@ -398,35 +541,93 @@ impl<'input> Scanner<'input> {
     /// Fetch a block entry (`- `). May push `BlockSequenceStart` into the queue first.
     // cref: fy_fetch_block_entry (fy-parse.c:2703)
     fn fetch_block_entry(&mut self) {
+        self.remove_simple_key();
         let col = self.reader.mark().column as i32;
         self.roll_indent(col, false);
         let start = self.reader.mark();
         self.reader.advance(); // skip '-'
         let end = self.reader.mark();
-        self.queue
-            .push_back(Self::marker_token(TokenKind::BlockEntry, start, end));
+        self.enqueue(Self::marker_token(TokenKind::BlockEntry, start, end));
+        self.simple_key_allowed = true;
     }
 
     /// Fetch an explicit key (`? `). May push `BlockMappingStart` into the queue first.
     // cref: fy_fetch_key (fy-parse.c:2818)
     fn fetch_key(&mut self) {
+        self.remove_simple_key();
         let col = self.reader.mark().column as i32;
         self.roll_indent(col, true);
         let start = self.reader.mark();
         self.reader.advance(); // skip '?'
         let end = self.reader.mark();
-        self.queue
-            .push_back(Self::marker_token(TokenKind::Key, start, end));
+        self.enqueue(Self::marker_token(TokenKind::Key, start, end));
+        self.simple_key_allowed = true;
+        self.pending_complex_key_column = col;
     }
 
     /// Fetch a value indicator (`: `).
+    ///
+    /// Checks the simple key stack: if a pending simple key exists at the
+    /// current flow level, inserts `BlockMappingStart` (if needed) + `Key`
+    /// before the key token. If no simple key exists, this is an empty key
+    /// (`: value`) — emit `BlockMappingStart` + `Key` at the current position.
     // cref: fy_fetch_value (fy-parse.c:2931)
     fn fetch_value(&mut self) {
+        self.purge_stale_simple_keys();
+
+        // Pop the simple key at the current flow level (if any).
+        let sk = self
+            .simple_keys
+            .last()
+            .filter(|s| s.flow_level == self.flow_level)
+            .cloned();
+        if sk.is_some() {
+            self.simple_keys.pop();
+        }
+
+        if let Some(sk) = sk {
+            // We have a pending simple key — insert Key (and BlockMappingStart)
+            // before the key token in the queue.
+            if let Some(pos) = self.queue_position(sk.token_id) {
+                // In block context, push BlockMappingStart if indent warrants.
+                if self.flow_level == 0 && sk.mark.column as i32 > self.indent {
+                    let bms = Self::marker_token(TokenKind::BlockMappingStart, sk.mark, sk.mark);
+                    self.queue.insert(pos, bms);
+                    self.next_token_id += 1;
+                    self.indent_stack.push(self.indent);
+                    self.indent = sk.mark.column as i32;
+                    // Key goes after BlockMappingStart, before the key token.
+                    let key = Self::marker_token(TokenKind::Key, sk.mark, sk.mark);
+                    self.queue.insert(pos + 1, key);
+                } else {
+                    let key = Self::marker_token(TokenKind::Key, sk.mark, sk.mark);
+                    self.queue.insert(pos, key);
+                }
+                self.next_token_id += 1;
+            }
+            self.simple_key_allowed = false;
+        } else {
+            // No simple key. Check if this is the value for an explicit
+            // key (`? key\n: value`) or a bare empty key (`: value`).
+            let mark = self.reader.mark();
+            let col = mark.column as i32;
+            let is_explicit_key_value =
+                self.pending_complex_key_column >= 0 && col <= self.pending_complex_key_column;
+            if is_explicit_key_value {
+                // Explicit key already emitted Key — just emit Value.
+                self.pending_complex_key_column = -1;
+            } else if self.flow_level == 0 {
+                // Bare empty key — emit BlockMappingStart + Key.
+                self.roll_indent(col, true);
+                self.enqueue(Self::marker_token(TokenKind::Key, mark, mark));
+            }
+            self.simple_key_allowed = self.flow_level == 0;
+        }
+
         let start = self.reader.mark();
         self.reader.advance(); // skip ':'
         let end = self.reader.mark();
-        self.queue
-            .push_back(Self::marker_token(TokenKind::Value, start, end));
+        self.enqueue(Self::marker_token(TokenKind::Value, start, end));
     }
 
     // -- Plain scalars --
@@ -592,14 +793,15 @@ impl<'input> Scanner<'input> {
         }
     }
 
-    /// Fetch a plain scalar token, resolving simple keys eagerly.
+    /// Fetch a plain scalar token.
     ///
-    /// After scanning the scalar text, checks if `:` + blank follows.
-    /// If so, this scalar is a mapping key — inserts `BlockMappingStart`
-    /// (if indent warrants) and `Key` before the scalar, then advances
-    /// past `:` and pushes `Value`.
+    /// Scans the scalar text and saves a simple key mark so that if `:`
+    /// follows later, `fetch_value` can retroactively insert `Key` and
+    /// `BlockMappingStart`.
     // cref: fy_fetch_plain_scalar (fy-parse.c:5151)
     fn fetch_plain_scalar(&mut self) {
+        // Don't remove pending simple keys — a preceding tag/anchor's
+        // simple key should remain if this scalar is part of the same key.
         let start_mark = self.reader.mark();
         let text = self.scan_plain_scalar_text();
         let end_mark = self.reader.mark();
@@ -607,46 +809,16 @@ impl<'input> Scanner<'input> {
         if text.is_empty() {
             // Nothing scanned (e.g., hit a terminator immediately).
             // Skip the character to avoid infinite loop.
-            self.flush_pending_prefix();
             self.reader.advance();
             return;
         }
 
-        // Simple key resolution: if `:` follows in a key-compatible position.
-        // Block context: `:` must be followed by blank/EOF.
-        // Flow context: `:` followed by blank, EOF, or flow indicator.
-        // cref: fy_fetch_value (fy-parse.c:5426-5441)
-        let is_key = self.reader.peek() == Some(':')
-            && (is_blank_or_end(self.reader.peek_at(1))
-                || (self.flow_level > 0
-                    && matches!(self.reader.peek_at(1), Some(',' | '[' | ']' | '{' | '}'))));
-
-        if is_key {
-            // Use the position of the first pending prefix token (anchor/tag)
-            // as the key start, so BlockMappingStart uses the correct column.
-            let key_mark = self
-                .pending_prefix
-                .first()
-                .map_or(start_mark, |t| t.atom.span.start);
-            let col = key_mark.column as i32;
-            self.roll_indent(col, true); // may push BlockMappingStart
-            self.queue
-                .push_back(Self::marker_token(TokenKind::Key, key_mark, key_mark));
-        }
-
-        // Flush pending anchor/tag tokens before the scalar.
-        self.flush_pending_prefix();
-
         let scalar = Self::scalar_token(text, ScalarStyle::Plain, start_mark, end_mark);
-        self.queue.push_back(scalar);
-
-        if is_key {
-            let v_start = self.reader.mark();
-            self.reader.advance(); // skip ':'
-            let v_end = self.reader.mark();
-            self.queue
-                .push_back(Self::marker_token(TokenKind::Value, v_start, v_end));
-        }
+        let id = self.enqueue(scalar);
+        self.save_simple_key(id, start_mark);
+        // Multi-line plain scalars consume newlines internally. In block
+        // context, crossing a line allows the NEXT token to be a simple key.
+        self.simple_key_allowed = self.flow_level == 0 && end_mark.line > start_mark.line;
     }
 
     // -- Tags --
@@ -654,6 +826,8 @@ impl<'input> Scanner<'input> {
     /// Fetch a tag token (`!`, `!!suffix`, `!handle!suffix`, `!<uri>`).
     ///
     /// The full tag text (including `!` prefix) is stored as the token value.
+    /// A simple key mark is saved so the tag can be retroactively identified
+    /// as part of a mapping key when `:` follows.
     // cref: fy_fetch_tag (fy-parse.c:3342)
     fn fetch_tag(&mut self) {
         let start_mark = self.reader.mark();
@@ -699,17 +873,20 @@ impl<'input> Scanner<'input> {
         let end_mark = self.reader.mark();
         let tag_text = self.reader.slice(start_mark.offset, end_mark.offset);
         let token = Self::data_token(TokenKind::Tag, tag_text, start_mark, end_mark);
-        self.queue.push_back(token);
+        let id = self.enqueue(token);
+        self.save_simple_key(id, start_mark);
+        self.simple_key_allowed = false;
     }
 
     // -- Anchors and aliases --
 
     /// Fetch an anchor (`&name`) or alias (`*name`).
     ///
-    /// Reads the indicator and the following name. The name extends
-    /// until whitespace, a flow indicator, or EOF.
+    /// Reads the indicator and the following name. Saves a simple key mark
+    /// so that anchors and aliases can serve as mapping keys.
     // cref: fy_fetch_anchor_or_alias (fy-parse.c:5443-5454)
     fn fetch_anchor_or_alias(&mut self, indicator: char) {
+        let start_mark = self.reader.mark();
         let kind = if indicator == '&' {
             TokenKind::Anchor
         } else {
@@ -728,7 +905,9 @@ impl<'input> Scanner<'input> {
         let name_end = self.reader.mark();
         let name = self.reader.slice(name_start.offset, name_end.offset);
         let token = Self::data_token(kind, name, name_start, name_end);
-        self.queue.push_back(token);
+        let id = self.enqueue(token);
+        self.save_simple_key(id, start_mark);
+        self.simple_key_allowed = false;
     }
 
     // -- Block scalars --
@@ -877,7 +1056,10 @@ impl<'input> Scanner<'input> {
             ScalarStyle::Folded
         };
         let scalar = Self::scalar_token(Cow::Owned(content), style, start_mark, end_mark);
-        self.queue.push_back(scalar);
+        self.enqueue(scalar);
+        // Block scalars always end at a line boundary, so the next token
+        // on the new line can be a simple key.
+        self.simple_key_allowed = self.flow_level == 0;
     }
 
     /// Detect block scalar content indentation by peeking ahead
@@ -1184,7 +1366,7 @@ impl<'input> Scanner<'input> {
         char::from_u32(code)
     }
 
-    /// Push a quoted scalar to the queue with simple key resolution.
+    /// Push a quoted scalar to the queue and save a simple key mark.
     fn push_quoted_scalar(
         &mut self,
         data: Cow<'input, str>,
@@ -1192,36 +1374,15 @@ impl<'input> Scanner<'input> {
         start_mark: yamalgam_core::Mark,
         end_mark: yamalgam_core::Mark,
     ) {
-        // Simple key resolution: if `:` follows, this may be a key.
-        // In block context, `:` must be followed by blank/EOF.
-        // In flow context, `:` alone suffices after a quoted scalar (JSON compat).
-        // cref: fy_fetch_value (fy-parse.c:5426-5441)
-        let is_key = self.reader.peek() == Some(':')
-            && (self.flow_level > 0 || is_blank_or_end(self.reader.peek_at(1)));
-
-        if is_key {
-            let key_mark = self
-                .pending_prefix
-                .first()
-                .map_or(start_mark, |t| t.atom.span.start);
-            let col = key_mark.column as i32;
-            self.roll_indent(col, true);
-            self.queue
-                .push_back(Self::marker_token(TokenKind::Key, key_mark, key_mark));
-        }
-
-        // Flush pending anchor/tag tokens before the scalar.
-        self.flush_pending_prefix();
-
         let scalar = Self::scalar_token(data, style, start_mark, end_mark);
-        self.queue.push_back(scalar);
-
-        if is_key {
-            let v_start = self.reader.mark();
-            self.reader.advance(); // skip ':'
-            let v_end = self.reader.mark();
-            self.queue
-                .push_back(Self::marker_token(TokenKind::Value, v_start, v_end));
+        let id = self.enqueue(scalar);
+        self.save_simple_key(id, start_mark);
+        // Multi-line quoted scalars consume newlines internally.
+        self.simple_key_allowed = self.flow_level == 0 && end_mark.line > start_mark.line;
+        // In flow context, `:` immediately after a quoted scalar is a
+        // value indicator (JSON-compatible adjacent values).
+        if self.flow_level > 0 {
+            self.adjacent_value_offset = Some(self.reader.mark().offset);
         }
     }
 
@@ -1233,16 +1394,6 @@ impl<'input> Scanner<'input> {
             .chars()
             .enumerate()
             .all(|(i, expected)| self.reader.peek_at(i) == Some(expected))
-    }
-
-    /// Move pending anchor/tag tokens to the main queue.
-    ///
-    /// Called when we determine the pending tokens are NOT part of a
-    /// simple key (e.g., followed by a non-scalar, newline, etc.).
-    fn flush_pending_prefix(&mut self) {
-        for token in self.pending_prefix.drain(..) {
-            self.queue.push_back(token);
-        }
     }
 
     /// Skip whitespace characters (space and tab).
@@ -1265,6 +1416,19 @@ impl<'input> Scanner<'input> {
 
     // -- Main fetch loop --
 
+    /// Returns true if we need to fetch more tokens before yielding.
+    ///
+    /// When there are pending simple keys, we can't yield any tokens because
+    /// the next token might be `:`, requiring retroactive insertion of
+    /// `Key` + `BlockMappingStart` before the simple key token.
+    // cref: fy_scan_token_needs_more (fy-parse.c)
+    fn needs_more_tokens(&self) -> bool {
+        if self.queue.is_empty() {
+            return true;
+        }
+        !self.simple_keys.is_empty()
+    }
+
     /// Fetch the next token from the stream.
     ///
     /// Skips whitespace/comments, manages indent levels, then checks for
@@ -1273,18 +1437,23 @@ impl<'input> Scanner<'input> {
     // cref: fy_fetch_tokens (fy-parse.c:5250)
     fn fetch_next_token(&mut self) -> Option<Result<Token<'input>, ScanError>> {
         loop {
-            // Drain queued tokens first.
-            if let Some(token) = self.queue.pop_front() {
+            // Yield from queue only when all simple keys are resolved.
+            if !self.needs_more_tokens()
+                && let Some(token) = self.queue.pop_front()
+            {
+                self.tokens_consumed += 1;
                 return Some(Ok(token));
             }
 
             self.scan_to_next_token();
+            self.purge_stale_simple_keys();
 
             if self.reader.is_eof() {
-                self.flush_pending_prefix();
+                // All pending simple keys are unreachable at EOF.
+                self.simple_keys.clear();
                 self.unroll_indent(-1);
                 let end = self.fetch_stream_end();
-                self.queue.push_back(end);
+                self.enqueue(end);
                 continue;
             }
 
@@ -1292,46 +1461,35 @@ impl<'input> Scanner<'input> {
             let col = self.reader.mark().column;
 
             // In block mode, unroll indent to current column.
+            // BlockEnd tokens are enqueued and will be yielded naturally
+            // once all simple keys are resolved.
             if self.flow_level == 0 {
                 self.unroll_indent(col as i32);
-                if !self.queue.is_empty() {
-                    continue;
-                }
-            }
-
-            // Flush pending anchor/tag tokens if they can't be part of a
-            // simple key: either we've crossed a newline or the next character
-            // is structural (not a scalar-starting character or another tag/anchor).
-            if !self.pending_prefix.is_empty() {
-                let prefix_line = self.pending_prefix[0].atom.span.start.line;
-                let current_line = self.reader.mark().line;
-                let is_structural = matches!(c, '[' | ']' | '{' | '}' | ',' | ':' | '%' | '#')
-                    || (c == '-' && is_blank_or_end(self.reader.peek_at(1)))
-                    || (c == '?' && is_blank_or_end(self.reader.peek_at(1)));
-
-                if current_line != prefix_line || is_structural {
-                    self.flush_pending_prefix();
-                }
             }
 
             // Document indicators at column 0 (unroll fully first).
             if col == 0 {
                 if self.is_document_start() {
+                    self.remove_simple_key();
                     self.unroll_indent(-1);
                     let token = self.fetch_document_indicator(TokenKind::DocumentStart);
-                    self.queue.push_back(token);
+                    self.enqueue(token);
+                    self.simple_key_allowed = true;
                     continue;
                 }
                 if self.is_document_end() {
+                    self.remove_simple_key();
                     self.unroll_indent(-1);
                     let token = self.fetch_document_indicator(TokenKind::DocumentEnd);
-                    self.queue.push_back(token);
+                    self.enqueue(token);
+                    self.simple_key_allowed = true;
                     continue;
                 }
                 if c == '%' {
                     match self.fetch_directive() {
                         Ok(token) => {
-                            self.queue.push_back(token);
+                            self.enqueue(token);
+                            self.simple_key_allowed = true;
                             continue;
                         }
                         Err(e) => {
@@ -1349,18 +1507,15 @@ impl<'input> Scanner<'input> {
             // Flow collection indicators.
             // cref: fy_fetch_tokens (fy-parse.c:5364-5394)
             if c == '[' || c == '{' {
-                let token = self.fetch_flow_collection_start(c);
-                self.queue.push_back(token);
+                self.fetch_flow_collection_start(c);
                 continue;
             }
             if c == ']' || c == '}' {
-                let token = self.fetch_flow_collection_end(c);
-                self.queue.push_back(token);
+                self.fetch_flow_collection_end(c);
                 continue;
             }
             if c == ',' {
-                let token = self.fetch_flow_entry();
-                self.queue.push_back(token);
+                self.fetch_flow_entry();
                 continue;
             }
 
@@ -1378,8 +1533,20 @@ impl<'input> Scanner<'input> {
             }
 
             // Value indicator `:` — in both block and flow context.
+            // In block context: `:` must be followed by blank/EOF.
+            // In flow context: `:` before a flow indicator doesn't need
+            // a trailing blank. After a quoted scalar or flow collection
+            // end, `:` is a value indicator regardless (JSON compat).
             // cref: fy_fetch_tokens (fy-parse.c:5426)
-            if c == ':' && is_blank_or_end(self.reader.peek_at(1)) {
+            if c == ':'
+                && (is_blank_or_end(self.reader.peek_at(1))
+                    || (self.flow_level > 0
+                        && (matches!(self.reader.peek_at(1), Some(',' | '[' | ']' | '{' | '}'))
+                            || self
+                                .adjacent_value_offset
+                                .is_some_and(|off| off == self.reader.mark().offset))))
+            {
+                self.adjacent_value_offset = None;
                 self.fetch_value();
                 continue;
             }
@@ -1388,10 +1555,6 @@ impl<'input> Scanner<'input> {
             // cref: fy_fetch_tokens (fy-parse.c:5457)
             if c == '!' {
                 self.fetch_tag();
-                // Buffer tag as potential simple key prefix.
-                if let Some(tag_token) = self.queue.pop_back() {
-                    self.pending_prefix.push(tag_token);
-                }
                 continue;
             }
 
@@ -1399,12 +1562,6 @@ impl<'input> Scanner<'input> {
             // cref: fy_fetch_tokens (fy-parse.c:5443)
             if c == '&' || c == '*' {
                 self.fetch_anchor_or_alias(c);
-                // Buffer anchors (not aliases) as potential simple key prefix.
-                if c == '&'
-                    && let Some(anchor_token) = self.queue.pop_back()
-                {
-                    self.pending_prefix.push(anchor_token);
-                }
                 continue;
             }
 
@@ -1424,8 +1581,7 @@ impl<'input> Scanner<'input> {
                 continue;
             }
 
-            // Everything else is a plain scalar (or content we don't
-            // handle yet, like anchors, tags, block scalars).
+            // Everything else is a plain scalar.
             // cref: fy_fetch_plain_scalar (fy-parse.c:5496)
             self.fetch_plain_scalar();
         }
@@ -1509,6 +1665,7 @@ impl<'input> Iterator for Scanner<'input> {
     fn next(&mut self) -> Option<Self::Item> {
         // Drain queued tokens first.
         if let Some(token) = self.queue.pop_front() {
+            self.tokens_consumed += 1;
             return Some(Ok(token));
         }
         match self.state {
