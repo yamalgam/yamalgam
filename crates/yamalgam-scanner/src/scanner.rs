@@ -496,6 +496,35 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    // -- Anchors and aliases --
+
+    /// Fetch an anchor (`&name`) or alias (`*name`).
+    ///
+    /// Reads the indicator and the following name. The name extends
+    /// until whitespace, a flow indicator, or EOF.
+    // cref: fy_fetch_anchor_or_alias (fy-parse.c:5443-5454)
+    fn fetch_anchor_or_alias(&mut self, indicator: char) {
+        let kind = if indicator == '&' {
+            TokenKind::Anchor
+        } else {
+            TokenKind::Alias
+        };
+        self.reader.advance(); // skip & or *
+        let name_start = self.reader.mark();
+
+        while let Some(c) = self.reader.peek() {
+            if c.is_ascii_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}' | ':') {
+                break;
+            }
+            self.reader.advance();
+        }
+
+        let name_end = self.reader.mark();
+        let name = self.reader.slice(name_start.offset, name_end.offset);
+        let token = Self::data_token(kind, name, name_start, name_end);
+        self.queue.push_back(token);
+    }
+
     // -- Block scalars --
 
     /// Fetch a literal (`|`) or folded (`>`) block scalar.
@@ -1014,6 +1043,13 @@ impl<'input> Scanner<'input> {
                     self.fetch_value();
                     continue;
                 }
+            }
+
+            // Anchors and aliases.
+            // cref: fy_fetch_tokens (fy-parse.c:5443)
+            if c == '&' || c == '*' {
+                self.fetch_anchor_or_alias(c);
+                continue;
             }
 
             // Block scalars (not in flow context).

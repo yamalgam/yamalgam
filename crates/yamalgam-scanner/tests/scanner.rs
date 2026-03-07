@@ -803,3 +803,82 @@ fn folded_more_indented_preserves_newlines() {
     let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
     assert_eq!(scalars[1].1, "a\n  b\nc\n");
 }
+
+// === Anchors and aliases ===
+
+#[test]
+fn anchor_on_value() {
+    let tokens = scan("a: &anchor value\n");
+    let anchor = tokens.iter().find(|t| t.0 == TokenKind::Anchor).unwrap();
+    assert_eq!(anchor.1, "anchor");
+}
+
+#[test]
+fn alias_reference() {
+    let tokens = scan("a: *anchor\n");
+    let alias = tokens.iter().find(|t| t.0 == TokenKind::Alias).unwrap();
+    assert_eq!(alias.1, "anchor");
+}
+
+#[test]
+fn anchor_and_alias_token_sequence() {
+    assert_eq!(
+        kinds("a: &x val\nb: *x\n"),
+        vec![
+            TokenKind::StreamStart,
+            TokenKind::BlockMappingStart,
+            TokenKind::Key,
+            TokenKind::Scalar,
+            TokenKind::Value,
+            TokenKind::Anchor,
+            TokenKind::Scalar,
+            TokenKind::Key,
+            TokenKind::Scalar,
+            TokenKind::Value,
+            TokenKind::Alias,
+            TokenKind::BlockEnd,
+            TokenKind::StreamEnd,
+        ]
+    );
+}
+
+#[test]
+fn anchor_in_sequence() {
+    let tokens = scan("- &a hello\n- *a\n");
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.0 == TokenKind::Anchor && t.1 == "a")
+    );
+    assert!(tokens.iter().any(|t| t.0 == TokenKind::Alias && t.1 == "a"));
+}
+
+#[test]
+fn anchor_as_key() {
+    // &anchor on a key node — anchor is emitted, then the scalar
+    // triggers simple key resolution. BlockMappingStart + Key appear
+    // before the scalar (not before the anchor) with eager resolution.
+    let tokens = scan("&a key: value\n");
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.0 == TokenKind::Anchor && t.1 == "a")
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.0 == TokenKind::Scalar && t.1 == "key")
+    );
+    assert!(tokens.iter().any(|t| t.0 == TokenKind::Key));
+}
+
+#[test]
+fn anchor_in_flow() {
+    let tokens = scan("[&a 1, *a]\n");
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.0 == TokenKind::Anchor && t.1 == "a")
+    );
+    assert!(tokens.iter().any(|t| t.0 == TokenKind::Alias && t.1 == "a"));
+}
