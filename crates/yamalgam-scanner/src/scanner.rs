@@ -496,6 +496,59 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    // -- Tags --
+
+    /// Fetch a tag token (`!`, `!!suffix`, `!handle!suffix`, `!<uri>`).
+    ///
+    /// The full tag text (including `!` prefix) is stored as the token value.
+    // cref: fy_fetch_tag (fy-parse.c:3342)
+    fn fetch_tag(&mut self) {
+        let start_mark = self.reader.mark();
+        self.reader.advance(); // skip first '!'
+
+        match self.reader.peek() {
+            // Verbatim tag: !<uri>
+            Some('<') => {
+                self.reader.advance(); // skip '<'
+                while let Some(c) = self.reader.peek() {
+                    if c == '>' {
+                        self.reader.advance();
+                        break;
+                    }
+                    self.reader.advance();
+                }
+            }
+            // Secondary handle !! or named handle !name!
+            Some('!') => {
+                self.reader.advance(); // skip second '!'
+                // Read suffix: continues until whitespace/flow indicator
+                while let Some(c) = self.reader.peek() {
+                    if c.is_ascii_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}') {
+                        break;
+                    }
+                    self.reader.advance();
+                }
+            }
+            // Primary handle !suffix or non-specific !
+            Some(c) if !c.is_ascii_whitespace() && !matches!(c, ',' | '[' | ']' | '{' | '}') => {
+                // Could be !suffix or !name!suffix
+                while let Some(c) = self.reader.peek() {
+                    if c.is_ascii_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}') {
+                        break;
+                    }
+                    self.reader.advance();
+                }
+            }
+            // Bare ! (non-specific tag) followed by whitespace/EOF
+            _ => {}
+        }
+
+        let end_mark = self.reader.mark();
+        let tag_text = self.reader.slice(start_mark.offset, end_mark.offset);
+        let token = Self::data_token(TokenKind::Tag, tag_text, start_mark, end_mark);
+        self.queue.push_back(token);
+    }
+
     // -- Anchors and aliases --
 
     /// Fetch an anchor (`&name`) or alias (`*name`).
@@ -1043,6 +1096,13 @@ impl<'input> Scanner<'input> {
                     self.fetch_value();
                     continue;
                 }
+            }
+
+            // Tags.
+            // cref: fy_fetch_tokens (fy-parse.c:5457)
+            if c == '!' {
+                self.fetch_tag();
+                continue;
             }
 
             // Anchors and aliases.

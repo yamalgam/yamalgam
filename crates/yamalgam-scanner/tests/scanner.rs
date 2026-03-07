@@ -882,3 +882,63 @@ fn anchor_in_flow() {
     );
     assert!(tokens.iter().any(|t| t.0 == TokenKind::Alias && t.1 == "a"));
 }
+
+// === Tags ===
+
+#[test]
+fn secondary_tag() {
+    let tokens = scan("!!str hello\n");
+    let tag = tokens.iter().find(|t| t.0 == TokenKind::Tag).unwrap();
+    assert_eq!(tag.1, "!!str");
+}
+
+#[test]
+fn primary_tag() {
+    let tokens = scan("!local hello\n");
+    let tag = tokens.iter().find(|t| t.0 == TokenKind::Tag).unwrap();
+    assert_eq!(tag.1, "!local");
+}
+
+#[test]
+fn non_specific_tag() {
+    let tokens = scan("! hello\n");
+    let tag = tokens.iter().find(|t| t.0 == TokenKind::Tag).unwrap();
+    assert_eq!(tag.1, "!");
+}
+
+#[test]
+fn verbatim_tag() {
+    let tokens = scan("!<tag:yaml.org,2002:str> hello\n");
+    let tag = tokens.iter().find(|t| t.0 == TokenKind::Tag).unwrap();
+    assert_eq!(tag.1, "!<tag:yaml.org,2002:str>");
+}
+
+#[test]
+fn named_tag_handle() {
+    let tokens = scan("!e!suffix hello\n");
+    let tag = tokens.iter().find(|t| t.0 == TokenKind::Tag).unwrap();
+    assert_eq!(tag.1, "!e!suffix");
+}
+
+#[test]
+fn tag_on_mapping_value() {
+    let tokens = scan("key: !!str value\n");
+    let k: Vec<_> = tokens.iter().map(|t| t.0).collect();
+    assert!(k.contains(&TokenKind::Tag));
+    assert!(k.contains(&TokenKind::Scalar));
+}
+
+#[test]
+fn tag_in_sequence() {
+    let tokens = scan("- !!int 42\n");
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.0 == TokenKind::Tag && t.1 == "!!int")
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.0 == TokenKind::Scalar && t.1 == "42")
+    );
+}
