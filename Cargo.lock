@@ -1588,6 +1588,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yamalgam-parser"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "thiserror",
+ "yamalgam-core",
+ "yamalgam-scanner",
+]
+
+[[package]]
 name = "yamalgam-scanner"
 version = "0.1.0"
 dependencies = [
