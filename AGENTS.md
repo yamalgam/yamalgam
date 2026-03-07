@@ -2,13 +2,16 @@
 
 ## Workspace Layout
 
-This is a Cargo workspace. All crates live under `crates/`:
+This is a Cargo workspace. All crates live under `crates/` (plus `xtask/`):
 
 | Crate | Purpose |
 |-------|---------|
-| `yamalgam` | CLI binary |
+| `yamalgam` | CLI binary (thin shell) |
 | `yamalgam-core` | Shared library (config, types, logic) |
-| `xtask` | Dev automation (completions, man pages) |
+| `yamalgam-scanner` | YAML scanner — port of libfyaml's tokenizer |
+| `yamalgam-compare` | Comparison harness — runs C and Rust scanners side-by-side |
+| `yamalgam-mcp` | MCP server binary |
+| `xtask` | Dev automation (completions, man pages, benchmarks) |
 
 Configuration files live in `config/` with `.toml.example` and `.yaml.example` templates.
 ## Commands
@@ -46,6 +49,44 @@ just upgrade        # update deps in Cargo.toml and Cargo.lock
 3. Wire it up in `match cli.command` in `main.rs`
 4. Add integration tests in `crates/yamalgam/tests/`
 
+
+## Scanner Testing
+
+The scanner is tested at three levels:
+
+### 1. Unit tests (fast, run first)
+```
+cargo nextest run -p yamalgam-scanner
+```
+126+ scanner unit tests in `crates/yamalgam-scanner/tests/scanner.rs`. Run these after any scanner change — they catch regressions fast.
+
+### 2. YAML Test Suite compliance (slower, needs C harness)
+```
+cargo nextest run -p yamalgam-compare --test compliance --success-output=immediate 2>&1 | grep -oE "^    (PASS|UNEXPECTED|MISMATCH|EXPECTED)" | sort | uniq -c | sort -rn
+```
+Runs 351 YAML Test Suite cases through **both** the C scanner (`tools/fyaml-tokenize/fyaml-tokenize`) and our Rust scanner, then compares token streams. The C harness must be built first:
+```
+cd tools/fyaml-tokenize && make clean && make && cd ../..
+```
+
+**Result categories:**
+| Category | Meaning |
+|----------|---------|
+| `PASS` | Both scanners agree (tokens match, or both error) |
+| `UNEXPECTED` | Rust succeeds but C errors — our scanner is too permissive |
+| `EXPECTED` | C succeeds but Rust errors — our scanner is stricter (check if `fail: true`) |
+| `MISMATCH` | Both succeed but produce different tokens |
+
+To check a specific test case: `cargo nextest run -p yamalgam-compare --test compliance -E 'test(TEST_ID)' --success-output=immediate`
+
+To see what a test expects: `cat vendor/yaml-test-suite/TEST_ID.yaml`
+
+To see what C produces: `printf 'yaml input' | ./tools/fyaml-tokenize/fyaml-tokenize`
+
+### 3. Full check (before pushing)
+```
+just check    # fmt + clippy + deny + nextest + doc-test
+```
 
 ## Do Not
 
