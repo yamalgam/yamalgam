@@ -266,10 +266,12 @@ impl<'input> Scanner<'input> {
         } else if self.check_prefix("TAG") && is_blank(self.reader.peek_at(3)) {
             self.fetch_tag_directive()
         } else {
+            // YAML 1.2 §6.8.1: unknown directives should be ignored.
+            // cref: fy_fetch_directive — libfyaml skips unknown directives with a warning
             self.skip_to_next_line();
-            Err(ScanError {
+            return Err(ScanError {
                 message: "unknown directive".to_string(),
-            })
+            });
         }
     }
 
@@ -1077,7 +1079,14 @@ impl<'input> Scanner<'input> {
                             self.queue.push_back(token);
                             continue;
                         }
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => {
+                            // YAML 1.2 §6.8.1: unknown directives are ignored.
+                            // cref: fy_fetch_directive — libfyaml skips with a warning
+                            if e.message == "unknown directive" {
+                                continue;
+                            }
+                            return Some(Err(e));
+                        }
                     }
                 }
             }
