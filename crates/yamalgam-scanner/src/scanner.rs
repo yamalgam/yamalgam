@@ -119,6 +119,14 @@ pub struct Scanner<'input> {
     /// Deferred error from a void fetch method (e.g., invalid escape).
     /// Checked and drained by the dispatch loop.
     error: Option<ScanError>,
+    /// Line of the most recent context token (Value, Anchor, Tag).
+    /// Used to reject block entries on the same line as a preceding
+    /// context token (e.g., `key: - a`, `&anchor - entry`).
+    last_block_token_line: Option<u32>,
+    /// Block indent at the point where flow context was entered.
+    /// Used to reject flow content at or below the block indent.
+    /// -1 when no flow context is active or flow started at doc level.
+    flow_indent: i32,
 }
 
 impl<'input> Scanner<'input> {
@@ -137,6 +145,8 @@ impl<'input> Scanner<'input> {
             pending_complex_key_column: -1,
             error: None,
             adjacent_value_offset: None,
+            last_block_token_line: None,
+            flow_indent: -1,
             next_token_id: 0,
             tokens_consumed: 0,
         }
@@ -254,6 +264,21 @@ impl<'input> Scanner<'input> {
             #[allow(unused_assignments)]
             {
                 at_line_start = false;
+            }
+
+            // In flow context within a block structure, content lines must
+            // be indented past the block indent where flow was entered.
+            // e.g., `flow: [a,\nb]` — `b` at column 0 <= indent 0 → error.
+            // cref: fy_scan_to_next_token (fy-parse.c)
+            if self.flow_level > 0
+                && self.flow_indent >= 0
+                && !matches!(self.reader.peek(), Some('\n' | '\r') | None)
+                && (self.reader.mark().column as i32) <= self.flow_indent
+            {
+                self.error = Some(ScanError {
+                    message: "flow content indented at or below block indent".to_string(),
+                });
+                return;
             }
 
             // `#` starts a comment only when preceded by whitespace or at
@@ -592,6 +617,10 @@ impl<'input> Scanner<'input> {
         let token = Self::marker_token(kind, start, end);
         let id = self.enqueue(token);
         self.save_simple_key_ext(id, start_mark, true);
+        if self.flow_level == 0 {
+            // Track the block indent when entering flow context.
+            self.flow_indent = self.indent;
+        }
         self.flow_level += 1;
         self.simple_key_allowed = true;
     }
@@ -662,8 +691,18 @@ impl<'input> Scanner<'input> {
     /// Fetch a block entry (`- `). May push `BlockSequenceStart` into the queue first.
     // cref: fy_fetch_block_entry (fy-parse.c:2703)
     fn fetch_block_entry(&mut self) {
+        // A block entry that would create a new indent level cannot appear
+        // on the same line as a preceding value indicator (e.g., `key: - a`).
+        // cref: fy_fetch_block_entry (fy-parse.c:2703)
+        let mark = self.reader.mark();
+        let col = mark.column as i32;
+        if col > self.indent && self.last_block_token_line.is_some_and(|vl| vl == mark.line) {
+            self.error = Some(ScanError {
+                message: "block sequence entries not allowed in this context".to_string(),
+            });
+            return;
+        }
         self.remove_simple_key();
-        let col = self.reader.mark().column as i32;
         self.roll_indent(col, false);
         let start = self.reader.mark();
         self.reader.advance(); // skip '-'
@@ -790,6 +829,11 @@ impl<'input> Scanner<'input> {
         self.reader.advance(); // skip ':'
         let end = self.reader.mark();
         self.enqueue(Self::marker_token(TokenKind::Value, start, end));
+        // Track last value line for block entry validation, but NOT for
+        // explicit key values (? key : - seq) where block entries are valid.
+        if !is_explicit_key_value && self.flow_level == 0 {
+            self.last_block_token_line = Some(start.line);
+        }
     }
 
     // -- Plain scalars --
@@ -1154,6 +1198,9 @@ impl<'input> Scanner<'input> {
         let id = self.enqueue(token);
         self.save_simple_key(id, start_mark);
         self.simple_key_allowed = false;
+        if self.flow_level == 0 {
+            self.last_block_token_line = Some(start_mark.line);
+        }
     }
 
     // -- Block scalars --
