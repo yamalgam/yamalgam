@@ -769,8 +769,19 @@ impl<'input> Scanner<'input> {
         self.skip_to_next_line();
 
         // Determine content indentation.
-        let content_indent =
-            explicit_indent.unwrap_or_else(|| self.detect_block_indent_lookahead());
+        // cref: fy-parse.c:3653 — current_indent = fyp->indent >= 0 ? fyp->indent : 0
+        // Explicit indent indicator is relative to the current indent level
+        // (YAML 1.2 §8.1.1.2). Auto-detect uses the first non-empty content line
+        // but must respect the minimum indent (current + 1).
+        let current_indent = self.indent.max(0) as usize;
+        let content_indent = match explicit_indent {
+            Some(ei) => current_indent + ei,
+            None => {
+                let detected = self.detect_block_indent_lookahead();
+                let min_indent = (self.indent + 1).max(0) as usize;
+                detected.max(min_indent)
+            }
+        };
 
         // Read content lines using lookahead to avoid consuming non-content lines.
         let mut content = String::new();
@@ -788,15 +799,18 @@ impl<'input> Scanner<'input> {
             }
 
             match self.reader.peek_at(spaces) {
-                // Empty/blank line.
-                Some('\n' | '\r') => {
+                // Blank line: only spaces then newline.
+                // If spaces exceed content_indent, the extra spaces are content
+                // (e.g., trailing whitespace on an otherwise blank line).
+                // Treat those as content lines, not trailing empties.
+                Some('\n' | '\r') if spaces <= content_indent => {
                     trailing_empty += 1;
                     self.reader.advance_by(spaces);
                     self.reader.advance(); // consume newline
                 }
                 // EOF after spaces only.
-                None => break,
-                // Content line.
+                None if spaces <= content_indent => break,
+                // Content line (or blank line with significant trailing spaces).
                 _ => {
                     if spaces < content_indent {
                         // Under-indented → end of block (don't consume).
@@ -868,6 +882,8 @@ impl<'input> Scanner<'input> {
 
     /// Detect block scalar content indentation by peeking ahead
     /// to the first non-empty line.
+    /// Returns the raw number of leading spaces on the first non-empty line.
+    /// The caller is responsible for applying a minimum indent floor.
     fn detect_block_indent_lookahead(&self) -> usize {
         let mut pos = 0;
         loop {
@@ -877,7 +893,7 @@ impl<'input> Scanner<'input> {
                 pos += 1;
             }
             match self.reader.peek_at(pos) {
-                None => return spaces.max(1),
+                None => return spaces,
                 Some('\n') => {
                     pos += 1;
                 }
@@ -887,7 +903,7 @@ impl<'input> Scanner<'input> {
                         pos += 1;
                     }
                 }
-                _ => return spaces.max(1),
+                _ => return spaces,
             }
         }
     }
@@ -922,8 +938,12 @@ impl<'input> Scanner<'input> {
                 }
                 // Newline inside single-quoted scalar: fold per YAML 1.2 §6.5.
                 // Single newline → space. Empty lines → literal newlines.
+                // Trailing whitespace on the current line is excluded (§6.5).
                 Some('\n' | '\r') => {
                     needs_owned = true;
+                    while result.ends_with(' ') || result.ends_with('\t') {
+                        result.pop();
+                    }
                     self.reader.advance();
                     let mut empty_lines = 0u32;
                     loop {
@@ -1100,8 +1120,12 @@ impl<'input> Scanner<'input> {
                 // Single newline between content → space.
                 // Empty lines (newline-only) → literal newline.
                 // Leading whitespace on continuation is trimmed.
+                // Trailing whitespace on the current line is excluded (§6.5).
                 Some('\n' | '\r') => {
                     needs_owned = true;
+                    while result.ends_with(' ') || result.ends_with('\t') {
+                        result.pop();
+                    }
                     self.reader.advance(); // consume newline
                     // Count empty lines.
                     let mut empty_lines = 0u32;
@@ -1423,8 +1447,15 @@ const fn is_linebreak(c: char) -> bool {
     c == '\n' || c == '\r'
 }
 
-/// Fold a block scalar: replace single newlines between same-indent
-/// lines with spaces, preserving newlines around more-indented or empty lines.
+/// Fold a block scalar per YAML 1.2 §6.5 (Line Folding) and §8.2.1.
+///
+/// Separator rules between consecutive lines:
+/// - Empty/MI prev → anything: preserve `\n` (these breaks are always kept)
+/// - Content prev → empty cur: check lookahead —
+///   if next non-empty line is more-indented, preserve `\n` (§8.2.1);
+///   otherwise trim/discard (§6.5: "the first line break is discarded")
+/// - Content prev → MI cur: preserve `\n` (folding doesn't apply around MI)
+/// - Content prev → content cur: fold to space
 // cref: fy_atom_format_text_block (fy-atom.c) — folded mode
 fn fold_block_scalar(content: &str) -> String {
     let lines: Vec<&str> = content.split('\n').collect();
@@ -1440,11 +1471,26 @@ fn fold_block_scalar(content: &str) -> String {
         let line = lines[i];
         if i > 0 {
             let prev = lines[i - 1];
-            // Preserve newline if either line is empty or more-indented.
-            if prev.is_empty() || line.is_empty() || prev.starts_with(' ') || line.starts_with(' ')
-            {
+            if prev.is_empty() || prev.starts_with(' ') {
+                // Empty/MI line's break is always preserved.
+                result.push('\n');
+            } else if line.is_empty() {
+                // Content → empty: trim unless next non-empty is more-indented.
+                // §6.5: "the first line break is discarded and the rest are retained."
+                // §8.2.1: "folding does not apply to line breaks surrounding [MI] lines."
+                let next_is_mi = lines[i + 1..line_count]
+                    .iter()
+                    .find(|l| !l.is_empty())
+                    .is_some_and(|l| l.starts_with(' '));
+                if next_is_mi {
+                    result.push('\n');
+                }
+                // else: trim (discard content's line break)
+            } else if line.starts_with(' ') {
+                // Content → more-indented: preserve.
                 result.push('\n');
             } else {
+                // Content → content: fold to space.
                 result.push(' ');
             }
         }

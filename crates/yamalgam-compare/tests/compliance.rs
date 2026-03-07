@@ -71,7 +71,20 @@ fn extract_yaml_input(content: &str) -> Option<String> {
         return None;
     }
 
-    Some(yaml_lines.join("\n"))
+    let mut result = yaml_lines.join("\n");
+
+    // The YAML Test Suite uses visual markers for significant whitespace:
+    // - ␣ (U+2423, OPEN BOX) → space (trailing/significant whitespace)
+    // - » (U+00BB, RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK) → tab
+    // Convert to actual characters before feeding to scanners.
+    if result.contains('\u{2423}') {
+        result = result.replace('\u{2423}', " ");
+    }
+    if result.contains('\u{00BB}') {
+        result = result.replace('\u{00BB}', "\t");
+    }
+
+    Some(result)
 }
 
 fn compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
