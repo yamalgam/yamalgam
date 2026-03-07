@@ -164,7 +164,9 @@ impl<'input> Parser<'input> {
             ParserState::BlockMappingValue => self.parse_block_mapping_value(),
             ParserState::FlowSequenceFirstEntry => self.parse_flow_sequence_first_entry(),
             ParserState::FlowSequenceEntry => self.parse_flow_sequence_entry(),
-            ParserState::FlowSequenceEntryMappingKey => self.parse_flow_sequence_entry_mapping_key(),
+            ParserState::FlowSequenceEntryMappingKey => {
+                self.parse_flow_sequence_entry_mapping_key()
+            }
             ParserState::FlowSequenceEntryMappingValue => {
                 self.parse_flow_sequence_entry_mapping_value()
             }
@@ -453,21 +455,32 @@ impl<'input> Parser<'input> {
                 // cref: fy-parse.c:5781-5812
                 let span = self.peek_token()?.expect("peeked").atom.span;
                 let return_state = self.state_stack.last().copied();
-                if anchor.is_some()
-                    || tag.is_some()
-                    || matches!(
-                        return_state,
-                        Some(ParserState::BlockMappingValue)
-                            | Some(ParserState::BlockMappingKey)
-                            | Some(ParserState::BlockMappingFirstKey)
-                    )
-                {
+                let in_mapping_context = matches!(
+                    return_state,
+                    Some(ParserState::BlockMappingValue)
+                        | Some(ParserState::BlockMappingKey)
+                        | Some(ParserState::BlockMappingFirstKey)
+                );
+                if in_mapping_context {
                     // Don't consume the BlockEntry — let IndentlessSequenceEntry handle it.
                     self.state = ParserState::IndentlessSequenceEntry;
                     Ok(Some(Event::SequenceStart {
                         anchor,
                         tag,
                         style: CollectionStyle::Block,
+                        span,
+                    }))
+                } else if anchor.is_some() || tag.is_some() {
+                    // cref: tag/anchor on empty scalar in block sequence —
+                    // `- !!str\n- a` → the tag belongs to an empty scalar, the
+                    // BlockEntry is the NEXT sequence entry.
+                    let span = anchor_span.unwrap_or_default();
+                    self.state = self.pop_state();
+                    Ok(Some(Event::Scalar {
+                        anchor,
+                        tag,
+                        value: Cow::Borrowed(""),
+                        style: ScalarStyle::Plain,
                         span,
                     }))
                 } else {
@@ -601,16 +614,20 @@ impl<'input> Parser<'input> {
                 span,
             });
         }
-        let major = parts[0].parse::<u8>().map_err(|_| ParseError::UnexpectedToken {
-            expected: "numeric major version",
-            got: TokenKind::VersionDirective,
-            span,
-        })?;
-        let minor = parts[1].parse::<u8>().map_err(|_| ParseError::UnexpectedToken {
-            expected: "numeric minor version",
-            got: TokenKind::VersionDirective,
-            span,
-        })?;
+        let major = parts[0]
+            .parse::<u8>()
+            .map_err(|_| ParseError::UnexpectedToken {
+                expected: "numeric major version",
+                got: TokenKind::VersionDirective,
+                span,
+            })?;
+        let minor = parts[1]
+            .parse::<u8>()
+            .map_err(|_| ParseError::UnexpectedToken {
+                expected: "numeric minor version",
+                got: TokenKind::VersionDirective,
+                span,
+            })?;
         Ok((major, minor))
     }
 
@@ -648,9 +665,7 @@ impl<'input> Parser<'input> {
                 // Peek at what follows the key indicator.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
-                    Some(TokenKind::Key)
-                    | Some(TokenKind::Value)
-                    | Some(TokenKind::BlockEnd) => {
+                    Some(TokenKind::Key) | Some(TokenKind::Value) | Some(TokenKind::BlockEnd) => {
                         // Empty key — emit empty scalar, transition to value.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::BlockMappingValue;
@@ -700,9 +715,7 @@ impl<'input> Parser<'input> {
                 // Peek at what follows the value indicator.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
-                    Some(TokenKind::Key)
-                    | Some(TokenKind::Value)
-                    | Some(TokenKind::BlockEnd) => {
+                    Some(TokenKind::Key) | Some(TokenKind::Value) | Some(TokenKind::BlockEnd) => {
                         // Empty value — emit empty scalar, transition to next key.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::BlockMappingKey;
@@ -718,7 +731,11 @@ impl<'input> Parser<'input> {
             }
             _ => {
                 // No value indicator — implicit empty value.
-                let span = self.peek_token().ok().flatten().map_or_else(Span::default, |t| t.atom.span);
+                let span = self
+                    .peek_token()
+                    .ok()
+                    .flatten()
+                    .map_or_else(Span::default, |t| t.atom.span);
                 self.state = ParserState::BlockMappingKey;
                 Ok(Some(Self::emit_empty_scalar(span)))
             }
@@ -755,7 +772,11 @@ impl<'input> Parser<'input> {
             }
             _ => {
                 // No more BlockEntry tokens — sequence is done.
-                let span = self.peek_token().ok().flatten().map_or_else(Span::default, |t| t.atom.span);
+                let span = self
+                    .peek_token()
+                    .ok()
+                    .flatten()
+                    .map_or_else(Span::default, |t| t.atom.span);
                 self.state = self.pop_state();
                 Ok(Some(Event::SequenceEnd { span }))
             }
@@ -785,12 +806,13 @@ impl<'input> Parser<'input> {
             Some(TokenKind::FlowEntry) => {
                 let _t = self.next_token()?.expect("peeked");
                 // After comma, check what follows.
+                // cref: trailing comma — YAML allows `[a, b, ]` with no
+                // trailing entry.  Consume `]` directly.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 if next_kind == Some(TokenKind::FlowSequenceEnd) {
-                    // Trailing comma — emit empty scalar as the trailing entry,
-                    // stay in FlowSequenceEntry so the next call hits `]`.
-                    let span = self.peek_token()?.expect("peeked").atom.span;
-                    return Ok(Some(Self::emit_empty_scalar(span)));
+                    let t = self.next_token()?.expect("peeked");
+                    self.state = self.pop_state();
+                    return Ok(Some(Event::SequenceEnd { span: t.atom.span }));
                 }
                 self.parse_flow_sequence_entry_content()
             }
@@ -817,9 +839,7 @@ impl<'input> Parser<'input> {
     /// Parse the content of a flow sequence entry (after `[` or `,`).
     ///
     /// Handles implicit mappings (`Key` token) and plain entries.
-    fn parse_flow_sequence_entry_content(
-        &mut self,
-    ) -> Result<Option<Event<'input>>, ParseError> {
+    fn parse_flow_sequence_entry_content(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Key) => {
@@ -956,13 +976,14 @@ impl<'input> Parser<'input> {
             Some(TokenKind::FlowEntry) => {
                 let _t = self.next_token()?.expect("peeked");
                 // After comma, check what follows.
+                // cref: trailing comma — YAML allows `{a: b, }` with no
+                // trailing entry.  Consume `}` directly.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::FlowMappingEnd) => {
-                        // Trailing comma — empty key+value pair.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
-                        self.state = ParserState::FlowMappingValue;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        let t = self.next_token()?.expect("peeked");
+                        self.state = self.pop_state();
+                        Ok(Some(Event::MappingEnd { span: t.atom.span }))
                     }
                     _ => self.parse_flow_mapping_key_content(),
                 }
@@ -988,9 +1009,7 @@ impl<'input> Parser<'input> {
     }
 
     /// Parse the key content of a flow mapping entry (after `{` or `,`).
-    fn parse_flow_mapping_key_content(
-        &mut self,
-    ) -> Result<Option<Event<'input>>, ParseError> {
+    fn parse_flow_mapping_key_content(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Key) => {

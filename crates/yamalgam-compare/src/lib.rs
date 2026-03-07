@@ -21,10 +21,11 @@ pub mod event_snapshot;
 pub mod harness;
 pub mod snapshot;
 
-pub use compare::{CompareEventResult, CompareResult, compare_event_streams, compare_token_streams};
+pub use compare::{
+    CompareEventResult, CompareResult, compare_event_streams, compare_token_streams,
+};
 pub use event_snapshot::EventSnapshot;
 pub use harness::{
-    compare_events, compare_input, run_c_events, run_c_tokenizer, run_rust_parser,
-    run_rust_scanner,
+    compare_events, compare_input, run_c_events, run_c_tokenizer, run_rust_parser, run_rust_scanner,
 };
 pub use snapshot::{SpanSnapshot, TokenSnapshot};
