@@ -451,6 +451,15 @@ impl<'input> Scanner<'input> {
             match self.reader.peek() {
                 None | Some('\n' | '\r') => break,
                 Some(':') if is_blank_or_end(self.reader.peek_at(1)) => break,
+                // In flow context, `:` followed by a flow indicator is also
+                // a value indicator (e.g., `key:,` or `key:}`).
+                // cref: fy_fetch_tokens (fy-parse.c:5514)
+                Some(':')
+                    if self.flow_level > 0
+                        && matches!(self.reader.peek_at(1), Some(',' | '[' | ']' | '{' | '}')) =>
+                {
+                    break;
+                }
                 Some('#') if prev_was_space => break,
                 Some(',' | '[' | ']' | '{' | '}') if self.flow_level > 0 => break,
                 Some(c) => {
@@ -603,9 +612,14 @@ impl<'input> Scanner<'input> {
             return;
         }
 
-        // Simple key resolution: if `:` + blank follows, this scalar is a key.
-        // Works in both block and flow context.
-        let is_key = self.reader.peek() == Some(':') && is_blank_or_end(self.reader.peek_at(1));
+        // Simple key resolution: if `:` follows in a key-compatible position.
+        // Block context: `:` must be followed by blank/EOF.
+        // Flow context: `:` followed by blank, EOF, or flow indicator.
+        // cref: fy_fetch_value (fy-parse.c:5426-5441)
+        let is_key = self.reader.peek() == Some(':')
+            && (is_blank_or_end(self.reader.peek_at(1))
+                || (self.flow_level > 0
+                    && matches!(self.reader.peek_at(1), Some(',' | '[' | ']' | '{' | '}'))));
 
         if is_key {
             // Use the position of the first pending prefix token (anchor/tag)
@@ -1154,9 +1168,12 @@ impl<'input> Scanner<'input> {
         start_mark: yamalgam_core::Mark,
         end_mark: yamalgam_core::Mark,
     ) {
-        // Simple key resolution: if `:` + blank follows, this is a key.
-        // Works in both block and flow context.
-        let is_key = self.reader.peek() == Some(':') && is_blank_or_end(self.reader.peek_at(1));
+        // Simple key resolution: if `:` follows, this may be a key.
+        // In block context, `:` must be followed by blank/EOF.
+        // In flow context, `:` alone suffices after a quoted scalar (JSON compat).
+        // cref: fy_fetch_value (fy-parse.c:5426-5441)
+        let is_key = self.reader.peek() == Some(':')
+            && (self.flow_level > 0 || is_blank_or_end(self.reader.peek_at(1)));
 
         if is_key {
             let key_mark = self
