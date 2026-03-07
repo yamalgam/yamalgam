@@ -1272,9 +1272,20 @@ impl<'input> Scanner<'input> {
         let content_indent = match explicit_indent {
             Some(ei) => current_indent + ei,
             None => {
-                let detected = self.detect_block_indent_lookahead();
+                let (detected, max_empty_spaces) = self.detect_block_indent_lookahead();
                 let min_indent = (self.indent + 1).max(0) as usize;
-                detected.max(min_indent)
+                let indent = detected.max(min_indent);
+                // cref: fy_scan_block_scalar (fy-parse.c) — reject when spaces-only
+                // lines before the first content line have more spaces than the
+                // detected indent level.
+                if max_empty_spaces > indent {
+                    self.error = Some(ScanError {
+                        message: "block scalar with wrong indented line after spaces only"
+                            .to_string(),
+                    });
+                    return;
+                }
+                indent
             }
         };
 
@@ -1388,10 +1399,14 @@ impl<'input> Scanner<'input> {
 
     /// Detect block scalar content indentation by peeking ahead
     /// to the first non-empty line.
-    /// Returns the raw number of leading spaces on the first non-empty line.
+    /// Returns `(indent, max_empty_spaces)`: the raw number of leading spaces
+    /// on the first non-empty line, and the maximum spaces seen on any
+    /// spaces-only line before it.
     /// The caller is responsible for applying a minimum indent floor.
-    fn detect_block_indent_lookahead(&self) -> usize {
+    // cref: fy_scan_block_scalar (fy-parse.c) — "block scalar with wrong indented line after spaces only"
+    fn detect_block_indent_lookahead(&self) -> (usize, usize) {
         let mut pos = 0;
+        let mut max_empty_spaces: usize = 0;
         loop {
             let mut spaces = 0;
             while self.reader.peek_at(pos) == Some(' ') {
@@ -1399,17 +1414,23 @@ impl<'input> Scanner<'input> {
                 pos += 1;
             }
             match self.reader.peek_at(pos) {
-                None => return spaces,
+                None => return (spaces, max_empty_spaces),
                 Some('\n') => {
+                    if spaces > max_empty_spaces {
+                        max_empty_spaces = spaces;
+                    }
                     pos += 1;
                 }
                 Some('\r') => {
+                    if spaces > max_empty_spaces {
+                        max_empty_spaces = spaces;
+                    }
                     pos += 1;
                     if self.reader.peek_at(pos) == Some('\n') {
                         pos += 1;
                     }
                 }
-                _ => return spaces,
+                _ => return (spaces, max_empty_spaces),
             }
         }
     }
