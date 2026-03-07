@@ -484,3 +484,309 @@ fn sequence_event_count() {
         .unwrap();
     assert_eq!(events.len(), 8);
 }
+
+// === Block mapping tests ===
+
+#[test]
+fn block_mapping() {
+    let events: Vec<_> = Parser::new("a: b\nc: d")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(matches!(
+        events[2],
+        Event::MappingStart {
+            style: CollectionStyle::Block,
+            ..
+        }
+    ));
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn mapping_with_explicit_key() {
+    let events: Vec<_> = Parser::new("? a\n: b")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(matches!(events[2], Event::MappingStart { .. }));
+}
+
+#[test]
+fn empty_value_in_mapping() {
+    let events: Vec<_> = Parser::new("a:\nb: c")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["a", "", "b", "c"]);
+}
+
+#[test]
+fn nested_mapping_in_sequence() {
+    let events: Vec<_> = Parser::new("- a: b\n  c: d\n- e")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::MappingStart { .. })));
+}
+
+// === Flow sequence tests ===
+
+#[test]
+fn flow_sequence() {
+    let events: Vec<_> = Parser::new("[a, b, c]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(matches!(
+        events[2],
+        Event::SequenceStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    ));
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn empty_flow_sequence() {
+    let events: Vec<_> = Parser::new("[]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(matches!(
+        events[2],
+        Event::SequenceStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    ));
+    assert!(matches!(events[3], Event::SequenceEnd { .. }));
+}
+
+#[test]
+fn nested_flow_sequences() {
+    let events: Vec<_> = Parser::new("[[a, b], [c]]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let seq_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::SequenceStart { .. }))
+        .count();
+    assert_eq!(seq_starts, 3);
+}
+
+#[test]
+fn flow_sequence_with_implicit_mapping() {
+    let events: Vec<_> = Parser::new("[a: b]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::MappingStart { .. })));
+}
+
+// === Flow mapping tests ===
+
+#[test]
+fn flow_mapping() {
+    let events: Vec<_> = Parser::new("{a: b, c: d}")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(matches!(
+        events[2],
+        Event::MappingStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    ));
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn empty_flow_mapping() {
+    let events: Vec<_> = Parser::new("{}")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(matches!(
+        events[2],
+        Event::MappingStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    ));
+    assert!(matches!(events[3], Event::MappingEnd { .. }));
+}
+
+#[test]
+fn flow_mapping_empty_value() {
+    let events: Vec<_> = Parser::new("{a:, b: c}")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["a", "", "b", "c"]);
+}
+
+#[test]
+fn nested_flow_in_block() {
+    let events: Vec<_> = Parser::new("key: {a: b}\nother: [1, 2]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::MappingStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    )));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::SequenceStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    )));
+}
+
+// === Indentless sequence tests ===
+
+#[test]
+fn indentless_sequence_in_mapping() {
+    let events: Vec<_> = Parser::new("key:\n- a\n- b")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::SequenceStart { .. })));
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["key", "a", "b"]);
+}
+
+#[test]
+fn indentless_sequence_with_nested_mapping() {
+    let events: Vec<_> = Parser::new("key:\n- a: b\n- c: d")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let map_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::MappingStart { .. }))
+        .count();
+    // outer mapping + 2 inner mappings per sequence entry
+    assert!(
+        map_starts >= 3,
+        "expected at least 3 MappingStart events, got {map_starts}"
+    );
+}
+
+// === Complex nesting tests ===
+
+#[test]
+fn mapping_of_sequences() {
+    let events: Vec<_> = Parser::new("a:\n  - 1\n  - 2\nb:\n  - 3")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let seq_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::SequenceStart { .. }))
+        .count();
+    assert_eq!(seq_starts, 2);
+}
+
+#[test]
+fn sequence_of_mappings() {
+    let events: Vec<_> = Parser::new("- a: 1\n  b: 2\n- c: 3")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let map_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::MappingStart { .. }))
+        .count();
+    assert_eq!(map_starts, 2);
+}
+
+#[test]
+fn deeply_nested() {
+    let events: Vec<_> = Parser::new("a:\n  b:\n    c: d")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let map_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::MappingStart { .. }))
+        .count();
+    assert_eq!(map_starts, 3);
+}
+
+#[test]
+fn flow_inside_block_sequence() {
+    let events: Vec<_> = Parser::new("- [a, b]\n- {c: d}")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::SequenceStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    )));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::MappingStart {
+            style: CollectionStyle::Flow,
+            ..
+        }
+    )));
+}
