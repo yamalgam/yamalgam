@@ -207,10 +207,13 @@ pub fn run_rust_scanner(input: &[u8]) -> Result<Vec<TokenSnapshot>, String> {
 /// Convert a Rust scanner token to an implementation-neutral snapshot.
 fn token_to_snapshot(token: &yamalgam_scanner::Token<'_>) -> TokenSnapshot {
     let kind = format!("{:?}", token.kind);
-    let value = if token.atom.data.is_empty() {
-        None
-    } else {
+    let value = if token.kind == yamalgam_scanner::TokenKind::Scalar || !token.atom.data.is_empty()
+    {
+        // Scalars always have a value (even empty string "").
+        // Other tokens (anchors, tags, etc.) use None for empty data.
         Some(token.atom.data.to_string())
+    } else {
+        None
     };
     TokenSnapshot {
         kind,
