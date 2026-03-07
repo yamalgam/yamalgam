@@ -10,7 +10,6 @@ This is a Cargo workspace. All crates live under `crates/` (plus `xtask/`):
 | `yamalgam-core` | Shared library (config, types, logic) |
 | `yamalgam-scanner` | YAML scanner — port of libfyaml's tokenizer |
 | `yamalgam-compare` | Comparison harness — runs C and Rust scanners side-by-side |
-| `yamalgam-mcp` | MCP server binary |
 | `xtask` | Dev automation (completions, man pages, benchmarks) |
 
 Configuration files live in `config/` with `.toml.example` and `.yaml.example` templates.
