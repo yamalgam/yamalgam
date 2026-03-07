@@ -16,7 +16,8 @@ ifneq ($(UNAME_S),Darwin)
 	LDFLAGS += -lpthread
 endif
 
-INCLUDES := -I$(FYAML_SRC)/include
+INCLUDES := -DHAVE_CONFIG_H -I$(FYAML_BUILD) -I$(FYAML_SRC)/include \
+             -I$(FYAML_SRC)/src/lib -I$(FYAML_SRC)/src/util -I$(FYAML_SRC)/src/thread
 
 TARGET := fyaml-tokenize
 

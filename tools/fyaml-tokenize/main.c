@@ -15,6 +15,11 @@
 // cref: libfyaml public API
 #include <libfyaml.h>
 
+// cref: libfyaml internal — needed for fy_parser_set_default_document_state()
+// to initialize default tag directives (!! → tag:yaml.org,2002:) before scanning.
+// Without this, fy_fetch_tag() fails on shorthand tags because current_document_state is NULL.
+#include "fy-parse.h"
+
 /* Map fy_token_type enum to string name. Only YAML token types. */
 // cref: enum fy_token_type (FYTT_STREAM_START .. FYTT_SCALAR)
 static const char *token_type_name(enum fy_token_type type)
@@ -131,6 +136,18 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	/* Initialize default document state so the scanner can resolve
+	   shorthand tag handles (! → !, !! → tag:yaml.org,2002:).
+	   Without this, fy_fetch_tag() fails because current_document_state is NULL. */
+	// cref: fy_parser_set_default_document_state(), fy_reset_document_state()
+	rc = fy_parser_set_default_document_state(fyp, NULL);
+	if (rc != 0) {
+		fprintf(stderr, "{\"error\": \"fy_parser_set_default_document_state failed\"}\n");
+		fy_parser_destroy(fyp);
+		free(input);
+		return 1;
+	}
+
 	/* Iterate tokens using the low-level scanner API */
 	// cref: fy_scan(), fy_scan_token_free()
 	// cref: fy_token_get_type(), fy_token_start_mark(), fy_token_end_mark()
@@ -149,12 +166,39 @@ int main(int argc, char **argv)
 		const struct fy_mark *sm = fy_token_start_mark(fyt);
 		const struct fy_mark *em = fy_token_end_mark(fyt);
 
-		/* Get text content for tokens that carry values */
+		/* Get text content for tokens that carry values.
+		   For TAG tokens, fy_token_get_text() returns the resolved URI
+		   (e.g. "tag:yaml.org,2002:str" for "!!str"). We reconstruct the
+		   raw shorthand form using handle + suffix to match yamalgam's
+		   scanner output. For TAG_DIRECTIVE, we format "handle prefix"
+		   with a space separator. */
 		size_t text_len = 0;
 		const char *text = NULL;
-		if (type == FYTT_SCALAR || type == FYTT_ALIAS ||
-		    type == FYTT_ANCHOR || type == FYTT_TAG ||
-		    type == FYTT_VERSION_DIRECTIVE || type == FYTT_TAG_DIRECTIVE) {
+		char tag_buf[1024];
+		if (type == FYTT_TAG) {
+			size_t h_len = 0, s_len = 0;
+			const char *handle = fy_tag_token_handle(fyt, &h_len);
+			const char *suffix = fy_tag_token_suffix(fyt, &s_len);
+			if (h_len == 0 && s_len > 0) {
+				/* Verbatim tag: !<uri> */
+				text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
+					"!<%.*s>", (int)s_len, suffix);
+			} else {
+				text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
+					"%.*s%.*s", (int)h_len, handle ? handle : "",
+					(int)s_len, suffix ? suffix : "");
+			}
+			text = tag_buf;
+		} else if (type == FYTT_TAG_DIRECTIVE) {
+			size_t h_len = 0, p_len = 0;
+			const char *handle = fy_tag_directive_token_handle(fyt, &h_len);
+			const char *prefix = fy_tag_directive_token_prefix(fyt, &p_len);
+			text_len = (size_t)snprintf(tag_buf, sizeof(tag_buf),
+				"%.*s %.*s", (int)h_len, handle ? handle : "",
+				(int)p_len, prefix ? prefix : "");
+			text = tag_buf;
+		} else if (type == FYTT_SCALAR || type == FYTT_ALIAS ||
+		           type == FYTT_ANCHOR || type == FYTT_VERSION_DIRECTIVE) {
 			text = fy_token_get_text(fyt, &text_len);
 		}
 
