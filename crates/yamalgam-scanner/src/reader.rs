@@ -109,6 +109,12 @@ impl<'input> Reader<'input> {
         &self.input[start_offset..end_offset]
     }
 
+    /// Returns a reference to the underlying input string.
+    #[must_use]
+    pub const fn input(&self) -> &'input str {
+        self.input
+    }
+
     /// Returns the total byte length of the underlying input.
     #[must_use]
     pub const fn input_len(&self) -> usize {

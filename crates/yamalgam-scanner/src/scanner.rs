@@ -231,7 +231,11 @@ impl<'input> Scanner<'input> {
                 }
             }
 
-            if self.reader.peek() == Some('#') {
+            // `#` starts a comment only when preceded by whitespace or at
+            // the start of a line (YAML §6.4). Check the byte before the
+            // current offset — this works regardless of who consumed the
+            // whitespace (this function, plain scalar trimming, etc.).
+            if self.reader.peek() == Some('#') && self.preceded_by_whitespace() {
                 while let Some(c) = self.reader.peek() {
                     if c == '\n' || c == '\r' {
                         break;
@@ -715,6 +719,14 @@ impl<'input> Scanner<'input> {
     // cref: fy_reader_fetch_plain_scalar_handle (fy-reader.c)
     fn scan_plain_scalar_line(&mut self) -> &'input str {
         let start_offset = self.reader.mark().offset;
+
+        // YAML §7.3.3 ns-plain-first: `#` cannot start a plain scalar.
+        // Other c-indicators (`&`, `*`, `!`, etc.) are handled by dedicated
+        // fetch methods before reaching the plain scalar fallback.
+        if self.reader.peek() == Some('#') {
+            return self.reader.slice(start_offset, start_offset);
+        }
+
         let mut prev_was_space = false;
 
         loop {
@@ -861,6 +873,10 @@ impl<'input> Scanner<'input> {
                     {
                         return false;
                     }
+                    // Note: `%` at column 0 is NOT rejected here — inside a
+                    // document, `%YAML` etc. is plain scalar content, not a
+                    // directive (YAML §9.2). Directives only appear between
+                    // documents.
                     // Flow indicators end the scalar in flow context.
                     if self.flow_level > 0 && matches!(c, ',' | '[' | ']' | '{' | '}') {
                         return false;
@@ -886,9 +902,12 @@ impl<'input> Scanner<'input> {
         let end_mark = self.reader.mark();
 
         if text.is_empty() {
-            // Nothing scanned (e.g., hit a terminator immediately).
-            // Skip the character to avoid infinite loop.
+            // Nothing scanned — character cannot start a token here.
+            let c = self.reader.peek().unwrap_or('\0');
             self.reader.advance();
+            self.error = Some(ScanError {
+                message: format!("unexpected character '{c}' in this context"),
+            });
             return;
         }
 
@@ -1592,6 +1611,22 @@ impl<'input> Scanner<'input> {
                 });
             }
         }
+    }
+
+    /// Check if the byte before the current reader position is whitespace.
+    ///
+    /// Returns `true` at offset 0 (start of input) or at column 0 (start of
+    /// line), since both are valid positions for a comment `#`.
+    fn preceded_by_whitespace(&self) -> bool {
+        let offset = self.reader.mark().offset;
+        if offset == 0 || self.reader.mark().column == 0 {
+            return true;
+        }
+        let input = self.reader.input();
+        matches!(
+            input.as_bytes().get(offset - 1),
+            Some(b' ' | b'\t' | b'\n' | b'\r')
+        )
     }
 
     // -- Main fetch loop --
