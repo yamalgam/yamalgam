@@ -906,14 +906,30 @@ impl<'input> Scanner<'input> {
                         break;
                     }
                 }
-                // Newline inside single-quoted scalar: fold to space.
+                // Newline inside single-quoted scalar: fold per YAML 1.2 §6.5.
+                // Single newline → space. Empty lines → literal newlines.
                 Some('\n' | '\r') => {
                     needs_owned = true;
                     self.reader.advance();
-                    while matches!(self.reader.peek(), Some(' ' | '\t')) {
-                        self.reader.advance();
+                    let mut empty_lines = 0u32;
+                    loop {
+                        while matches!(self.reader.peek(), Some(' ' | '\t')) {
+                            self.reader.advance();
+                        }
+                        if matches!(self.reader.peek(), Some('\n' | '\r')) {
+                            empty_lines += 1;
+                            self.reader.advance();
+                        } else {
+                            break;
+                        }
                     }
-                    result.push(' ');
+                    if empty_lines > 0 {
+                        for _ in 0..empty_lines {
+                            result.push('\n');
+                        }
+                    } else {
+                        result.push(' ');
+                    }
                 }
                 Some(c) => {
                     result.push(c);
@@ -1045,6 +1061,16 @@ impl<'input> Scanner<'input> {
                                 result.push(ch);
                             }
                         }
+                        // Escaped line break: \ + newline joins lines,
+                        // consuming the break and any leading whitespace.
+                        // cref: YAML 1.2 §8.5 — "escaped line break"
+                        Some('\n' | '\r') => {
+                            self.reader.advance(); // consume newline
+                            while matches!(self.reader.peek(), Some(' ' | '\t')) {
+                                self.reader.advance();
+                            }
+                            // No character pushed — lines are joined seamlessly.
+                        }
                         Some(c) => {
                             // Unknown escape — keep as-is.
                             result.push('\\');
@@ -1056,16 +1082,33 @@ impl<'input> Scanner<'input> {
                         }
                     }
                 }
-                // Newline inside double-quoted scalar: fold to space.
-                // Leading whitespace on the continuation line is trimmed.
+                // Newline inside double-quoted scalar: fold per YAML 1.2 §6.5.
+                // Single newline between content → space.
+                // Empty lines (newline-only) → literal newline.
+                // Leading whitespace on continuation is trimmed.
                 Some('\n' | '\r') => {
                     needs_owned = true;
                     self.reader.advance(); // consume newline
-                    // Trim leading whitespace on next line.
-                    while matches!(self.reader.peek(), Some(' ' | '\t')) {
-                        self.reader.advance();
+                    // Count empty lines.
+                    let mut empty_lines = 0u32;
+                    loop {
+                        while matches!(self.reader.peek(), Some(' ' | '\t')) {
+                            self.reader.advance();
+                        }
+                        if matches!(self.reader.peek(), Some('\n' | '\r')) {
+                            empty_lines += 1;
+                            self.reader.advance();
+                        } else {
+                            break;
+                        }
                     }
-                    result.push(' ');
+                    if empty_lines > 0 {
+                        for _ in 0..empty_lines {
+                            result.push('\n');
+                        }
+                    } else {
+                        result.push(' ');
+                    }
                 }
                 Some(c) => {
                     result.push(c);
