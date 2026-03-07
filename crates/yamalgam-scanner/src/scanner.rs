@@ -66,6 +66,13 @@ pub struct Scanner<'input> {
     indent_stack: Vec<i32>,
     /// Queued tokens waiting to be yielded (e.g., BlockSequenceStart before BlockEntry).
     queue: VecDeque<Token<'input>>,
+    /// Buffered anchor/tag tokens that might precede a simple key.
+    ///
+    /// When the scanner encounters `&anchor` or `!tag` before a scalar, it
+    /// can't know yet whether the scalar is a mapping key. These tokens are
+    /// held here until the next scalar resolves the ambiguity: if it's a key,
+    /// `BlockMappingStart` + `Key` are inserted before these prefix tokens.
+    pending_prefix: Vec<Token<'input>>,
 }
 
 impl<'input> Scanner<'input> {
@@ -79,6 +86,7 @@ impl<'input> Scanner<'input> {
             indent: -1,
             indent_stack: Vec::new(),
             queue: VecDeque::new(),
+            pending_prefix: Vec::new(),
         }
     }
 
@@ -590,6 +598,7 @@ impl<'input> Scanner<'input> {
         if text.is_empty() {
             // Nothing scanned (e.g., hit a terminator immediately).
             // Skip the character to avoid infinite loop.
+            self.flush_pending_prefix();
             self.reader.advance();
             return;
         }
@@ -599,11 +608,20 @@ impl<'input> Scanner<'input> {
         let is_key = self.reader.peek() == Some(':') && is_blank_or_end(self.reader.peek_at(1));
 
         if is_key {
-            let col = start_mark.column as i32;
+            // Use the position of the first pending prefix token (anchor/tag)
+            // as the key start, so BlockMappingStart uses the correct column.
+            let key_mark = self
+                .pending_prefix
+                .first()
+                .map_or(start_mark, |t| t.atom.span.start);
+            let col = key_mark.column as i32;
             self.roll_indent(col, true); // may push BlockMappingStart
             self.queue
-                .push_back(Self::marker_token(TokenKind::Key, start_mark, start_mark));
+                .push_back(Self::marker_token(TokenKind::Key, key_mark, key_mark));
         }
+
+        // Flush pending anchor/tag tokens before the scalar.
+        self.flush_pending_prefix();
 
         let scalar = Self::scalar_token(text, ScalarStyle::Plain, start_mark, end_mark);
         self.queue.push_back(scalar);
@@ -1098,11 +1116,18 @@ impl<'input> Scanner<'input> {
         let is_key = self.reader.peek() == Some(':') && is_blank_or_end(self.reader.peek_at(1));
 
         if is_key {
-            let col = start_mark.column as i32;
+            let key_mark = self
+                .pending_prefix
+                .first()
+                .map_or(start_mark, |t| t.atom.span.start);
+            let col = key_mark.column as i32;
             self.roll_indent(col, true);
             self.queue
-                .push_back(Self::marker_token(TokenKind::Key, start_mark, start_mark));
+                .push_back(Self::marker_token(TokenKind::Key, key_mark, key_mark));
         }
+
+        // Flush pending anchor/tag tokens before the scalar.
+        self.flush_pending_prefix();
 
         let scalar = Self::scalar_token(data, style, start_mark, end_mark);
         self.queue.push_back(scalar);
@@ -1124,6 +1149,16 @@ impl<'input> Scanner<'input> {
             .chars()
             .enumerate()
             .all(|(i, expected)| self.reader.peek_at(i) == Some(expected))
+    }
+
+    /// Move pending anchor/tag tokens to the main queue.
+    ///
+    /// Called when we determine the pending tokens are NOT part of a
+    /// simple key (e.g., followed by a non-scalar, newline, etc.).
+    fn flush_pending_prefix(&mut self) {
+        for token in self.pending_prefix.drain(..) {
+            self.queue.push_back(token);
+        }
     }
 
     /// Skip whitespace characters (space and tab).
@@ -1162,6 +1197,7 @@ impl<'input> Scanner<'input> {
             self.scan_to_next_token();
 
             if self.reader.is_eof() {
+                self.flush_pending_prefix();
                 self.unroll_indent(-1);
                 let end = self.fetch_stream_end();
                 self.queue.push_back(end);
@@ -1176,6 +1212,21 @@ impl<'input> Scanner<'input> {
                 self.unroll_indent(col as i32);
                 if !self.queue.is_empty() {
                     continue;
+                }
+            }
+
+            // Flush pending anchor/tag tokens if they can't be part of a
+            // simple key: either we've crossed a newline or the next character
+            // is structural (not a scalar-starting character or another tag/anchor).
+            if !self.pending_prefix.is_empty() {
+                let prefix_line = self.pending_prefix[0].atom.span.start.line;
+                let current_line = self.reader.mark().line;
+                let is_structural = matches!(c, '[' | ']' | '{' | '}' | ',' | ':' | '%' | '#')
+                    || (c == '-' && is_blank_or_end(self.reader.peek_at(1)))
+                    || (c == '?' && is_blank_or_end(self.reader.peek_at(1)));
+
+                if current_line != prefix_line || is_structural {
+                    self.flush_pending_prefix();
                 }
             }
 
@@ -1253,6 +1304,10 @@ impl<'input> Scanner<'input> {
             // cref: fy_fetch_tokens (fy-parse.c:5457)
             if c == '!' {
                 self.fetch_tag();
+                // Buffer tag as potential simple key prefix.
+                if let Some(tag_token) = self.queue.pop_back() {
+                    self.pending_prefix.push(tag_token);
+                }
                 continue;
             }
 
@@ -1260,6 +1315,12 @@ impl<'input> Scanner<'input> {
             // cref: fy_fetch_tokens (fy-parse.c:5443)
             if c == '&' || c == '*' {
                 self.fetch_anchor_or_alias(c);
+                // Buffer anchors (not aliases) as potential simple key prefix.
+                if c == '&'
+                    && let Some(anchor_token) = self.queue.pop_back()
+                {
+                    self.pending_prefix.push(anchor_token);
+                }
                 continue;
             }
 
