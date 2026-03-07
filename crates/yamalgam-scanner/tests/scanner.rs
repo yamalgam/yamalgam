@@ -943,6 +943,28 @@ fn block_scalar_content_on_header_line_errors() {
     );
 }
 
+#[test]
+fn extra_flow_end_bracket_errors() {
+    // Extra `]` outside flow context is invalid (4H7K).
+    let scanner = Scanner::new("[ a ] ]\n");
+    let results: Vec<_> = scanner.collect();
+    assert!(
+        results.iter().any(|r| r.is_err()),
+        "expected error for unmatched ]"
+    );
+}
+
+#[test]
+fn content_after_document_end_errors() {
+    // Content after `...` on the same line is invalid (3HFZ).
+    let scanner = Scanner::new("key: value\n... invalid\n");
+    let results: Vec<_> = scanner.collect();
+    assert!(
+        results.iter().any(|r| r.is_err()),
+        "expected error for content after ..."
+    );
+}
+
 // === Anchors and aliases ===
 
 #[test]

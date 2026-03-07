@@ -554,6 +554,13 @@ impl<'input> Scanner<'input> {
     /// Consume `]` or `}` and emit a flow collection end token.
     // cref: fy_fetch_flow_collection_mark_end (fy-parse.c:2518)
     fn fetch_flow_collection_end(&mut self, c: char) {
+        if self.flow_level == 0 {
+            self.reader.advance();
+            self.error = Some(ScanError {
+                message: format!("unexpected '{c}' outside of flow collection"),
+            });
+            return;
+        }
         self.remove_simple_key();
         let kind = if c == ']' {
             TokenKind::FlowSequenceEnd
@@ -563,7 +570,7 @@ impl<'input> Scanner<'input> {
         let start = self.reader.mark();
         self.reader.advance();
         let end = self.reader.mark();
-        self.flow_level = self.flow_level.saturating_sub(1);
+        self.flow_level -= 1;
         self.enqueue(Self::marker_token(kind, start, end));
         self.simple_key_allowed = false;
         // In flow context, `:` immediately after `]`/`}` is a value
@@ -1565,6 +1572,28 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    /// Validate that only whitespace and optional comment remain on the line.
+    ///
+    /// Used after document markers (`---`/`...`), directives, and block
+    /// scalar headers. Sets `self.error` if invalid content is found.
+    fn validate_line_tail(&mut self, context: &str) {
+        let mut lookahead = 0;
+        while self.reader.peek_at(lookahead) == Some(' ')
+            || self.reader.peek_at(lookahead) == Some('\t')
+        {
+            lookahead += 1;
+        }
+        match self.reader.peek_at(lookahead) {
+            None | Some('\n' | '\r') => {}
+            Some('#') if lookahead > 0 => {}
+            Some(c) => {
+                self.error = Some(ScanError {
+                    message: format!("invalid character '{c}' after {context}"),
+                });
+            }
+        }
+    }
+
     // -- Main fetch loop --
 
     /// Returns true if we need to fetch more tokens before yielding.
@@ -1632,6 +1661,8 @@ impl<'input> Scanner<'input> {
                     let token = self.fetch_document_indicator(TokenKind::DocumentStart);
                     self.enqueue(token);
                     self.simple_key_allowed = true;
+                    // Note: `---` CAN be followed by content on the same line
+                    // (e.g., `--- value`, `--- |`). No line-tail validation here.
                     continue;
                 }
                 if self.is_document_end() {
@@ -1640,6 +1671,9 @@ impl<'input> Scanner<'input> {
                     let token = self.fetch_document_indicator(TokenKind::DocumentEnd);
                     self.enqueue(token);
                     self.simple_key_allowed = true;
+                    // Validate: only whitespace/comment after `...`.
+                    // cref: YAML 1.2 §9.1.2 — c-document-end = "..."
+                    self.validate_line_tail("document end marker '...'");
                     continue;
                 }
                 if c == '%' {
