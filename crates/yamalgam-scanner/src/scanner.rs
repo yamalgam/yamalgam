@@ -269,9 +269,9 @@ impl<'input> Scanner<'input> {
             // YAML 1.2 §6.8.1: unknown directives should be ignored.
             // cref: fy_fetch_directive — libfyaml skips unknown directives with a warning
             self.skip_to_next_line();
-            return Err(ScanError {
+            Err(ScanError {
                 message: "unknown directive".to_string(),
-            });
+            })
         }
     }
 
@@ -423,7 +423,7 @@ impl<'input> Scanner<'input> {
 
     // -- Plain scalars --
 
-    /// Scan a plain scalar's text content.
+    /// Scan one line of plain scalar text.
     ///
     /// Reads characters until a terminator is reached. Trailing whitespace
     /// is trimmed. The reader is left positioned at the terminator.
@@ -433,8 +433,9 @@ impl<'input> Scanner<'input> {
     /// - `:` followed by blank/EOF (value indicator)
     /// - `#` preceded by whitespace (comment)
     /// - `,` `[` `]` `{` `}` in flow context
+    /// - `---` or `...` at column 0 followed by blank/EOF (document indicators)
     // cref: fy_reader_fetch_plain_scalar_handle (fy-reader.c)
-    fn scan_plain_scalar_text(&mut self) -> &'input str {
+    fn scan_plain_scalar_line(&mut self) -> &'input str {
         let start_offset = self.reader.mark().offset;
         let mut prev_was_space = false;
 
@@ -453,6 +454,125 @@ impl<'input> Scanner<'input> {
 
         let end_offset = self.reader.mark().offset;
         self.reader.slice(start_offset, end_offset).trim_end()
+    }
+
+    /// Scan a plain scalar, including multi-line continuation.
+    ///
+    /// After the first line, continuation lines must be indented past the
+    /// current block indent level. Line folding follows YAML 1.2 §7.3.3:
+    /// - Single newline between content lines → space
+    /// - Empty lines (only whitespace) → literal newline
+    // cref: fy_reader_fetch_plain_scalar_handle_inline (fy-parse.c:4434)
+    fn scan_plain_scalar_text(&mut self) -> Cow<'input, str> {
+        let first_line = self.scan_plain_scalar_line();
+        if first_line.is_empty() {
+            return Cow::Borrowed(first_line);
+        }
+
+        // In flow context, min_indent is 0 (any indentation continues).
+        // In block context, continuation lines must be indented past the
+        // current block indent level.
+        let min_indent = if self.flow_level > 0 {
+            0
+        } else {
+            self.indent + 1
+        };
+
+        // Peek ahead to see if next line is a continuation.
+        if !self.peek_continuation(min_indent) {
+            return Cow::Borrowed(first_line);
+        }
+
+        // Multi-line: build folded result.
+        let mut result = String::from(first_line);
+        let mut empty_lines = 0u32;
+
+        while matches!(self.reader.peek(), Some('\n' | '\r')) {
+            self.reader.advance(); // consume newline
+            // Skip leading whitespace on next line.
+            while is_blank(self.reader.peek()) {
+                self.reader.advance();
+            }
+            let col = self.reader.mark().column as i32;
+
+            // Document indicators at column 0 end the scalar.
+            if col == 0 && (self.is_document_start() || self.is_document_end()) {
+                break;
+            }
+
+            // Another newline = empty line in the scalar.
+            if matches!(self.reader.peek(), Some('\n' | '\r')) {
+                empty_lines += 1;
+                continue;
+            }
+
+            // EOF or insufficient indent ends the scalar.
+            if self.reader.peek().is_none() || col < min_indent {
+                break;
+            }
+
+            // Comment after space ends the scalar.
+            if self.reader.peek() == Some('#') {
+                break;
+            }
+
+            // We have a continuation line with content.
+            if empty_lines > 0 {
+                for _ in 0..empty_lines {
+                    result.push('\n');
+                }
+                empty_lines = 0;
+            } else {
+                result.push(' ');
+            }
+
+            let line = self.scan_plain_scalar_line();
+            result.push_str(line);
+        }
+
+        Cow::Owned(result)
+    }
+
+    /// Peek ahead to check if a continuation line follows.
+    ///
+    /// Returns true if we're at a newline and the next non-empty line
+    /// has indentation greater than `min_indent`. Does NOT advance the reader.
+    fn peek_continuation(&self, min_indent: i32) -> bool {
+        if !matches!(self.reader.peek(), Some('\n' | '\r')) {
+            return false;
+        }
+        let mut i = if self.reader.peek() == Some('\r') && self.reader.peek_at(1) == Some('\n') {
+            2
+        } else {
+            1usize
+        };
+        // Scan past whitespace/empty lines to find the next content line.
+        let mut col = 0i32;
+        loop {
+            match self.reader.peek_at(i) {
+                Some(' ' | '\t') => {
+                    col += 1;
+                    i += 1;
+                }
+                Some('\n' | '\r') => {
+                    // Empty line — keep looking for content.
+                    i += 1;
+                    col = 0;
+                }
+                Some(c) => {
+                    // Document indicators at column 0 end the scalar.
+                    if col == 0
+                        && (c == '-' || c == '.')
+                        && self.reader.peek_at(i + 1) == Some(c)
+                        && self.reader.peek_at(i + 2) == Some(c)
+                    {
+                        return false;
+                    }
+                    return col >= min_indent;
+                }
+                None => return false,
+            }
+        }
     }
 
     /// Fetch a plain scalar token, resolving simple keys eagerly.
@@ -485,7 +605,7 @@ impl<'input> Scanner<'input> {
                 .push_back(Self::marker_token(TokenKind::Key, start_mark, start_mark));
         }
 
-        let scalar = Self::data_token(TokenKind::Scalar, text, start_mark, end_mark);
+        let scalar = Self::scalar_token(text, ScalarStyle::Plain, start_mark, end_mark);
         self.queue.push_back(scalar);
 
         if is_key {
