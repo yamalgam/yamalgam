@@ -186,10 +186,7 @@ fn event_compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     let yaml_input = match extract_yaml_input(&content) {
         Some(input) => input,
         None => {
-            eprintln!(
-                "EVENT_SKIP: no yaml input found in {}",
-                path.display()
-            );
+            eprintln!("EVENT_SKIP: no yaml input found in {}", path.display());
             return Ok(());
         }
     };

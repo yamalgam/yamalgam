@@ -52,13 +52,7 @@ fn event_document_start_constructable() {
         implicit: true,
         span: Span::default(),
     };
-    assert!(matches!(
-        event,
-        Event::DocumentStart {
-            implicit: true,
-            ..
-        }
-    ));
+    assert!(matches!(event, Event::DocumentStart { implicit: true, .. }));
 }
 
 #[test]
@@ -67,13 +61,7 @@ fn event_document_end_constructable() {
         implicit: true,
         span: Span::default(),
     };
-    assert!(matches!(
-        event,
-        Event::DocumentEnd {
-            implicit: true,
-            ..
-        }
-    ));
+    assert!(matches!(event, Event::DocumentEnd { implicit: true, .. }));
 }
 
 #[test]

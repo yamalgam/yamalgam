@@ -37,8 +37,8 @@ fn iterator_returns_none_after_stream_end() {
 #[test]
 fn iterator_stops_on_error() {
     // Feed a broken token stream: scanner error should propagate.
-    use yamalgam_scanner::scanner::ScanError;
     use yamalgam_scanner::Token;
+    use yamalgam_scanner::scanner::ScanError;
 
     let tokens: Vec<Result<Token<'_>, ScanError>> = vec![Err(ScanError {
         message: "boom".to_string(),
@@ -55,25 +55,17 @@ fn iterator_stops_on_error() {
 
 #[test]
 fn implicit_document_with_scalar() {
-    let events: Vec<_> = Parser::new("hello")
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let events: Vec<_> = Parser::new("hello").collect::<Result<Vec<_>, _>>().unwrap();
     assert_eq!(events.len(), 5);
     assert!(matches!(events[0], Event::StreamStart));
     assert!(matches!(
         events[1],
-        Event::DocumentStart {
-            implicit: true,
-            ..
-        }
+        Event::DocumentStart { implicit: true, .. }
     ));
     assert!(matches!(events[2], Event::Scalar { .. }));
     assert!(matches!(
         events[3],
-        Event::DocumentEnd {
-            implicit: true,
-            ..
-        }
+        Event::DocumentEnd { implicit: true, .. }
     ));
     assert!(matches!(events[4], Event::StreamEnd));
 }
@@ -172,10 +164,9 @@ fn empty_document() {
 
 #[test]
 fn multiple_directives() {
-    let events: Vec<_> =
-        Parser::new("%YAML 1.2\n%TAG !! tag:yaml.org,2002:\n---\nhello")
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+    let events: Vec<_> = Parser::new("%YAML 1.2\n%TAG !! tag:yaml.org,2002:\n---\nhello")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     // StreamStart, VersionDirective, TagDirective, DocStart, Scalar, DocEnd, StreamEnd
     assert_eq!(events.len(), 7);
     assert!(matches!(events[1], Event::VersionDirective { .. }));
@@ -205,10 +196,7 @@ fn document_end_then_new_document() {
     ));
     assert!(matches!(
         events[4],
-        Event::DocumentStart {
-            implicit: true,
-            ..
-        }
+        Event::DocumentStart { implicit: true, .. }
     ));
 }
 
@@ -216,9 +204,7 @@ fn document_end_then_new_document() {
 
 #[test]
 fn plain_scalar() {
-    let events: Vec<_> = Parser::new("hello")
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let events: Vec<_> = Parser::new("hello").collect::<Result<Vec<_>, _>>().unwrap();
     if let Event::Scalar {
         ref value,
         style,
@@ -260,9 +246,7 @@ fn tagged_scalar() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     if let Event::Scalar {
-        ref tag,
-        ref value,
-        ..
+        ref tag, ref value, ..
     } = events[2]
     {
         assert_eq!(tag.as_deref(), Some("!!str"));
@@ -543,9 +527,11 @@ fn nested_mapping_in_sequence() {
     let events: Vec<_> = Parser::new("- a: b\n  c: d\n- e")
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, Event::MappingStart { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::MappingStart { .. }))
+    );
 }
 
 // === Flow sequence tests ===
@@ -577,9 +563,7 @@ fn flow_sequence() {
 
 #[test]
 fn empty_flow_sequence() {
-    let events: Vec<_> = Parser::new("[]")
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let events: Vec<_> = Parser::new("[]").collect::<Result<Vec<_>, _>>().unwrap();
     assert!(matches!(
         events[2],
         Event::SequenceStart {
@@ -607,9 +591,11 @@ fn flow_sequence_with_implicit_mapping() {
     let events: Vec<_> = Parser::new("[a: b]")
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, Event::MappingStart { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::MappingStart { .. }))
+    );
 }
 
 // === Flow mapping tests ===
@@ -641,9 +627,7 @@ fn flow_mapping() {
 
 #[test]
 fn empty_flow_mapping() {
-    let events: Vec<_> = Parser::new("{}")
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let events: Vec<_> = Parser::new("{}").collect::<Result<Vec<_>, _>>().unwrap();
     assert!(matches!(
         events[2],
         Event::MappingStart {
@@ -700,9 +684,11 @@ fn indentless_sequence_in_mapping() {
     let events: Vec<_> = Parser::new("key:\n- a\n- b")
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, Event::SequenceStart { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::SequenceStart { .. }))
+    );
     let scalars: Vec<_> = events
         .iter()
         .filter_map(|e| {
@@ -789,4 +775,82 @@ fn flow_inside_block_sequence() {
             ..
         }
     )));
+}
+
+// -- Trailing comma fixes --
+
+#[test]
+fn trailing_comma_in_flow_sequence() {
+    let events: Vec<_> = Parser::new("[a, b, ]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["a", "b"]); // NO empty scalar for trailing comma
+}
+
+#[test]
+fn trailing_comma_in_flow_mapping() {
+    let events: Vec<_> = Parser::new("{a: b, c: d, }")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["a", "b", "c", "d"]); // NO empty key/value for trailing comma
+}
+
+// -- Tag/anchor on empty scalar in block sequence --
+
+#[test]
+fn tag_on_empty_scalar_in_sequence() {
+    let events: Vec<_> = Parser::new("- !!str\n- a")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    // Should NOT produce SequenceStart for !!str — should be tagged empty scalar
+    let tagged_scalar = events
+        .iter()
+        .find(|e| matches!(e, Event::Scalar { tag: Some(_), .. }));
+    assert!(
+        tagged_scalar.is_some(),
+        "expected tagged empty scalar, got: {:?}",
+        events
+    );
+}
+
+#[test]
+fn anchor_on_empty_scalar_in_sequence() {
+    let events: Vec<_> = Parser::new("- &a\n- a")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    // Should NOT produce SequenceStart for &a — should be anchored empty scalar
+    let anchored_scalar = events.iter().find(|e| {
+        matches!(
+            e,
+            Event::Scalar {
+                anchor: Some(_),
+                ..
+            }
+        )
+    });
+    assert!(
+        anchored_scalar.is_some(),
+        "expected anchored empty scalar, got: {:?}",
+        events
+    );
 }

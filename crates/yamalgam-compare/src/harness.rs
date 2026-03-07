@@ -9,7 +9,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::compare::{CompareEventResult, CompareResult, compare_event_streams, compare_token_streams};
+use crate::compare::{
+    CompareEventResult, CompareResult, compare_event_streams, compare_token_streams,
+};
 use crate::event_snapshot::EventSnapshot;
 use crate::snapshot::{SpanSnapshot, TokenSnapshot};
 
@@ -370,9 +372,7 @@ fn parse_c_event_line(line: &str) -> Result<EventSnapshot, String> {
         .and_then(|v| if v.is_null() { None } else { v.as_str() })
         .map(String::from);
 
-    let implicit = obj
-        .get("implicit")
-        .and_then(|v| v.as_bool());
+    let implicit = obj.get("implicit").and_then(|v| v.as_bool());
 
     Ok(EventSnapshot {
         kind,
@@ -393,8 +393,7 @@ fn parse_c_event_line(line: &str) -> Result<EventSnapshot, String> {
 ///
 /// Returns an error string on parse errors.
 pub fn run_rust_parser(input: &[u8]) -> Result<Vec<EventSnapshot>, String> {
-    let text = std::str::from_utf8(input)
-        .map_err(|e| format!("input is not valid UTF-8: {e}"))?;
+    let text = std::str::from_utf8(input).map_err(|e| format!("input is not valid UTF-8: {e}"))?;
 
     let parser = yamalgam_parser::Parser::new(text);
     let mut events = Vec::new();
@@ -475,7 +474,9 @@ fn event_to_snapshot(event: &yamalgam_parser::Event<'_>) -> Option<EventSnapshot
             value: None,
             implicit: None,
         }),
-        yamalgam_parser::Event::Scalar { anchor, tag, value, .. } => Some(EventSnapshot {
+        yamalgam_parser::Event::Scalar {
+            anchor, tag, value, ..
+        } => Some(EventSnapshot {
             kind: "Scalar".to_string(),
             anchor: anchor.as_ref().map(|a| a.to_string()),
             tag: tag.as_ref().map(|t| t.to_string()),
