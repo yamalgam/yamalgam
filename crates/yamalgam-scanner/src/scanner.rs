@@ -66,8 +66,7 @@ struct SimpleKey {
     flow_level: u32,
     /// If true, this key MUST be resolved (error if purged).
     /// Set when we're at the current block indent level.
-    /// Used later for error reporting on invalid YAML.
-    #[allow(dead_code)]
+    /// Used for error reporting on anchors/tags at wrong indent.
     required: bool,
     /// True when this key was a JSON-like node (quoted scalar or flow
     /// collection end). In flow context, `:` after a JSON-like key is
@@ -127,6 +126,11 @@ pub struct Scanner<'input> {
     /// Used to reject flow content at or below the block indent.
     /// -1 when no flow context is active or flow started at doc level.
     flow_indent: i32,
+    /// Stack of flow context types: `true` = mapping (`{`), `false` = sequence (`[`).
+    /// Used to distinguish flow mappings from sequences when validating
+    /// multiline implicit keys (`:` in `[...]` vs `{...}`).
+    // cref: fy_parser.flow (FYFT_MAP vs FYFT_SEQ)
+    flow_is_mapping: Vec<bool>,
 }
 
 impl<'input> Scanner<'input> {
@@ -147,6 +151,7 @@ impl<'input> Scanner<'input> {
             adjacent_value_offset: None,
             last_block_token_line: None,
             flow_indent: -1,
+            flow_is_mapping: Vec::new(),
             next_token_id: 0,
             tokens_consumed: 0,
         }
@@ -422,6 +427,36 @@ impl<'input> Scanner<'input> {
     // cref: fy_purge_stale_simple_keys (fy-parse.c:1470)
     fn purge_stale_simple_keys(&mut self) {
         let current_line = self.reader.mark().line;
+
+        // cref: fy_purge_required_simple_key_report (fy-parse.c:1429)
+        // When a required simple key (at the current indent level) is about
+        // to be purged and its token is an anchor or tag, that means the
+        // anchor/tag appeared at the wrong indent for the block structure.
+        for sk in &self.simple_keys {
+            if !sk.required {
+                continue;
+            }
+            let would_purge = if self.flow_level == 0 {
+                current_line > sk.end_line
+            } else {
+                sk.flow_level > self.flow_level
+            };
+            if would_purge && let Some(pos) = self.queue_position(sk.token_id) {
+                let kind = self.queue[pos].kind;
+                if matches!(kind, TokenKind::Anchor | TokenKind::Tag) {
+                    let kind_name = if kind == TokenKind::Anchor {
+                        "anchor"
+                    } else {
+                        "tag"
+                    };
+                    self.error = Some(ScanError {
+                        message: format!("invalid {kind_name} indent"),
+                    });
+                    return;
+                }
+            }
+        }
+
         self.simple_keys.retain(|sk| {
             if self.flow_level == 0 {
                 // Block context: keys must end on the current line.
@@ -622,6 +657,7 @@ impl<'input> Scanner<'input> {
             self.flow_indent = self.indent;
         }
         self.flow_level += 1;
+        self.flow_is_mapping.push(c == '{');
         self.simple_key_allowed = true;
     }
 
@@ -645,6 +681,7 @@ impl<'input> Scanner<'input> {
         self.reader.advance();
         let end = self.reader.mark();
         self.flow_level -= 1;
+        self.flow_is_mapping.pop();
         self.enqueue(Self::marker_token(kind, start, end));
         self.simple_key_allowed = false;
         // In flow context, `:` immediately after `]`/`}` is a value
@@ -777,6 +814,7 @@ impl<'input> Scanner<'input> {
                 // - Flow context: plain keys cannot have `:` on a different
                 //   line. json_key keys (quoted/flow) CAN span lines.
                 let key_is_multiline = sk.end_line > sk.mark.line;
+                let colon_on_different_line = sk.end_line < mark.line;
                 let reject = if self.flow_level == 0 {
                     // Block: reject any multiline key or cross-line non-json key.
                     key_is_multiline || (sk.mark.line != mark.line && !sk.json_key)
@@ -784,7 +822,16 @@ impl<'input> Scanner<'input> {
                     // Flow: reject when `:` is on a different line than the
                     // key END (not start). Plain keys can fold across lines
                     // but `:` must be on the key's last line.
-                    sk.end_line != mark.line && !sk.json_key
+                    // cref: fy_fetch_value (fy-parse.c:3049) — also reject
+                    // multiline implicit keys in flow sequences. Only flow
+                    // mappings allow json_keys across lines.
+                    if colon_on_different_line
+                        && !self.flow_is_mapping.last().copied().unwrap_or(false)
+                    {
+                        true
+                    } else {
+                        sk.end_line != mark.line && !sk.json_key
+                    }
                 };
                 if reject {
                     self.error = Some(ScanError {
@@ -1064,6 +1111,29 @@ impl<'input> Scanner<'input> {
                 message: format!("unexpected character '{c}' in this context"),
             });
             return;
+        }
+
+        // cref: fy_scan_plain_scalar (fy-parse.c:5207-5228)
+        // After a multiline plain scalar in block context, if `:` follows
+        // (with blank/EOF after it), this scalar would become a multiline
+        // implicit key — which is never allowed. Skip when inside an
+        // explicit key (`?`) where `:` is the value indicator.
+        if self.flow_level == 0
+            && content_end_line > start_mark.line
+            && self.pending_complex_key_column < 0
+        {
+            let mut lookahead = 0;
+            while matches!(self.reader.peek_at(lookahead), Some(' ' | '\t')) {
+                lookahead += 1;
+            }
+            if self.reader.peek_at(lookahead) == Some(':')
+                && is_blank_or_end(self.reader.peek_at(lookahead + 1))
+            {
+                self.error = Some(ScanError {
+                    message: "invalid multiline plain key".to_string(),
+                });
+                return;
+            }
         }
 
         let scalar = Self::scalar_token(text, ScalarStyle::Plain, start_mark, end_mark);
