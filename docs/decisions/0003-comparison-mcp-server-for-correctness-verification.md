@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: deprecated
 date: 2026-03-06
 decision-makers: [Clay Loveless]
 ---
