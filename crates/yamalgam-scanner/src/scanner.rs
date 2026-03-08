@@ -993,6 +993,12 @@ impl<'input> Scanner<'input> {
                 // We have a pending simple key — insert Key (and BlockMappingStart)
                 // before the key token in the queue.
                 if let Some(pos) = self.queue_position(sk.token_id) {
+                    // Enforce max_key_bytes limit on the key's scalar data.
+                    if let Err(msg) = self.config.check_key_size(self.queue[pos].atom.data.len()) {
+                        self.error = Some(ScanError { message: msg });
+                        return;
+                    }
+
                     // In block context, push BlockMappingStart if indent warrants.
                     if self.flow_level == 0 && sk.mark.column as i32 > self.indent {
                         // 9KBC, CXX2: block collections cannot start on the `---` line.
@@ -1304,6 +1310,12 @@ impl<'input> Scanner<'input> {
                 });
                 return;
             }
+        }
+
+        // Enforce max_scalar_bytes limit.
+        if let Err(msg) = self.config.check_scalar_size(text.len()) {
+            self.error = Some(ScanError { message: msg });
+            return;
         }
 
         let scalar = Self::scalar_token(text, ScalarStyle::Plain, start_mark, end_mark);
@@ -1642,6 +1654,12 @@ impl<'input> Scanner<'input> {
             }
         }
 
+        // Enforce max_scalar_bytes limit.
+        if let Err(msg) = self.config.check_scalar_size(content.len()) {
+            self.error = Some(ScanError { message: msg });
+            return;
+        }
+
         let end_mark = self.reader.mark();
         let style = if is_literal {
             ScalarStyle::Literal
@@ -1807,6 +1825,12 @@ impl<'input> Scanner<'input> {
                 Cow::Borrowed("")
             }
         };
+
+        // Enforce max_scalar_bytes limit.
+        if let Err(msg) = self.config.check_scalar_size(data.len()) {
+            self.error = Some(ScanError { message: msg });
+            return;
+        }
 
         self.push_quoted_scalar(data, ScalarStyle::SingleQuoted, start_mark, end_mark);
     }
@@ -2045,6 +2069,12 @@ impl<'input> Scanner<'input> {
                 Cow::Borrowed("")
             }
         };
+
+        // Enforce max_scalar_bytes limit.
+        if let Err(msg) = self.config.check_scalar_size(data.len()) {
+            self.error = Some(ScanError { message: msg });
+            return;
+        }
 
         self.push_quoted_scalar(data, ScalarStyle::DoubleQuoted, start_mark, end_mark);
     }

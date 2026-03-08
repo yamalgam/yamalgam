@@ -1372,3 +1372,93 @@ fn unchecked_config_allows_deep_nesting() {
     let result: Result<Vec<_>, _> = Scanner::new(input).collect();
     assert!(result.is_ok());
 }
+
+// -- max_scalar_bytes enforcement --
+
+#[test]
+fn max_scalar_bytes_rejects_oversized_plain_scalar() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_scalar_bytes = Some(10);
+
+    let input = "this is definitely longer than ten bytes";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.message.contains("scalar size"), "got: {err}");
+}
+
+#[test]
+fn max_scalar_bytes_allows_within_limit() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_scalar_bytes = Some(100);
+
+    let input = "short";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn max_scalar_bytes_rejects_oversized_quoted_scalar() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_scalar_bytes = Some(10);
+
+    let input = "\"this quoted string is too long\"";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_err());
+}
+
+#[test]
+fn max_scalar_bytes_rejects_oversized_single_quoted_scalar() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_scalar_bytes = Some(10);
+
+    let input = "'this single quoted string is too long'";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_err());
+}
+
+#[test]
+fn max_scalar_bytes_rejects_oversized_block_scalar() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_scalar_bytes = Some(10);
+
+    let input = "|\n  this block scalar content is way too long for the limit";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_err());
+}
+
+#[test]
+fn max_key_bytes_rejects_oversized_key() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_key_bytes = Some(5);
+
+    let input = "this_is_a_very_long_key: value";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.message.contains("key size"), "got: {err}");
+}
+
+#[test]
+fn max_key_bytes_allows_short_key() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_key_bytes = Some(100);
+
+    let input = "key: value";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_ok());
+}
