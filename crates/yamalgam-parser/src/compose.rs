@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use yamalgam_core::{Mapping, Value, resolve_plain_scalar};
+use yamalgam_core::{Mapping, ResourceLimits, Value, resolve_plain_scalar};
 use yamalgam_scanner::ScalarStyle;
 
 use crate::error::ParseError;
@@ -24,6 +24,8 @@ pub enum ComposeError {
     UndefinedAlias(String),
     /// An event was encountered that is not valid in the current context.
     UnexpectedEvent(String),
+    /// A resource limit was exceeded during composition.
+    LimitExceeded(String),
 }
 
 impl std::fmt::Display for ComposeError {
@@ -32,6 +34,7 @@ impl std::fmt::Display for ComposeError {
             Self::Resolve(e) => write!(f, "{e}"),
             Self::UndefinedAlias(name) => write!(f, "undefined alias: *{name}"),
             Self::UnexpectedEvent(msg) => write!(f, "unexpected event: {msg}"),
+            Self::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
         }
     }
 }
@@ -40,7 +43,7 @@ impl std::error::Error for ComposeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Resolve(e) => Some(e),
-            Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) => None,
+            Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) | Self::LimitExceeded(_) => None,
         }
     }
 }
@@ -68,6 +71,8 @@ where
 {
     events: std::iter::Peekable<I>,
     anchors: HashMap<String, Value>,
+    config: ResourceLimits,
+    alias_expansion_count: usize,
 }
 
 impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
@@ -80,6 +85,20 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(input: &'input str) -> Result<Vec<Value>, ComposeError> {
         Self::with_resolver(input, NoopResolver)
+    }
+
+    /// Parse and compose all documents from a YAML string with resource limits.
+    pub fn from_str_with_config(
+        input: &'input str,
+        config: &yamalgam_core::LoaderConfig,
+    ) -> Result<Vec<Value>, ComposeError> {
+        let parser = crate::parser::Parser::with_config(input, config);
+        let events = ResolvedEvents::new(
+            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
+            NoopResolver,
+        );
+        let mut composer = Composer::new_with_config(events, config);
+        composer.compose_stream()
     }
 }
 
@@ -104,7 +123,7 @@ impl<'input, I> Composer<'input, I>
 where
     I: Iterator<Item = Result<Event<'input>, ResolveError>>,
 {
-    /// Create a composer from any resolved event iterator.
+    /// Create a composer from any resolved event iterator (no resource limits).
     #[must_use]
     pub fn new(events: I) -> Self {
         Self {
@@ -113,6 +132,19 @@ where
             // y[impl model.serial.alias-resolution]
             // y[impl model.serial.tree-definition]
             anchors: HashMap::new(),
+            config: ResourceLimits::none(),
+            alias_expansion_count: 0,
+        }
+    }
+
+    /// Create a composer with resource limits from a [`LoaderConfig`].
+    #[must_use]
+    pub fn new_with_config(events: I, config: &yamalgam_core::LoaderConfig) -> Self {
+        Self {
+            events: events.peekable(),
+            anchors: HashMap::new(),
+            config: config.limits.clone(),
+            alias_expansion_count: 0,
         }
     }
 
@@ -206,6 +238,9 @@ where
                 let resolved = resolve_scalar(&value, style);
                 if let Some(name) = anchor {
                     self.anchors.insert(name.into_owned(), resolved.clone());
+                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
+                        return Err(ComposeError::LimitExceeded(msg));
+                    }
                 }
                 Ok(resolved)
             }
@@ -227,6 +262,9 @@ where
                 let value = Value::Sequence(items);
                 if let Some(name) = anchor {
                     self.anchors.insert(name.into_owned(), value.clone());
+                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
+                        return Err(ComposeError::LimitExceeded(msg));
+                    }
                 }
                 Ok(value)
             }
@@ -249,7 +287,7 @@ where
 
                     // Merge key handling: `<<` key.
                     if is_merge_key(&key) {
-                        collect_merge_pairs(&val, &mut merge_pairs);
+                        collect_merge_pairs(&val, &mut merge_pairs, &self.config, 0)?;
                     } else {
                         map.insert(key, val);
                     }
@@ -271,11 +309,21 @@ where
                 let value = Value::Mapping(map);
                 if let Some(name) = anchor {
                     self.anchors.insert(name.into_owned(), value.clone());
+                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
+                        return Err(ComposeError::LimitExceeded(msg));
+                    }
                 }
                 Ok(value)
             }
 
             Event::Alias { name, .. } => {
+                self.alias_expansion_count += 1;
+                if let Err(msg) = self
+                    .config
+                    .check_alias_expansions(self.alias_expansion_count)
+                {
+                    return Err(ComposeError::LimitExceeded(msg));
+                }
                 let name_str = name.into_owned();
                 self.anchors
                     .get(&name_str)
@@ -366,30 +414,47 @@ fn is_merge_key(key: &Value) -> bool {
 /// Collect key-value pairs from a merge source into `pairs`.
 ///
 /// If `val` is a Mapping, its entries are collected. If `val` is a Sequence of
-/// Mappings, all entries from all mappings are collected (in order). Anything
-/// else is ignored (the caller should have already inserted it as a normal
-/// key-value pair, but in practice this situation means `<<` is used with a
-/// non-mapping value, which we silently ignore per common implementations).
-fn collect_merge_pairs(val: &Value, pairs: &mut Vec<(Value, Value)>) {
+/// Mappings, all entries from all mappings are collected (in order). Non-mapping
+/// values are rejected as errors per the YAML merge-key spec.
+///
+/// The `depth` parameter tracks recursion into sequences; `config` enforces
+/// [`max_merge_depth`](ResourceLimits::max_merge_depth).
+fn collect_merge_pairs(
+    val: &Value,
+    pairs: &mut Vec<(Value, Value)>,
+    config: &ResourceLimits,
+    depth: usize,
+) -> Result<(), ComposeError> {
+    if let Err(msg) = config.check_merge_depth(depth) {
+        return Err(ComposeError::LimitExceeded(msg));
+    }
     match val {
         Value::Mapping(m) => {
             for (k, v) in m.iter() {
                 pairs.push((k.clone(), v.clone()));
             }
+            Ok(())
         }
         Value::Sequence(seq) => {
             for item in seq {
-                if let Value::Mapping(m) = item {
-                    for (k, v) in m.iter() {
-                        pairs.push((k.clone(), v.clone()));
+                match item {
+                    Value::Mapping(m) => {
+                        for (k, v) in m.iter() {
+                            pairs.push((k.clone(), v.clone()));
+                        }
+                    }
+                    other => {
+                        return Err(ComposeError::UnexpectedEvent(format!(
+                            "merge key (<<) sequence item must be a mapping, got {other:?}"
+                        )));
                     }
                 }
             }
+            Ok(())
         }
-        _ => {
-            // Non-mapping merge value — treat `<<` as a normal key.
-            // This is a no-op; the caller handles this by not inserting.
-        }
+        _ => Err(ComposeError::UnexpectedEvent(
+            "merge key (<<) value must be a mapping or sequence of mappings".into(),
+        )),
     }
 }
 
@@ -573,6 +638,64 @@ production:
         assert!(
             matches!(err, ComposeError::UndefinedAlias(ref name) if name == "undefined"),
             "expected UndefinedAlias, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn anchor_count_limit() {
+        use yamalgam_core::LoaderConfig;
+        let config = LoaderConfig {
+            limits: yamalgam_core::ResourceLimits {
+                max_anchor_count: Some(2),
+                ..yamalgam_core::ResourceLimits::none()
+            },
+            ..LoaderConfig::unchecked()
+        };
+        let parser = crate::parser::Parser::with_config("a: &a 1\nb: &b 2\nc: &c 3", &config);
+        let events = crate::resolve::ResolvedEvents::new(
+            Box::new(parser.map(|r| r.map_err(crate::resolve::ResolveError::Parse))),
+            crate::resolve::NoopResolver,
+        );
+        let mut composer = Composer::new_with_config(events, &config);
+        let result = composer.compose_stream();
+        assert!(matches!(result, Err(ComposeError::LimitExceeded(_))));
+    }
+
+    #[test]
+    fn alias_expansion_limit() {
+        use yamalgam_core::LoaderConfig;
+        let config = LoaderConfig {
+            limits: yamalgam_core::ResourceLimits {
+                max_alias_expansions: Some(1),
+                ..yamalgam_core::ResourceLimits::none()
+            },
+            ..LoaderConfig::unchecked()
+        };
+        let parser = crate::parser::Parser::with_config("a: &ref val\nb: *ref\nc: *ref", &config);
+        let events = crate::resolve::ResolvedEvents::new(
+            Box::new(parser.map(|r| r.map_err(crate::resolve::ResolveError::Parse))),
+            crate::resolve::NoopResolver,
+        );
+        let mut composer = Composer::new_with_config(events, &config);
+        let result = composer.compose_stream();
+        assert!(matches!(result, Err(ComposeError::LimitExceeded(_))));
+    }
+
+    #[test]
+    fn invalid_merge_value_errors() {
+        let result = Composer::from_str("a: 1\n<<: 2");
+        assert!(
+            matches!(result, Err(ComposeError::UnexpectedEvent(_))),
+            "expected error for non-mapping merge value, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_merge_sequence_item_errors() {
+        let result = Composer::from_str("<<:\n  - 42");
+        assert!(
+            matches!(result, Err(ComposeError::UnexpectedEvent(_))),
+            "expected error for non-mapping item in merge sequence, got {result:?}"
         );
     }
 }

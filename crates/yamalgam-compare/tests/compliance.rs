@@ -21,6 +21,35 @@ use yamalgam_compare::{
     CompareEventResult, CompareResult, compare_events_cached, compare_input_cached,
 };
 
+/// Known token mismatches that are understood and acceptable.
+/// - M7A3: C scanner bug — treats `%!PS-Adobe-2.0` as directive, loses block scalar content
+/// - BD7L: cosmetic — C uses `generated_block_map` flag to gate `Key` emission
+/// - JEF9#1, JEF9#2: trailing whitespace in literal block scalar — scalar value differs
+const TOKEN_MISMATCH_ALLOWLIST: &[&str] = &["M7A3", "BD7L", "JEF9#1", "JEF9#2"];
+
+/// Known event mismatches that are understood and acceptable.
+/// - JEF9#1, JEF9#2: trailing whitespace in literal block scalar — scalar value differs
+const EVENT_MISMATCH_ALLOWLIST: &[&str] = &["JEF9#1", "JEF9#2"];
+
+/// Known token UNEXPECTED results (Rust accepts, C rejects) that are understood.
+/// These are `fail: true` sub-cases in multi-case files where our scanner is
+/// more permissive than libfyaml.
+/// - DK95#1: tab in double-quoted multiline scalar (tab strictness)
+/// - DK95#3: |2 block scalar with leading tab (tab strictness)
+/// - Y79Y#3-#9: tabs in various block/flow contexts (tab strictness)
+/// - ZYU8#3: `%YAML 1.12345` — extra-long version number (directive parsing)
+const TOKEN_UNEXPECTED_ALLOWLIST: &[&str] = &[
+    "DK95#1", "DK95#3", "Y79Y#3", "Y79Y#4", "Y79Y#5", "Y79Y#6", "Y79Y#7", "Y79Y#8", "Y79Y#9",
+    "ZYU8#3",
+];
+
+/// Known event UNEXPECTED results (Rust accepts, C rejects) that are understood.
+/// Same root causes as token UNEXPECTED — tab strictness and directive parsing.
+const EVENT_UNEXPECTED_ALLOWLIST: &[&str] = &[
+    "DK95#1", "DK95#3", "Y79Y#3", "Y79Y#4", "Y79Y#5", "Y79Y#6", "Y79Y#7", "Y79Y#8", "Y79Y#9",
+    "ZYU8#3",
+];
+
 /// Find the workspace root by walking up from CARGO_MANIFEST_DIR.
 fn workspace_root() -> PathBuf {
     let manifest_dir =
@@ -62,53 +91,101 @@ fn test_id(path: &Path) -> String {
 
 fn compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
-    let id = test_id(path);
+    let stem = test_id(path);
 
-    let yaml_input = match c_baseline::extract_yaml_input(&content) {
-        Some(input) => input,
-        None => {
-            eprintln!("SKIP: no yaml input found in {}", path.display());
-            return Ok(());
-        }
-    };
+    let cases = c_baseline::extract_all_yaml_inputs(&content);
+    if cases.is_empty() {
+        eprintln!("SKIP: no yaml input found in {}", path.display());
+        return Ok(());
+    }
 
-    // Use cached C result if available, otherwise fall back to subprocess.
-    let cached = token_cache().as_ref().and_then(|cache| cache.get(&id));
+    let multi = cases.len() > 1;
 
-    let result = compare_input_cached(cached, yaml_input.as_bytes());
+    for (idx, yaml_input) in &cases {
+        let id = if multi {
+            format!("{stem}#{idx}")
+        } else {
+            stem.clone()
+        };
 
-    match &result {
-        CompareResult::Match { token_count } => {
-            eprintln!("PASS: {id} ({token_count} tokens matched)");
-        }
-        CompareResult::CSuccessRustError {
-            rust_error,
-            c_token_count,
-        } => {
-            eprintln!("EXPECTED: {id} (C produced {c_token_count} tokens, Rust: {rust_error})");
-        }
-        CompareResult::BothErrorMatch => {
-            eprintln!("PASS: {id} (both errored, matching)");
-        }
-        CompareResult::BothErrorMismatch { .. } => {
-            eprintln!("PASS: {id} (both errored)");
-        }
-        CompareResult::RustSuccessCError {
-            c_error,
-            rust_token_count,
-        } => {
-            eprintln!("UNEXPECTED: {id} (Rust produced {rust_token_count} tokens, C: {c_error})");
-        }
-        CompareResult::TokenMismatch {
-            index,
-            c_token,
-            rust_token,
-            ..
-        } => {
-            eprintln!(
-                "MISMATCH: {id} at index {index} (C: {:?}, Rust: {:?})",
-                c_token.kind, rust_token.kind
-            );
+        // Use cached C result if available, otherwise fall back to subprocess.
+        let cached = token_cache().as_ref().and_then(|cache| cache.get(&id));
+
+        let result = compare_input_cached(cached, yaml_input.as_bytes());
+
+        // Staleness check: if this ID is allowlisted but now passes,
+        // the fix landed and the allowlist entry must be removed.
+        let in_mismatch_al = TOKEN_MISMATCH_ALLOWLIST.contains(&id.as_str());
+        let in_unexpected_al = TOKEN_UNEXPECTED_ALLOWLIST.contains(&id.as_str());
+
+        match &result {
+            CompareResult::Match { token_count } => {
+                eprintln!("PASS: {id} ({token_count} tokens matched)");
+                if in_mismatch_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in TOKEN_MISMATCH_ALLOWLIST but now passes — remove it"
+                    );
+                }
+                if in_unexpected_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in TOKEN_UNEXPECTED_ALLOWLIST but now passes — remove it"
+                    );
+                }
+            }
+            CompareResult::CSuccessRustError {
+                rust_error,
+                c_token_count,
+            } => {
+                eprintln!("EXPECTED: {id} (C produced {c_token_count} tokens, Rust: {rust_error})");
+                if in_unexpected_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in TOKEN_UNEXPECTED_ALLOWLIST but now EXPECTED (both strict) — remove it"
+                    );
+                }
+            }
+            CompareResult::BothErrorMatch => {
+                eprintln!("PASS: {id} (both errored, matching)");
+                if in_mismatch_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in TOKEN_MISMATCH_ALLOWLIST but now passes — remove it"
+                    );
+                }
+                if in_unexpected_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in TOKEN_UNEXPECTED_ALLOWLIST but now passes — remove it"
+                    );
+                }
+            }
+            CompareResult::BothErrorMismatch { .. } => {
+                eprintln!("PASS: {id} (both errored)");
+            }
+            CompareResult::RustSuccessCError {
+                c_error,
+                rust_token_count,
+            } => {
+                eprintln!(
+                    "UNEXPECTED: {id} (Rust produced {rust_token_count} tokens, C: {c_error})"
+                );
+                if !in_unexpected_al {
+                    panic!(
+                        "UNEXPECTED: {id} — not in TOKEN_UNEXPECTED_ALLOWLIST, this is a regression"
+                    );
+                }
+            }
+            CompareResult::TokenMismatch {
+                index,
+                c_token,
+                rust_token,
+                ..
+            } => {
+                eprintln!(
+                    "MISMATCH: {id} at index {index} (C: {:?}, Rust: {:?})",
+                    c_token.kind, rust_token.kind
+                );
+                if !in_mismatch_al {
+                    panic!("MISMATCH: {id} — token mismatch is not in TOKEN_MISMATCH_ALLOWLIST");
+                }
+            }
         }
     }
 
@@ -117,57 +194,103 @@ fn compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn event_compliance_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
-    let id = test_id(path);
+    let stem = test_id(path);
 
-    let yaml_input = match c_baseline::extract_yaml_input(&content) {
-        Some(input) => input,
-        None => {
-            eprintln!("EVENT_SKIP: no yaml input found in {}", path.display());
-            return Ok(());
-        }
-    };
+    let cases = c_baseline::extract_all_yaml_inputs(&content);
+    if cases.is_empty() {
+        eprintln!("EVENT_SKIP: no yaml input found in {}", path.display());
+        return Ok(());
+    }
 
-    // Use cached C result if available, otherwise fall back to subprocess.
-    let cached = event_cache().as_ref().and_then(|cache| cache.get(&id));
+    let multi = cases.len() > 1;
 
-    let result = compare_events_cached(cached, yaml_input.as_bytes());
+    for (idx, yaml_input) in &cases {
+        let id = if multi {
+            format!("{stem}#{idx}")
+        } else {
+            stem.clone()
+        };
 
-    match &result {
-        CompareEventResult::Match { event_count } => {
-            eprintln!("EVENT_PASS: {id} ({event_count} events matched)");
-        }
-        CompareEventResult::CSuccessRustError {
-            rust_error,
-            c_event_count,
-        } => {
-            eprintln!(
-                "EVENT_EXPECTED: {id} (C produced {c_event_count} events, Rust: {rust_error})"
-            );
-        }
-        CompareEventResult::BothErrorMatch => {
-            eprintln!("EVENT_PASS: {id} (both errored, matching)");
-        }
-        CompareEventResult::BothErrorMismatch { .. } => {
-            eprintln!("EVENT_PASS: {id} (both errored)");
-        }
-        CompareEventResult::RustSuccessCError {
-            c_error,
-            rust_event_count,
-        } => {
-            eprintln!(
-                "EVENT_UNEXPECTED: {id} (Rust produced {rust_event_count} events, C: {c_error})"
-            );
-        }
-        CompareEventResult::EventMismatch {
-            index,
-            c_event,
-            rust_event,
-            ..
-        } => {
-            eprintln!(
-                "EVENT_MISMATCH: {id} at index {index} (C: {:?}, Rust: {:?})",
-                c_event.kind, rust_event.kind
-            );
+        // Use cached C result if available, otherwise fall back to subprocess.
+        let cached = event_cache().as_ref().and_then(|cache| cache.get(&id));
+
+        let result = compare_events_cached(cached, yaml_input.as_bytes());
+
+        let in_mismatch_al = EVENT_MISMATCH_ALLOWLIST.contains(&id.as_str());
+        let in_unexpected_al = EVENT_UNEXPECTED_ALLOWLIST.contains(&id.as_str());
+
+        match &result {
+            CompareEventResult::Match { event_count } => {
+                eprintln!("EVENT_PASS: {id} ({event_count} events matched)");
+                if in_mismatch_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in EVENT_MISMATCH_ALLOWLIST but now passes — remove it"
+                    );
+                }
+                if in_unexpected_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in EVENT_UNEXPECTED_ALLOWLIST but now passes — remove it"
+                    );
+                }
+            }
+            CompareEventResult::CSuccessRustError {
+                rust_error,
+                c_event_count,
+            } => {
+                eprintln!(
+                    "EVENT_EXPECTED: {id} (C produced {c_event_count} events, Rust: {rust_error})"
+                );
+                if in_unexpected_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in EVENT_UNEXPECTED_ALLOWLIST but now EXPECTED — remove it"
+                    );
+                }
+            }
+            CompareEventResult::BothErrorMatch => {
+                eprintln!("EVENT_PASS: {id} (both errored, matching)");
+                if in_mismatch_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in EVENT_MISMATCH_ALLOWLIST but now passes — remove it"
+                    );
+                }
+                if in_unexpected_al {
+                    panic!(
+                        "STALE ALLOWLIST: {id} is in EVENT_UNEXPECTED_ALLOWLIST but now passes — remove it"
+                    );
+                }
+            }
+            CompareEventResult::BothErrorMismatch { .. } => {
+                eprintln!("EVENT_PASS: {id} (both errored)");
+            }
+            CompareEventResult::RustSuccessCError {
+                c_error,
+                rust_event_count,
+            } => {
+                eprintln!(
+                    "EVENT_UNEXPECTED: {id} (Rust produced {rust_event_count} events, C: {c_error})"
+                );
+                if !in_unexpected_al {
+                    panic!(
+                        "EVENT_UNEXPECTED: {id} — not in EVENT_UNEXPECTED_ALLOWLIST, this is a regression"
+                    );
+                }
+            }
+            CompareEventResult::EventMismatch {
+                index,
+                c_event,
+                rust_event,
+                ..
+            } => {
+                eprintln!(
+                    "EVENT_MISMATCH: {id} at index {index} (C: {:?}, Rust: {:?})",
+                    c_event.kind, rust_event.kind
+                );
+                if !EVENT_MISMATCH_ALLOWLIST.contains(&id.as_str()) {
+                    panic!(
+                        "EVENT_MISMATCH: {id} — event mismatch is not in EVENT_MISMATCH_ALLOWLIST"
+                    );
+                }
+            }
         }
     }
 

@@ -49,3 +49,26 @@ pub fn from_str_single(input: &str) -> Result<Value, ComposeError> {
         ))),
     }
 }
+
+/// Parse a YAML string into a list of [`Value`] documents with resource limits.
+pub fn from_str_with_config(
+    input: &str,
+    config: &yamalgam_core::LoaderConfig,
+) -> Result<Vec<Value>, ComposeError> {
+    Composer::from_str_with_config(input, config)
+}
+
+/// Parse a YAML string into a single [`Value`] with resource limits.
+pub fn from_str_single_with_config(
+    input: &str,
+    config: &yamalgam_core::LoaderConfig,
+) -> Result<Value, ComposeError> {
+    let mut docs = Composer::from_str_with_config(input, config)?;
+    match docs.len() {
+        0 => Ok(Value::Null),
+        1 => Ok(docs.remove(0)),
+        n => Err(ComposeError::UnexpectedEvent(format!(
+            "expected 1 document, got {n}",
+        ))),
+    }
+}

@@ -221,6 +221,36 @@ impl ResourceLimits {
     pub fn check_input_size(&self, size: usize) -> Result<(), String> {
         check_limit(size, self.max_input_bytes, "input size")
     }
+
+    /// Check whether `count` is within [`max_alias_expansions`](Self::max_alias_expansions).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a human-readable message when `count` exceeds the
+    /// configured maximum.
+    pub fn check_alias_expansions(&self, count: usize) -> Result<(), String> {
+        check_limit(count, self.max_alias_expansions, "alias expansions")
+    }
+
+    /// Check whether `count` is within [`max_anchor_count`](Self::max_anchor_count).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a human-readable message when `count` exceeds the
+    /// configured maximum.
+    pub fn check_anchor_count(&self, count: usize) -> Result<(), String> {
+        check_limit(count, self.max_anchor_count, "anchor count")
+    }
+
+    /// Check whether `depth` is within [`max_merge_depth`](Self::max_merge_depth).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a human-readable message when `depth` exceeds the
+    /// configured maximum.
+    pub fn check_merge_depth(&self, depth: usize) -> Result<(), String> {
+        check_limit(depth, self.max_merge_depth, "merge depth")
+    }
 }
 
 /// Shared limit check: returns `Err` if `value > max`, `Ok(())` otherwise.

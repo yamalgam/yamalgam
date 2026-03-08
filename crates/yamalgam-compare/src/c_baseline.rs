@@ -23,17 +23,61 @@ pub struct CacheEntry {
     pub error: Option<String>,
 }
 
-/// Extract the raw YAML input from a YAML Test Suite file.
+/// Convert YAML Test Suite visual markers to actual characters.
 ///
-/// Each test suite file is itself YAML: a sequence of test case maps.
-/// We extract the `yaml` field from the first test case using simple
-/// line-based parsing (no YAML parser dependency).
-pub fn extract_yaml_input(content: &str) -> Option<String> {
+/// Handles: `—` (em-dash), `␣` (open-box), `»` (guillemet), `↵` (return),
+/// `∎` (end-of-proof).
+fn replace_markers(mut result: String) -> String {
+    if result.contains('\u{2014}') {
+        result = result.replace('\u{2014}', "");
+    }
+    if result.contains('\u{2423}') {
+        result = result.replace('\u{2423}', " ");
+    }
+    if result.contains('\u{00BB}') {
+        result = result.replace('\u{00BB}', "\t");
+    }
+    if result.contains('\u{21B5}') {
+        result = result.replace('\u{21B5}', "");
+    }
+    if result.contains('\u{220E}') {
+        result = result.replace('\u{220E}', "");
+        if result.ends_with('\n') {
+            result.pop();
+        }
+    }
+    result
+}
+
+/// Try to extract the value after a `yaml:` key in a test-suite line.
+///
+/// Handles both `  yaml: ...` (indented key) and `- yaml: ...` (first key
+/// in an array element). Returns the text after `yaml:` if found.
+fn yaml_key_value(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    // Direct key: "yaml: ..."
+    if let Some(rest) = trimmed.strip_prefix("yaml:") {
+        return Some(rest);
+    }
+    // Array-element first key: "- yaml: ..."
+    if let Some(after_dash) = trimmed.strip_prefix("- ")
+        && let Some(rest) = after_dash.trim_start().strip_prefix("yaml:")
+    {
+        return Some(rest);
+    }
+    None
+}
+
+/// Extract the `yaml:` block from a chunk of lines (a single array element).
+///
+/// The lines should be the raw content of one array element (possibly
+/// including the leading `- ` prefix on the first line).
+fn extract_yaml_from_lines(lines: &[&str]) -> Option<String> {
     let mut in_yaml_block = false;
     let mut indent: Option<usize> = None;
     let mut yaml_lines = Vec::new();
 
-    for line in content.lines() {
+    for line in lines {
         if in_yaml_block {
             if let Some(min_indent) = indent {
                 let stripped = line.trim_start();
@@ -56,12 +100,12 @@ pub fn extract_yaml_input(content: &str) -> Option<String> {
                 indent = Some(current_indent);
                 yaml_lines.push(&line[current_indent..]);
             }
-        } else if line.trim_start().starts_with("yaml:") {
-            let after_key = line.trim_start().strip_prefix("yaml:").unwrap().trim();
+        } else if let Some(after_key) = yaml_key_value(line) {
+            let after_key = after_key.trim();
             if after_key.is_empty() || after_key == "|" || after_key == "|2" || after_key == "|-" {
                 in_yaml_block = true;
             } else {
-                return Some(after_key.to_string());
+                return Some(replace_markers(after_key.to_string()));
             }
         }
     }
@@ -70,29 +114,59 @@ pub fn extract_yaml_input(content: &str) -> Option<String> {
         return None;
     }
 
-    let mut result = yaml_lines.join("\n");
+    Some(replace_markers(yaml_lines.join("\n")))
+}
 
-    // Convert YAML Test Suite visual markers to actual characters.
-    if result.contains('\u{2014}') {
-        result = result.replace('\u{2014}', "");
+/// Extract the raw YAML input from a YAML Test Suite file.
+///
+/// Each test suite file is itself YAML: a sequence of test case maps.
+/// We extract the `yaml` field from the first test case using simple
+/// line-based parsing (no YAML parser dependency).
+pub fn extract_yaml_input(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    extract_yaml_from_lines(&lines)
+}
+
+/// Extract ALL `yaml:` blocks from a YAML Test Suite file.
+///
+/// Single-case files return one entry `(0, yaml_input)`.
+/// Multi-case files (YAML arrays with multiple `- ` elements at column 0)
+/// return `(0, ...), (1, ...), ...` for each element that has a `yaml:` field.
+pub fn extract_all_yaml_inputs(content: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Split into array elements. Each element starts with `- ` at column 0.
+    // Skip a leading `---` line if present.
+    let mut elements: Vec<Vec<&str>> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+
+    for &line in &lines {
+        // Skip document start marker at the very beginning.
+        if elements.is_empty() && current.is_empty() && line.trim() == "---" {
+            continue;
+        }
+
+        // A new array element starts with `- ` at column 0.
+        if line.starts_with("- ") && !current.is_empty() {
+            elements.push(std::mem::take(&mut current));
+        }
+
+        current.push(line);
     }
-    if result.contains('\u{2423}') {
-        result = result.replace('\u{2423}', " ");
+    if !current.is_empty() {
+        elements.push(current);
     }
-    if result.contains('\u{00BB}') {
-        result = result.replace('\u{00BB}', "\t");
-    }
-    if result.contains('\u{21B5}') {
-        result = result.replace('\u{21B5}', "");
-    }
-    if result.contains('\u{220E}') {
-        result = result.replace('\u{220E}', "");
-        if result.ends_with('\n') {
-            result.pop();
+
+    // If there's only one element, it's a single-case file.
+    // Extract yaml from each element.
+    let mut results = Vec::new();
+    for (idx, elem_lines) in elements.iter().enumerate() {
+        if let Some(yaml) = extract_yaml_from_lines(elem_lines) {
+            results.push((idx, yaml));
         }
     }
 
-    Some(result)
+    results
 }
 
 /// Run all test cases through a single `fyaml-tokenize --batch` process
@@ -188,10 +262,17 @@ pub fn generate(test_dir: &Path, output_dir: &Path) -> Result<(), String> {
 
     for entry in &entries {
         let path = entry.path();
-        let id = path.file_stem().unwrap().to_string_lossy().to_string();
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
         let content =
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        if let Some(yaml) = extract_yaml_input(&content) {
+        let cases = extract_all_yaml_inputs(&content);
+        let multi = cases.len() > 1;
+        for (idx, yaml) in cases {
+            let id = if multi {
+                format!("{stem}#{idx}")
+            } else {
+                stem.clone()
+            };
             test_cases.push((id, yaml.into_bytes()));
         }
     }

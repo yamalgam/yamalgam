@@ -230,6 +230,59 @@ fn events_match(a: &EventSnapshot, b: &EventSnapshot) -> bool {
     a.kind == b.kind && a.value == b.value && a.anchor == b.anchor && a.implicit == b.implicit
 }
 
+/// Compare two events including tags (strict mode).
+///
+/// Use when both sides produce tags in the same format (e.g., both shorthand
+/// or both resolved URIs).
+fn events_match_strict(a: &EventSnapshot, b: &EventSnapshot) -> bool {
+    a.kind == b.kind
+        && a.value == b.value
+        && a.anchor == b.anchor
+        && a.implicit == b.implicit
+        && a.tag == b.tag
+}
+
+/// Compare event streams with tag comparison enabled.
+///
+/// Identical to [`compare_event_streams`] but includes tag fields in the
+/// equality check. Use when both sides emit tags in the same format.
+pub fn compare_event_streams_with_tags(
+    c_events: &[EventSnapshot],
+    rust_events: &[EventSnapshot],
+) -> CompareEventResult {
+    let common_len = c_events.len().min(rust_events.len());
+
+    for i in 0..common_len {
+        if !events_match_strict(&c_events[i], &rust_events[i]) {
+            return CompareEventResult::EventMismatch {
+                index: i,
+                c_event: c_events[i].clone(),
+                rust_event: rust_events[i].clone(),
+                context: event_context_slice(c_events, i),
+            };
+        }
+    }
+
+    if c_events.len() != rust_events.len() {
+        let i = common_len;
+        let (c_evt, rust_evt) = if i < c_events.len() {
+            (c_events[i].clone(), eof_event_sentinel())
+        } else {
+            (eof_event_sentinel(), rust_events[i].clone())
+        };
+        return CompareEventResult::EventMismatch {
+            index: i,
+            c_event: c_evt,
+            rust_event: rust_evt,
+            context: event_context_slice(c_events, i),
+        };
+    }
+
+    CompareEventResult::Match {
+        event_count: c_events.len(),
+    }
+}
+
 /// Extract up to [`EVENT_CONTEXT_WINDOW`] events preceding `index`.
 fn event_context_slice(events: &[EventSnapshot], index: usize) -> Vec<EventSnapshot> {
     let start = index.saturating_sub(EVENT_CONTEXT_WINDOW);

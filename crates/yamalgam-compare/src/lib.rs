@@ -23,7 +23,8 @@ pub mod harness;
 pub mod snapshot;
 
 pub use compare::{
-    CompareEventResult, CompareResult, compare_event_streams, compare_token_streams,
+    CompareEventResult, CompareResult, compare_event_streams, compare_event_streams_with_tags,
+    compare_token_streams,
 };
 pub use event_snapshot::EventSnapshot;
 pub use harness::{

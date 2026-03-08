@@ -15,6 +15,7 @@
  * Build: see accompanying Makefile
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -382,7 +383,15 @@ int main(int argc, char **argv)
 		 */
 		char len_buf[32];
 		while (fgets(len_buf, sizeof(len_buf), stdin) != NULL) {
-			size_t input_len = (size_t)atol(len_buf);
+			char *endptr;
+			errno = 0;
+			unsigned long long raw_len = strtoull(len_buf, &endptr, 10);
+			if (errno != 0 || endptr == len_buf || raw_len > (256ULL * 1024 * 1024)) {
+				fprintf(stdout, "{\"error\":\"invalid or excessive frame length\"}\n---END\n");
+				fflush(stdout);
+				continue;
+			}
+			size_t input_len = (size_t)raw_len;
 			char *input = malloc(input_len + 1);
 			if (!input) {
 				fprintf(stdout, "{\"error\":\"malloc failed\"}\n---END\n");
