@@ -1872,6 +1872,7 @@ dependencies = [
 name = "yamalgam-parser"
 version = "0.1.0"
 dependencies = [
+ "divan",
  "pretty_assertions",
  "thiserror",
  "yamalgam-core",
@@ -1883,6 +1884,7 @@ name = "yamalgam-scanner"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "divan",
  "encoding_rs",
  "pretty_assertions",
  "serde",
