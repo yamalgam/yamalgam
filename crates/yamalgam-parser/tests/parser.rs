@@ -854,3 +854,45 @@ fn anchor_on_empty_scalar_in_sequence() {
         events
     );
 }
+
+// -- Bare document end markers (M7A3) --
+
+#[test]
+fn bare_document_end_between_documents() {
+    // M7A3: two `...` with a comment between — the second `...` is a bare
+    // marker in the directive prologue, not a document boundary.
+    let events: Vec<_> = Parser::new(
+        "Bare\ndocument\n...\n# No document\n...\n|\n%!PS-Adobe-2.0 # Not the first line\n",
+    )
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        scalars,
+        vec!["Bare document", "%!PS-Adobe-2.0 # Not the first line\n"]
+    );
+    let doc_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::DocumentStart { .. }))
+        .count();
+    assert_eq!(doc_starts, 2);
+}
+
+#[test]
+fn directive_then_document_end_is_error() {
+    // B63P: `%YAML 1.2` then `...` without `---` is invalid.
+    let result: Result<Vec<_>, _> = Parser::new("%YAML 1.2\n...\n").collect();
+    assert!(
+        result.is_err(),
+        "directives followed by ... without --- should error"
+    );
+}

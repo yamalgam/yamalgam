@@ -77,6 +77,9 @@ pub struct Parser<'input> {
     peeked: Option<Token<'input>>,
     /// Set to `true` once `StreamEnd` has been emitted or an error occurred.
     done: bool,
+    /// True when a directive has been seen in the current prologue.
+    /// Reset when a document starts. Used to require `---` after directives.
+    seen_directive: bool,
 }
 
 impl<'input> Parser<'input> {
@@ -100,6 +103,7 @@ impl<'input> Parser<'input> {
             state_stack: Vec::new(),
             peeked: None,
             done: false,
+            seen_directive: false,
         }
     }
 
@@ -209,10 +213,11 @@ impl<'input> Parser<'input> {
     /// document (implicitly or explicitly).
     // cref: fy-parse.c:6156-6340
     fn parse_implicit_document_start(&mut self) -> Result<Option<Event<'input>>, ParseError> {
-        let token = self.peek_token()?;
-        match token {
-            Some(t) if t.kind == TokenKind::VersionDirective => {
+        let kind = self.peek_token()?.map(|t| t.kind);
+        match kind {
+            Some(TokenKind::VersionDirective) => {
                 // Consume the directive token, emit as event, stay in same state.
+                self.seen_directive = true;
                 let t = self.next_token()?.expect("peeked");
                 let (major, minor) = Self::parse_version_string(&t.atom.data, t.atom.span)?;
                 Ok(Some(Event::VersionDirective {
@@ -221,8 +226,9 @@ impl<'input> Parser<'input> {
                     span: t.atom.span,
                 }))
             }
-            Some(t) if t.kind == TokenKind::TagDirective => {
+            Some(TokenKind::TagDirective) => {
                 // Consume the directive token, emit as event, stay in same state.
+                self.seen_directive = true;
                 let t = self.next_token()?.expect("peeked");
                 let (handle, prefix) = Self::parse_tag_directive_data(&t.atom.data);
                 Ok(Some(Event::TagDirective {
@@ -231,21 +237,35 @@ impl<'input> Parser<'input> {
                     span: t.atom.span,
                 }))
             }
-            Some(t) if t.kind == TokenKind::DocumentStart => {
+            Some(TokenKind::DocumentStart) => {
                 // Explicit `---` — transition to DocumentStart state.
+                self.seen_directive = false;
                 self.state = ParserState::DocumentStart;
                 self.parse_document_start()
             }
-            Some(t) if t.kind == TokenKind::StreamEnd => {
+            Some(TokenKind::DocumentEnd) if !self.seen_directive => {
+                // Bare `...` between documents (e.g., two `...` in a row, or
+                // `...` after a comment). Not a document — just consume the
+                // marker and stay in ImplicitDocumentStart.
+                // cref: fy-parse.c:6186-6201
+                //
+                // When directives have been seen, `...` without `---` is
+                // invalid — directives require an explicit document start.
+                // That case falls through to the catch-all and correctly errors.
+                let _t = self.next_token()?;
+                self.parse_next()
+            }
+            Some(TokenKind::StreamEnd) => {
                 // Empty stream (no documents). Consume and emit StreamEnd.
                 let _t = self.next_token()?;
                 self.state = ParserState::End;
                 Ok(Some(Event::StreamEnd))
             }
-            Some(t) => {
+            Some(_kind) => {
                 // Content token — this is an implicit document start.
                 // Don't consume the token; let BlockNode handle it.
-                let span = t.atom.span;
+                self.seen_directive = false;
+                let span = self.peek_token()?.expect("peeked").atom.span;
                 self.push_state(ParserState::DocumentEnd);
                 self.state = ParserState::BlockNode;
                 Ok(Some(Event::DocumentStart {
