@@ -191,6 +191,18 @@ bench-divan:
 bench-cli:
   ./scripts/bench-cli.sh
 
+# Run comparative benchmarks (yamalgam vs peers)
+bench-comparative:
+  cargo bench -p yamalgam-bench
+
+# Run scanner self-benchmarks
+bench-scanner:
+  cargo bench -p yamalgam-scanner
+
+# Run parser self-benchmarks
+bench-parser:
+  cargo bench -p yamalgam-parser
+
 
 # Run a single fuzz target (default: scanner bytes, 60s)
 fuzz target='fuzz_scanner_bytes' duration='60':

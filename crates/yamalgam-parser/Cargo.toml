@@ -18,3 +18,8 @@ yamalgam-scanner = { path = "../yamalgam-scanner" }
 
 [dev-dependencies]
 pretty_assertions = "1"
+divan = "0.1"
+
+[[bench]]
+name = "parser_bench"
+harness = false

@@ -16,6 +16,11 @@ yamalgam-core = { path = "../yamalgam-core" }
 
 [dev-dependencies]
 pretty_assertions = "1"
+divan = "0.1"
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "scanner_bench"
+harness = false
