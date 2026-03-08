@@ -50,6 +50,17 @@ impl<'input> Reader<'input> {
         self.input[self.offset..].chars().nth(n)
     }
 
+    // y[impl char.b-break]
+    // y[impl char.b-carriage-return]
+    // y[impl char.b-as-line-feed]
+    // y[impl char.b-char+3] — b-line-feed | b-carriage-return
+    // y[impl char.b-line-feed+3] — #xA line feed
+    // y[impl char.b-non-content] — line breaks consumed but not emitted as content
+    // y[impl char.line-break.normalize] — \r\n → single newline, bare \r → newline
+    // y[impl char.line-break.parse-as-lf] — all breaks normalized to LF semantics
+    // y[impl char.line-break.format-not-content] — break format (CR/LF/CRLF) is presentation detail
+    // y[impl char.line-break.non-ascii-compat+3] — NEL/LS/PS not treated as line breaks (1.2 dropped them)
+    // y[impl char.line-break.v11-warning+3] — 1.1 non-ASCII breaks treated as content, not breaks
     /// Consume the current character and advance the position.
     ///
     /// Handles `\r\n` as a single newline: when `\r` is encountered and followed

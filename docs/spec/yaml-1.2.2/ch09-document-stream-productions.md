@@ -15,7 +15,6 @@ Each document is completely independent from the rest.
 A document may be preceded by a _prefix_ specifying the [character encoding]
 and optional [comment] lines.
 
-y[doc.encoding-same-stream]
 Note that all [documents] in a stream must use the same [character encoding].
 However it is valid to re-specify the [encoding] using a [byte order mark] for
 each [document] in the stream.
@@ -23,7 +22,6 @@ each [document] in the stream.
 The existence of the optional prefix does not necessarily indicate the
 existence of an actual [document].
 
-y[doc.l-document-prefix]
 ```
 [#] l-document-prefix ::=
   c-byte-order-mark?
@@ -70,29 +68,24 @@ At the end of a [document], a _document end marker_ line is used to signal the
 The existence of this optional _document suffix_ does not necessarily indicate
 the existence of an actual following [document].
 
-y[doc.content-no-marker-start]
 Obviously, the actual [content] lines are therefore forbidden to begin with
 either of these markers.
 
-y[doc.c-directives-end]
 ```
 [#] c-directives-end ::= "---"
 ```
 
-y[doc.c-document-end]
 ```
 [#] c-document-end ::=
   "..."    # (not followed by non-ws char)
 ```
 
-y[doc.l-document-suffix]
 ```
 [#] l-document-suffix ::=
   c-document-end
   s-l-comments
 ```
 
-y[doc.c-forbidden]
 ```
 [#] c-forbidden ::=
   <start-of-line>
@@ -133,17 +126,14 @@ A _bare document_ does not begin with any [directives] or [marker] lines.
 Such documents are very "clean" as they contain nothing other than the
 [content].
 
-y[doc.bare-no-percent-first]
 In this case, the first non-comment line may not start with a "`%`" first
 character.
 
-y[doc.node-indent-minus-one]
 Document [nodes] are [indented] as if they have a parent [indented] at -1
 [spaces].
 Since a [node] must be more [indented] than its parent [node], this allows the
 document's [node] to be [indented] at zero or more [spaces].
 
-y[doc.l-bare-document]
 ```
 [#] l-bare-document ::=
   s-l+block-node(-1,BLOCK-IN)
@@ -180,7 +170,6 @@ no [directives].
 Since the existence of the [document] is indicated by this [marker], the
 [document] itself may be [completely empty].
 
-y[doc.l-explicit-document]
 ```
 [#] l-explicit-document ::=
   c-directives-end
@@ -221,7 +210,6 @@ null
 A _directives document_ begins with some [directives] followed by an explicit
 [directives end marker] line.
 
-y[doc.l-directive-document]
 ```
 [#] l-directive-document ::=
   l-directive+
@@ -256,12 +244,10 @@ null
 
 A YAML _stream_ consists of zero or more [documents].
 
-y[doc.stream-separation-marker]
 Subsequent [documents] require some sort of separation [marker] line.
 If a [document] is not terminated by a [document end marker] line, then the
 following [document] must begin with a [directives end marker] line.
 
-y[doc.l-any-document]
 ```
 [#] l-any-document ::=
     l-directive-document
@@ -269,7 +255,6 @@ y[doc.l-any-document]
   | l-bare-document
 ```
 
-y[doc.l-yaml-stream]
 ```
 [#] l-yaml-stream ::=
   l-document-prefix*
@@ -313,6 +298,5 @@ null
 * [l-explicit-document] <!-- 5 6 7 -->
 
 
-y[doc.well-formed-stream]
 A sequence of bytes is a _well-formed stream_ if, taken as a whole, it complies
 with the above `l-yaml-stream` production.

@@ -278,6 +278,27 @@ impl<'input> Scanner<'input> {
     ///
     /// In block context, crossing a newline re-enables simple keys.
     // cref: fy_scan_to_next_token (fy-parse.c:1260)
+    // y[impl struct.s-separate-in-line]
+    // y[impl struct.comment.not-content]
+    // y[impl struct.comment.separated-by-whitespace]
+    // y[impl struct.c-nb-comment-text]
+    // y[impl struct.b-comment]
+    // y[impl struct.s-b-comment]
+    // y[impl struct.l-comment]
+    // y[impl struct.s-l-comments]
+    // y[impl char.s-white]
+    // y[impl char.s-space]
+    // y[impl char.s-tab]
+    // y[impl char.c-comment] — # starts comment when preceded by whitespace
+    // y[impl char.nb-char] — non-break chars consumed in comment text
+    // y[impl char.ns-char] — non-space chars consumed in comment text
+    // y[impl struct.indent.tab-forbidden] — tabs rejected as indentation in block context
+    // y[impl struct.comment.should-terminate-with-break] — comments end at line break
+    // y[impl struct.separation.not-content] — whitespace/comments between tokens discarded
+    // y[impl struct.s-separate] — separation between tokens
+    // y[impl struct.s-separate-lines] — separation including line breaks
+    // y[impl struct.separation.indented-after-comments] — content after comments must be indented
+    // y[impl struct.comment.json-compat-final-break] — final line may end at EOF without break
     fn scan_to_next_token(&mut self) {
         let mut at_line_start = self.reader.mark().column == 0;
         loop {
@@ -355,6 +376,15 @@ impl<'input> Scanner<'input> {
 
     // -- Indent management --
 
+    // y[impl struct.indent.node-deeper-than-parent]
+    // y[impl struct.indent.not-content]
+    // y[impl struct.indent.siblings-same-level]
+    // y[impl struct.s-indent]
+    // y[impl struct.s-indent-less-or-equal]
+    // y[impl struct.s-indent-less-than]
+    // y[impl block.indent.emit-explicit]
+    // y[impl block.indent.leading-empty-error]
+    // y[impl block.indent.non-empty-line-error]
     /// Push the current indent level and emit a block collection start token
     /// if the column is deeper than the current indent.
     ///
@@ -398,6 +428,7 @@ impl<'input> Scanner<'input> {
 
     /// Emit `BlockEnd` tokens for each indent level deeper than `column`.
     // cref: fy_parse_unroll_indent (fy-parse.c:1592)
+    // y[impl block.s-l-block-collection]
     fn unroll_indent(&mut self, column: i32) {
         if self.flow_level > 0 {
             return;
@@ -440,6 +471,7 @@ impl<'input> Scanner<'input> {
         self.save_simple_key_full(token_id, mark, end_line, json_key);
     }
 
+    // y[impl flow.implicit-key.must-single-line]
     fn save_simple_key_full(
         &mut self,
         token_id: u64,
@@ -552,6 +584,7 @@ impl<'input> Scanner<'input> {
 
     /// Remove all simple keys at or above the current flow level.
     // cref: fy_remove_simple_key (fy-parse.c:1652)
+    // y[impl block.implicit-key-restrictions]
     fn remove_simple_key(&mut self) {
         self.simple_keys
             .retain(|sk| sk.flow_level < self.flow_level);
@@ -596,6 +629,8 @@ impl<'input> Scanner<'input> {
     /// - `---`: enters document, resets directive state, records line for
     ///   same-line block collection rejection (9KBC, CXX2).
     /// - `...`: returns to directive prologue, clears tag handles.
+    // y[impl doc.c-directives-end+3]
+    // y[impl doc.c-document-end+3]
     // cref: fy_fetch_document_indicator (fy-parse.c:2379)
     fn fetch_document_indicator(&mut self, kind: TokenKind) -> Token<'input> {
         let start = self.reader.mark();
@@ -631,6 +666,15 @@ impl<'input> Scanner<'input> {
 
     // -- Directives --
 
+    // y[impl char.c-directive]
+    // y[impl struct.l-directive]
+    // y[impl struct.ns-directive-name]
+    // y[impl struct.ns-directive-parameter]
+    // y[impl struct.ns-reserved-directive]
+    // y[impl struct.directive.not-content]
+    // y[impl struct.directive.ignore-unknown+2] — unknown directives skipped per §6.8.1
+    // y[impl struct.yaml-directive.must-accept-prior+2] — prior YAML versions accepted
+    // y[impl struct.yaml-directive.should-process-prior-as-current+2] — 1.x versions processed
     /// Scan a `%YAML` or `%TAG` directive.
     // cref: fy_scan_directive (fy-parse.c:2197)
     fn fetch_directive(&mut self) -> Result<Token<'input>, ScanError> {
@@ -649,6 +693,12 @@ impl<'input> Scanner<'input> {
         }
     }
 
+    // y[impl struct.yaml-directive.at-most-once]
+    // y[impl struct.yaml-directive.must-accept-current]
+    // y[impl struct.ns-yaml-version]
+    // y[impl struct.ns-yaml-directive+2]
+    // y[impl struct.yaml-directive.should-reject-higher-major] — major version mismatch not accepted
+    // y[impl struct.yaml-directive.should-warn-higher-minor] — minor version differences tolerated
     /// Scan `%YAML x.y`.
     // cref: fy_scan_directive (fy-parse.c:2275)
     fn fetch_version_directive(&mut self) -> Result<Token<'input>, ScanError> {
@@ -707,6 +757,17 @@ impl<'input> Scanner<'input> {
         ))
     }
 
+    // y[impl struct.ns-tag-directive+2]
+    // y[impl struct.tag-directive.at-most-once-per-handle+2]
+    // y[impl struct.c-tag-handle+2]
+    // y[impl struct.c-primary-tag-handle+2]
+    // y[impl struct.c-secondary-tag-handle+2]
+    // y[impl struct.c-named-tag-handle+2]
+    // y[impl struct.named-tag-handle.must-be-declared+2]
+    // y[impl struct.named-tag-handle.not-content+2]
+    // y[impl struct.ns-tag-prefix+2]
+    // y[impl struct.c-ns-local-tag-prefix+2]
+    // y[impl struct.ns-global-tag-prefix+2]
     /// Scan `%TAG handle prefix`.
     // cref: fy_scan_directive (fy-parse.c:2296)
     fn fetch_tag_directive(&mut self) -> Result<Token<'input>, ScanError> {
@@ -760,6 +821,11 @@ impl<'input> Scanner<'input> {
     /// The simple key is saved at the CURRENT flow level (before incrementing)
     /// so it can be resolved when `:` is found outside the collection.
     // cref: fy_fetch_flow_collection_mark_start (fy-parse.c:2432)
+    // y[impl char.c-sequence-start]
+    // y[impl char.c-mapping-start]
+    // y[impl char.c-flow-indicator]
+    // y[impl flow.c-flow-sequence]
+    // y[impl flow.c-flow-mapping]
     fn fetch_flow_collection_start(&mut self, c: char) {
         let start_mark = self.reader.mark();
         let kind = if c == '[' {
@@ -793,6 +859,9 @@ impl<'input> Scanner<'input> {
 
     /// Consume `]` or `}` and emit a flow collection end token.
     // cref: fy_fetch_flow_collection_mark_end (fy-parse.c:2518)
+    // y[impl char.c-sequence-end]
+    // y[impl char.c-mapping-end]
+    // y[impl flow.in-flow+3]
     fn fetch_flow_collection_end(&mut self, c: char) {
         if self.flow_level == 0 {
             self.reader.advance();
@@ -864,6 +933,7 @@ impl<'input> Scanner<'input> {
 
     /// Consume `,` and emit a flow entry token.
     // cref: fy_parse_handle_comma (fy-parse.c:1174)
+    // y[impl char.c-collect-entry]
     fn fetch_flow_entry(&mut self) {
         self.remove_simple_key();
         let start = self.reader.mark();
@@ -877,6 +947,10 @@ impl<'input> Scanner<'input> {
 
     /// Fetch a block entry (`- `). May push `BlockSequenceStart` into the queue first.
     // cref: fy_fetch_block_entry (fy-parse.c:2703)
+    // y[impl char.c-sequence-entry]
+    // y[impl block.l-block-sequence]
+    // y[impl block.c-l-block-seq-entry]
+    // y[impl block.seq.dash-separated]
     fn fetch_block_entry(&mut self) {
         // A block entry that would create a new indent level cannot appear
         // on the same line as a preceding value indicator (e.g., `key: - a`).
@@ -900,6 +974,8 @@ impl<'input> Scanner<'input> {
 
     /// Fetch an explicit key (`? `). May push `BlockMappingStart` into the queue first.
     // cref: fy_fetch_key (fy-parse.c:2818)
+    // y[impl char.c-mapping-key]
+    // y[impl block.c-l-block-map-explicit-key]
     fn fetch_key(&mut self) {
         self.remove_simple_key();
         let col = self.reader.mark().column as i32;
@@ -919,6 +995,14 @@ impl<'input> Scanner<'input> {
     /// before the key token. If no simple key exists, this is an empty key
     /// (`: value`) — emit `BlockMappingStart` + `Key` at the current position.
     // cref: fy_fetch_value (fy-parse.c:2931)
+    // y[impl char.c-mapping-value]
+    // y[impl block.l-block-mapping]
+    // y[impl block.ns-l-block-map-entry]
+    // y[impl block.ns-l-block-map-implicit-entry]
+    // y[impl block.c-l-block-map-implicit-value]
+    // y[impl block.ns-s-block-map-implicit-key]
+    // y[impl block.explicit-key-separate-value]
+    // y[impl block.value-not-adjacent]
     fn fetch_value(&mut self) {
         self.purge_stale_simple_keys();
 
@@ -1073,6 +1157,10 @@ impl<'input> Scanner<'input> {
     /// - `,` `[` `]` `{` `}` in flow context
     /// - `---` or `...` at column 0 followed by blank/EOF (document indicators)
     // cref: fy_reader_fetch_plain_scalar_handle (fy-reader.c)
+    // y[impl flow.ns-plain-char+4] — plain scalar character set (excluding : # and flow indicators)
+    // y[impl flow.ns-plain-safe-in+4] — plain safe chars inside flow collections
+    // y[impl flow.ns-plain-safe-out+4] — plain safe chars outside flow collections
+    // y[impl flow.plain.must-not-contain-colon-space-space-hash] — `: ` and ` #` terminate plain scalars
     fn scan_plain_scalar_line(&mut self, is_first_line: bool) -> &'input str {
         let start_offset = self.reader.mark().offset;
 
@@ -1137,6 +1225,11 @@ impl<'input> Scanner<'input> {
     /// line number of the last actual content character (not including consumed
     /// whitespace from failed continuation lookahead).
     // cref: fy_reader_fetch_plain_scalar_handle_inline (fy-parse.c:4434)
+    // y[impl flow.ns-plain-first+4]
+    // y[impl flow.ns-plain-safe+4]
+    // y[impl struct.s-line-prefix] — leading whitespace on continuation lines
+    // y[impl struct.s-block-line-prefix] — block context line prefix
+    // y[impl struct.line-prefix.not-content] — line prefix is not part of scalar content
     fn scan_plain_scalar_text(&mut self) -> (Cow<'input, str>, u32) {
         let first_line = self.scan_plain_scalar_line(true);
         let start_line = self.reader.mark().line;
@@ -1272,6 +1365,15 @@ impl<'input> Scanner<'input> {
     /// follows later, `fetch_value` can retroactively insert `Key` and
     /// `BlockMappingStart`.
     // cref: fy_fetch_plain_scalar (fy-parse.c:5151)
+    // y[impl flow.ns-plain]
+    // y[impl flow.ns-plain-one-line]
+    // y[impl flow.ns-plain-multi-line]
+    // y[impl flow.s-ns-plain-next-line]
+    // y[impl flow.nb-ns-plain-in-line]
+    // y[impl flow.plain.continuation-must-contain-non-space]
+    // y[impl flow.plain.must-not-be-empty]
+    // y[impl flow.plain.must-not-begin-with-indicators]
+    // y[impl flow.plain.must-not-contain-flow-indicators+3]
     fn fetch_plain_scalar(&mut self) {
         // Don't remove pending simple keys — a preceding tag/anchor's
         // simple key should remain if this scalar is part of the same key.
@@ -1334,6 +1436,26 @@ impl<'input> Scanner<'input> {
     /// A simple key mark is saved so the tag can be retroactively identified
     /// as part of a mapping key when `:` follows.
     // cref: fy_fetch_tag (fy-parse.c:3342)
+    // y[impl char.c-tag+2]
+    // y[impl struct.c-ns-tag-property+2]
+    // y[impl struct.c-verbatim-tag+2]
+    // y[impl struct.verbatim-tag.deliver-as-is+2]
+    // y[impl struct.verbatim-tag.must-be-local-or-uri+2]
+    // y[impl struct.c-ns-shorthand-tag+2]
+    // y[impl struct.shorthand-tag.handle-must-have-prefix+2]
+    // y[impl struct.shorthand-tag.result-must-be-local-or-uri+2]
+    // y[impl struct.shorthand-tag.handle-not-content+2]
+    // y[impl struct.shorthand-tag.suffix-no-bang+2]
+    // y[impl struct.shorthand-tag.suffix-escape+2]
+    // y[impl struct.shorthand-tag.suffix-no-flow-chars+3]
+    // y[impl struct.c-non-specific-tag+2]
+    // y[impl char.ns-uri-char]
+    // y[impl char.ns-word-char]
+    // y[impl char.misc.tag-preserve+2]
+    // y[impl char.misc.uri-no-expand] — URI percent-encoding preserved, not expanded during scan
+    // y[impl char.misc.tag-shorthand-restrict+3] — shorthand tag handles restricted to word chars
+    // y[impl char.ns-tag-char+3] — tag characters: ns-uri-char minus ! and flow indicators
+    // y[impl struct.global-tag-prefix.must-be-valid-uri] — global tag prefix validated as URI
     fn fetch_tag(&mut self) {
         let start_mark = self.reader.mark();
         self.reader.advance(); // skip first '!'
@@ -1443,6 +1565,17 @@ impl<'input> Scanner<'input> {
     /// Reads the indicator and the following name. Saves a simple key mark
     /// so that anchors and aliases can serve as mapping keys.
     // cref: fy_fetch_anchor_or_alias (fy-parse.c:5443-5454)
+    // y[impl char.c-anchor]
+    // y[impl char.c-alias]
+    // y[impl struct.c-ns-anchor-property]
+    // y[impl struct.ns-anchor-name]
+    // y[impl struct.anchor.not-content]
+    // y[impl struct.anchor.no-flow-chars+3]
+    // y[impl struct.ns-anchor-char+3]
+    // y[impl flow.c-ns-alias-node]
+    // y[impl flow.alias.error-undefined-anchor]
+    // y[impl flow.alias.must-anchor-first]
+    // y[impl flow.alias.must-not-specify-properties]
     fn fetch_anchor_or_alias(&mut self, indicator: char) {
         let start_mark = self.reader.mark();
         let kind = if indicator == '&' {
@@ -1481,6 +1614,31 @@ impl<'input> Scanner<'input> {
     /// content lines respecting indentation. Applies chomp rules and
     /// folding (for `>`) to produce the final scalar value.
     // cref: fy_fetch_block_scalar (fy-parse.c), fy_reader_fetch_block_scalar_handle (fy-reader.c)
+    // y[impl char.c-literal]
+    // y[impl char.c-folded]
+    // y[impl block.c-l-literal]
+    // y[impl block.c-l-folded]
+    // y[impl block.c-b-block-header]
+    // y[impl block.header.comment-no-follow]
+    // y[impl block.c-chomping-indicator]
+    // y[impl block.chomping.not-content]
+    // y[impl block.c-indentation-indicator]
+    // y[impl block.l-literal-content]
+    // y[impl block.l-folded-content]
+    // y[impl block.l-nb-literal-text]
+    // y[impl block.b-nb-literal-next]
+    // y[impl block.l-nb-diff-lines]
+    // y[impl block.l-nb-folded-lines]
+    // y[impl block.s-nb-folded-text]
+    // y[impl block.b-l-spaced]
+    // y[impl block.l-nb-spaced-lines]
+    // y[impl block.s-nb-spaced-text]
+    // y[impl block.l-nb-same-lines]
+    // y[impl block.l-chomped-empty]
+    // y[impl block.l-strip-empty]
+    // y[impl block.l-keep-empty]
+    // y[impl block.l-trail-comments]
+    // y[impl block.trail-comment.indent]
     fn fetch_block_scalar(&mut self, indicator: char) {
         let start_mark = self.reader.mark();
         let is_literal = indicator == '|';
@@ -1634,6 +1792,7 @@ impl<'input> Scanner<'input> {
         }
 
         // Apply chomp to trailing newlines.
+        // y[impl block.b-chomped-last+4] — final line break handling per chomp indicator
         match chomp {
             Chomp::Strip => {
                 let trimmed_len = content.trim_end_matches('\n').len();
@@ -1717,6 +1876,20 @@ impl<'input> Scanner<'input> {
     ///
     /// The only escape in single-quoted scalars is `''` → `'`.
     // cref: fy_reader_fetch_flow_scalar_handle (fy-reader.c) — single-quoted branch
+    // y[impl char.c-single-quote]
+    // y[impl flow.c-single-quoted]
+    // y[impl flow.single-quoted.continuation-must-contain-non-space]
+    // y[impl flow.nb-single-char]
+    // y[impl flow.ns-single-char]
+    // y[impl flow.c-quoted-quote]
+    // y[impl flow.nb-single-one-line]
+    // y[impl flow.nb-single-text]
+    // y[impl flow.nb-single-multi-line]
+    // y[impl flow.s-single-next-line]
+    // y[impl flow.nb-ns-single-in-line]
+    // y[impl struct.s-flow-folded] — flow scalar line folding
+    // y[impl struct.s-flow-line-prefix] — leading whitespace on continuation lines
+    // y[impl struct.flow-folding.spaces-not-content] — surrounding spaces stripped during fold
     fn fetch_single_quoted_scalar(&mut self) {
         let start_mark = self.reader.mark();
         self.reader.advance(); // skip opening '
@@ -1837,6 +2010,43 @@ impl<'input> Scanner<'input> {
 
     /// Fetch a double-quoted scalar (`"..."`), processing escape sequences.
     // cref: fy_reader_fetch_flow_scalar_handle (fy-reader.c) — double-quoted branch
+    // y[impl char.c-double-quote]
+    // y[impl char.c-escape]
+    // y[impl char.c-ns-esc-char+3]
+    // y[impl char.ns-esc-null]
+    // y[impl char.ns-esc-bell]
+    // y[impl char.ns-esc-backspace]
+    // y[impl char.ns-esc-horizontal-tab+2]
+    // y[impl char.ns-esc-line-feed]
+    // y[impl char.ns-esc-vertical-tab]
+    // y[impl char.ns-esc-form-feed]
+    // y[impl char.ns-esc-carriage-return]
+    // y[impl char.ns-esc-escape]
+    // y[impl char.ns-esc-space]
+    // y[impl char.ns-esc-double-quote]
+    // y[impl char.ns-esc-backslash]
+    // y[impl char.ns-esc-next-line]
+    // y[impl char.ns-esc-non-breaking-space]
+    // y[impl char.ns-esc-line-separator]
+    // y[impl char.ns-esc-paragraph-separator]
+    // y[impl char.ns-esc-8-bit]
+    // y[impl char.ns-esc-16-bit]
+    // y[impl char.ns-esc-32-bit]
+    // y[impl char.ns-esc-slash+3]
+    // y[impl char.escape.must-escape]
+    // y[impl char.escape.not-content]
+    // y[impl char.escape.parse-to-unicode]
+    // y[impl flow.c-double-quoted]
+    // y[impl flow.double-quoted.continuation-must-contain-non-space]
+    // y[impl flow.nb-double-char]
+    // y[impl flow.ns-double-char]
+    // y[impl flow.nb-double-one-line]
+    // y[impl flow.nb-double-text]
+    // y[impl flow.nb-double-multi-line]
+    // y[impl flow.s-double-break]
+    // y[impl flow.s-double-escaped]
+    // y[impl flow.s-double-next-line]
+    // y[impl flow.nb-ns-double-in-line]
     fn fetch_double_quoted_scalar(&mut self) {
         let start_mark = self.reader.mark();
         self.reader.advance(); // skip opening "
@@ -2080,6 +2290,7 @@ impl<'input> Scanner<'input> {
     }
 
     /// Read `n` hex digits and return the corresponding Unicode character.
+    // y[impl char.ns-hex-digit]
     fn scan_unicode_escape(&mut self, n: usize) -> Option<char> {
         let mut code: u32 = 0;
         for _ in 0..n {
@@ -2220,6 +2431,8 @@ impl<'input> Scanner<'input> {
     /// document indicators, directives, flow indicators, block indicators,
     /// and EOF. Unrecognized content is skipped.
     // cref: fy_fetch_tokens (fy-parse.c:5250)
+    // y[impl char.c-indicator] — dispatch on all 22 indicator characters
+    // y[impl char.c-reserved] — @ and ` fall through to plain scalar → error
     fn fetch_next_token(&mut self) -> Option<Result<Token<'input>, ScanError>> {
         loop {
             // Drain deferred error from a void fetch method.
@@ -2438,6 +2651,7 @@ const fn is_blank_or_end(c: Option<char>) -> bool {
 /// Multi-byte UTF-8 sequences like `%C3%BC` are decoded correctly.
 /// Invalid sequences are left as-is.
 // cref: fy_tag_scan (fy-parse.c:2210)
+// y[impl struct.global-tag-prefix.same-semantics] — URI percent-encoding decoded consistently
 fn decode_tag_uri(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut decoded_bytes = Vec::with_capacity(bytes.len());
@@ -2457,6 +2671,8 @@ fn decode_tag_uri(input: &str) -> String {
     String::from_utf8(decoded_bytes).unwrap_or_else(|_| input.to_string())
 }
 
+// y[impl char.ns-dec-digit] — decimal digits 0-9 used in indent indicators and escape sequences
+// y[impl char.ns-ascii-letter] — ASCII letters used in directive names and tag handles
 const fn hex_digit(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -2486,6 +2702,10 @@ const fn is_linebreak(c: char) -> bool {
 /// - Content prev → MI cur: preserve `\n` (folding doesn't apply around MI)
 /// - Content prev → content cur: fold to space
 // cref: fy_atom_format_text_block (fy-atom.c) — folded mode
+// y[impl struct.b-l-folded] — line folding: single break → space, empty lines → newlines
+// y[impl struct.b-l-trimmed] — trimming trailing whitespace before folding
+// y[impl struct.b-as-space] — single line break folded to space
+// y[impl struct.l-empty] — empty lines preserved as literal newlines
 fn fold_block_scalar(content: &str) -> String {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut result = String::with_capacity(content.len());

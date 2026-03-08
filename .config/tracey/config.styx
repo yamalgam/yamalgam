@@ -1,13 +1,13 @@
 @schema {id crate:tracey-config@1, cli tracey}
 
 specs (
-    // YAML Specification — tracked across versions via tracey versioning.
+    // YAML Specification — tracked across all published versions via tracey versioning.
     // Prefix: y (e.g., y[impl char.c-printable])
-    // 1.1 markers are version 1 (implicit). 1.2.2 bumps where requirements changed.
+    // v1=1.0, v2=1.1, v3=1.2.0, v4=1.2.1. No v5 — 1.2.2 has no normative changes.
     {
         name yaml
         source_url https://yaml.org/spec/
-        include (docs/spec/yaml-1.1/**/*.md docs/spec/yaml-1.2.2/**/*.md)
+        include (docs/spec/yaml-1.0/**/*.md docs/spec/yaml-1.1/**/*.md docs/spec/yaml-1.2.0/**/*.md docs/spec/yaml-1.2.1/**/*.md docs/spec/yaml-1.2.2/**/*.md)
         impls (
             {
                 name scanner

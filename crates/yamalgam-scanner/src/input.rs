@@ -28,6 +28,14 @@ pub struct Input<'a> {
     data: Cow<'a, str>,
 }
 
+// y[impl char.encoding.input-utf8-utf16+3]
+// y[impl char.encoding.json-utf32+3]
+// y[impl char.c-byte-order-mark]
+// y[impl char.encoding.bom-detection] — BOM sniffing for UTF-8/16/32
+// y[impl char.encoding.not-content] — BOM stripped before content processing
+// y[impl char.encoding.ascii-first] — UTF-8 default when no BOM present
+// y[impl char.encoding.same-encoding] — single encoding per stream (detected once)
+// y[impl char.set.input-accept] — accepts all Unicode via UTF-8/16/32 decoding
 /// Detect encoding from the first few bytes (BOM sniffing).
 ///
 /// Returns `(encoding, bom_length)`.
@@ -113,6 +121,12 @@ impl<'a> Input<'a> {
     ///
     /// Returns a [`Diagnostic`] if the input contains invalid sequences for the
     /// detected encoding.
+    // y[impl char.c-printable+3] — printable chars enforced by UTF-8 validation
+    // y[impl char.nb-json+3] — JSON-compatible chars available via Unicode
+    // y[impl char.set.json-compat+3] — JSON subset accepted as valid YAML
+    // y[impl char.set.output-produce] — output limited to valid Unicode
+    // y[impl char.set.escape-outside] — non-printable chars must use escape sequences
+    // y[impl char.encoding.bom-in-quoted+3] — BOM stripped before content reaches scanner
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Diagnostic> {
         let (encoding, bom_len) = detect_encoding(bytes);
         let payload = &bytes[bom_len..];

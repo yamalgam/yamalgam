@@ -10,6 +10,22 @@
 //!
 //! [spec]: https://yaml.org/spec/1.2.2/#103-core-schema
 
+// y[impl schema.core.recommended-default+3]
+// y[impl schema.core.tag-resolution-scalars+3]
+// y[impl schema.core.tag-resolution-table+3]
+// y[impl schema.core.unmatched-scalar-str+3]
+// y[impl schema.core.tag-resolution-bang+3]
+// y[impl schema.core.tag-resolution-collections+3]
+// y[impl schema.json.tag-null+3]
+// y[impl schema.json.tag-bool+3]
+// y[impl schema.json.tag-int+3]
+// y[impl schema.json.tag-float+3]
+// y[impl schema.json.int-overflow-handling+3]
+// y[impl schema.json.float-key-not-recommended+3]
+// y[impl schema.failsafe.tag-str+3]
+// y[impl schema.failsafe.tag-mapping+3]
+// y[impl schema.failsafe.tag-seq+3]
+// y[impl schema.definition+3]
 use crate::Value;
 
 /// Resolve a plain (unquoted) scalar string to a typed [`Value`] per the

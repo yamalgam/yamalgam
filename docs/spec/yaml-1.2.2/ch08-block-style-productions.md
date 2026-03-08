@@ -22,13 +22,11 @@ preceding the [content] itself.
 This header is followed by a non-content [line break] with an optional
 [comment].
 
-y[block.header.comment-no-follow]
 This is the only case where a [comment] must not be followed by additional
 [comment] lines.
 
 > Note: See [Production Parameters] for the definition of the `t` variable.
 
-y[block.c-b-block-header]
 ```
 [#] c-b-block-header(t) ::=
   (
@@ -86,19 +84,15 @@ contents.
 If there is no non-[empty line] then the content indentation level is equal to
 the number of spaces on the longest line.
 
-y[block.indent.non-empty-line-error]
 It is an error if any non-[empty line] does not begin with a number of spaces
 greater than or equal to the content indentation level.
 
-y[block.indent.leading-empty-error]
 It is an error for any of the leading [empty lines] to contain more [spaces]
 than the first non-[empty line].
 
-y[block.indent.emit-explicit]
 A YAML [processor] should only emit an explicit indentation indicator for cases
 where detection will fail.
 
-y[block.c-indentation-indicator]
 ```
 [#] c-indentation-indicator ::=
   [x31-x39]    # 1-9
@@ -193,11 +187,9 @@ In this case, the final [line break] and any trailing [empty lines] are
 considered to be part of the [scalar's content].
 These additional lines are not subject to [folding].
 
-y[block.chomping.not-content]
 The chomping method used is a [presentation detail] and must not be used to
 convey [content] information.
 
-y[block.c-chomping-indicator]
 ```
 [#]
 c-chomping-indicator(STRIP) ::= '-'
@@ -209,7 +201,6 @@ c-chomping-indicator(CLIP)  ::= ""
 The interpretation of the final [line break] of a [block scalar] is controlled
 by the chomping indicator specified in the [block scalar header].
 
-y[block.b-chomped-last]
 ```
 [#]
 b-chomped-last(STRIP) ::= b-non-content  | <end-of-input>
@@ -244,7 +235,6 @@ The interpretation of the trailing [empty lines] following a [block scalar] is
 also controlled by the chomping indicator specified in the [block scalar
 header].
 
-y[block.l-chomped-empty]
 ```
 [#]
 l-chomped-empty(n,STRIP) ::= l-strip-empty(n)
@@ -252,7 +242,6 @@ l-chomped-empty(n,CLIP)  ::= l-strip-empty(n)
 l-chomped-empty(n,KEEP)  ::= l-keep-empty(n)
 ```
 
-y[block.l-strip-empty]
 ```
 [#] l-strip-empty(n) ::=
   (
@@ -262,7 +251,6 @@ y[block.l-strip-empty]
   l-trail-comments(n)?
 ```
 
-y[block.l-keep-empty]
 ```
 [#] l-keep-empty(n) ::=
   l-empty(n,BLOCK-IN)*
@@ -272,14 +260,12 @@ y[block.l-keep-empty]
 
 Explicit [comment] lines may follow the trailing [empty lines].
 
-y[block.trail-comment.indent]
 To prevent ambiguity, the first such [comment] line must be less [indented]
 than the [block scalar content].
 Additional [comment] lines, if any, are not so restricted.
 This is the only case where the [indentation] of [comment] lines is
 constrained.
 
-y[block.l-trail-comments]
 ```
 [#] l-trail-comments(n) ::=
   s-indent-less-than(n)
@@ -355,7 +341,6 @@ keep: |+
 The _literal style_ is denoted by the "`|`" indicator.
 It is the simplest, most restricted and most readable [scalar style].
 
-y[block.c-l-literal]
 ```
 [#] c-l+literal(n) ::=
   c-literal                # '|'
@@ -391,21 +376,18 @@ There is no way to escape characters inside literal scalars.
 This restricts them to [printable] characters.
 In addition, there is no way to break a long literal line.
 
-y[block.l-nb-literal-text]
 ```
 [#] l-nb-literal-text(n) ::=
   l-empty(n,BLOCK-IN)*
   s-indent(n) nb-char+
 ```
 
-y[block.b-nb-literal-next]
 ```
 [#] b-nb-literal-next(n) ::=
   b-as-line-feed
   l-nb-literal-text(n)
 ```
 
-y[block.l-literal-content]
 ```
 [#] l-literal-content(n,t) ::=
   (
@@ -448,7 +430,6 @@ The _folded style_ is denoted by the "`>`" indicator.
 It is similar to the [literal style]; however, folded scalars are subject to
 [line folding].
 
-y[block.c-l-folded]
 ```
 [#] c-l+folded(n) ::=
   c-folded                 # '>'
@@ -477,7 +458,6 @@ y[block.c-l-folded]
 [Folding] allows long lines to be broken anywhere a single [space] character
 separates two non-[space] characters.
 
-y[block.s-nb-folded-text]
 ```
 [#] s-nb-folded-text(n) ::=
   s-indent(n)
@@ -485,7 +465,6 @@ y[block.s-nb-folded-text]
   nb-char*
 ```
 
-y[block.l-nb-folded-lines]
 ```
 [#] l-nb-folded-lines(n) ::=
   s-nb-folded-text(n)
@@ -534,7 +513,6 @@ different productions.)
 Lines starting with [white space] characters (_more-indented_ lines) are not
 [folded].
 
-y[block.s-nb-spaced-text]
 ```
 [#] s-nb-spaced-text(n) ::=
   s-indent(n)
@@ -542,14 +520,12 @@ y[block.s-nb-spaced-text]
   nb-char*
 ```
 
-y[block.b-l-spaced]
 ```
 [#] b-l-spaced(n) ::=
   b-as-line-feed
   l-empty(n,BLOCK-IN)*
 ```
 
-y[block.l-nb-spaced-lines]
 ```
 [#] l-nb-spaced-lines(n) ::=
   s-nb-spaced-text(n)
@@ -595,7 +571,6 @@ y[block.l-nb-spaced-lines]
 [Line breaks] and [empty lines] separating folded and more-indented lines are
 also not [folded].
 
-y[block.l-nb-same-lines]
 ```
 [#] l-nb-same-lines(n) ::=
   l-empty(n,BLOCK-IN)*
@@ -605,7 +580,6 @@ y[block.l-nb-same-lines]
   )
 ```
 
-y[block.l-nb-diff-lines]
 ```
 [#] l-nb-diff-lines(n) ::=
   l-nb-same-lines(n)
@@ -651,7 +625,6 @@ y[block.l-nb-diff-lines]
 The final [line break] and trailing [empty lines] if any, are subject to
 [chomping] and are never [folded].
 
-y[block.l-folded-content]
 ```
 [#] l-folded-content(n,t) ::=
   (
@@ -707,12 +680,10 @@ entry] is seen.
 A _block sequence_ is simply a series of [nodes], each denoted by a leading
 "`-`" indicator.
 
-y[block.seq.dash-separated]
 The "`-`" indicator must be [separated] from the [node] by [white space].
 This allows "`-`" to be used as the first character in a [plain scalar] if
 followed by a non-space character (e.g. "`-42`").
 
-y[block.l-block-sequence]
 ```
 [#] l+block-sequence(n) ::=
   (
@@ -721,7 +692,6 @@ y[block.l-block-sequence]
   )+
 ```
 
-y[block.c-l-block-seq-entry]
 ```
 [#] c-l-block-seq-entry(n) ::=
   c-sequence-entry    # '-'
@@ -758,7 +728,6 @@ considered to be part of the [indentation] of the nested [collection].
 Note that it is not possible to specify [node properties] for such a
 [collection].
 
-y[block.s-l-block-indented]
 ```
 [#] s-l+block-indented(n,c) ::=
     (
@@ -775,7 +744,6 @@ y[block.s-l-block-indented]
     )
 ```
 
-y[block.ns-l-compact-sequence]
 ```
 [#] ns-l-compact-sequence(n) ::=
   c-l-block-seq-entry(n)
@@ -815,7 +783,6 @@ y[block.ns-l-compact-sequence]
 
 A _Block mapping_ is a series of entries, each [presenting] a [key/value pair].
 
-y[block.l-block-mapping]
 ```
 [#] l+block-mapping(n) ::=
   (
@@ -842,20 +809,17 @@ block mapping:
 * auto-detected [s-indent(n)] <!-- 2:1 -->
 
 
-y[block.explicit-key-separate-value]
 If the "`?`" indicator is specified, the optional value node must be specified
 on a separate line, denoted by the "`:`" indicator.
 Note that YAML allows here the same [compact in-line notation] described above
 for [block sequence] entries.
 
-y[block.ns-l-block-map-entry]
 ```
 [#] ns-l-block-map-entry(n) ::=
     c-l-block-map-explicit-entry(n)
   | ns-l-block-map-implicit-entry(n)
 ```
 
-y[block.c-l-block-map-explicit-entry]
 ```
 [#] c-l-block-map-explicit-entry(n) ::=
   c-l-block-map-explicit-key(n)
@@ -865,14 +829,12 @@ y[block.c-l-block-map-explicit-entry]
   )
 ```
 
-y[block.c-l-block-map-explicit-key]
 ```
 [#] c-l-block-map-explicit-key(n) ::=
   c-mapping-key                     # '?' (not followed by non-ws char)
   s-l+block-indented(n,BLOCK-OUT)
 ```
 
-y[block.l-block-map-explicit-value]
 ```
 [#] l-block-map-explicit-value(n) ::=
   s-indent(n)
@@ -905,14 +867,12 @@ y[block.l-block-map-explicit-value]
 
 <!-- REVIEW value should be null above -->
 
-y[block.implicit-key-restrictions]
 If the "`?`" indicator is omitted, [parsing] needs to see past the
 [implicit key], in the same way as in the [single key/value pair] [flow
 mapping].
 Hence, such [keys] are subject to the same restrictions; they are limited to a
 single line and must not span more than 1024 Unicode characters.
 
-y[block.ns-l-block-map-implicit-entry]
 ```
 [#] ns-l-block-map-implicit-entry(n) ::=
   (
@@ -922,7 +882,6 @@ y[block.ns-l-block-map-implicit-entry]
   c-l-block-map-implicit-value(n)
 ```
 
-y[block.ns-s-block-map-implicit-key]
 ```
 [#] ns-s-block-map-implicit-key ::=
     c-s-implicit-json-key(BLOCK-KEY)
@@ -933,7 +892,6 @@ y[block.ns-s-block-map-implicit-key]
 In this case, the [value] may be specified on the same line as the [implicit
 key].
 
-y[block.value-not-adjacent]
 Note however that in block mappings the [value] must never be adjacent to the
 "`:`", as this greatly reduces readability and is not required for [JSON
 compatibility] (unlike the case in [flow mappings]).
@@ -943,7 +901,6 @@ Also, while both the [implicit key] and the [value] following it may be empty,
 the "`:`" indicator is mandatory.
 This prevents a potential ambiguity with multi-line [plain scalars].
 
-y[block.c-l-block-map-implicit-value]
 ```
 [#] c-l-block-map-implicit-value(n) ::=
   c-mapping-value           # ':' (not followed by non-ws char)
@@ -983,7 +940,6 @@ mapping entries.
 Note that it is not possible to specify [node properties] for such a nested
 mapping.
 
-y[block.ns-l-compact-mapping]
 ```
 [#] ns-l-compact-mapping(n) ::=
   ns-l-block-map-entry(n)
@@ -1017,7 +973,6 @@ y[block.ns-l-compact-mapping]
 YAML allows [flow nodes] to be embedded inside [block collections] (but not
 vice-versa).
 
-y[block.flow-indent-requirement]
 [Flow nodes] must be [indented] by at least one more [space] than the parent
 [block collection].
 Note that [flow nodes] may begin on a following line.
@@ -1025,14 +980,12 @@ Note that [flow nodes] may begin on a following line.
 It is at this point that [parsing] needs to distinguish between a [plain
 scalar] and an [implicit key] starting a nested [block mapping].
 
-y[block.s-l-block-node]
 ```
 [#] s-l+block-node(n,c) ::=
     s-l+block-in-block(n,c)
   | s-l+flow-in-block(n)
 ```
 
-y[block.s-l-flow-in-block]
 ```
 [#] s-l+flow-in-block(n) ::=
   s-separate(n+1,FLOW-OUT)
@@ -1065,19 +1018,16 @@ y[block.s-l-flow-in-block]
 
 The block [node's properties] may span across several lines.
 
-y[block.properties-indent]
 In this case, they must be [indented] by at least one more [space] than the
 [block collection], regardless of the [indentation] of the [block collection]
 entries.
 
-y[block.s-l-block-in-block]
 ```
 [#] s-l+block-in-block(n,c) ::=
     s-l+block-scalar(n,c)
   | s-l+block-collection(n,c)
 ```
 
-y[block.s-l-block-scalar]
 ```
 [#] s-l+block-scalar(n,c) ::=
   s-separate(n+1,c)
@@ -1118,7 +1068,6 @@ sequences] may be [indented] by one less [space] to compensate, except, of
 course, if nested inside another [block sequence] ([`BLOCK-OUT` context] versus
 [`BLOCK-IN` context]).
 
-y[block.s-l-block-collection]
 ```
 [#] s-l+block-collection(n,c) ::=
   (
@@ -1132,7 +1081,6 @@ y[block.s-l-block-collection]
   )
 ```
 
-y[block.seq-space]
 ```
 [#] seq-space(n,BLOCK-OUT) ::= l+block-sequence(n-1)
     seq-space(n,BLOCK-IN)  ::= l+block-sequence(n)

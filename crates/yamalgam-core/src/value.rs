@@ -7,6 +7,13 @@
 //! The primary types are [`Value`] (a single YAML node) and [`Mapping`]
 //! (an insertion-order-preserving key/value map backed by a `Vec`).
 
+// y[impl model.repr.node-definition]
+// y[impl overview.collections.block-indent]
+// y[impl overview.collections.block-seq-indicator]
+// y[impl overview.collections.comment-indicator]
+// y[impl overview.scalars.double-quoted-escapes]
+// y[impl overview.scalars.flow-multiline-fold]
+// y[impl overview.scalars.flow-plain]
 use std::fmt;
 
 /// A YAML value.
@@ -25,8 +32,10 @@ pub enum Value {
     /// A 64-bit float.
     Float(f64),
     /// A UTF-8 string.
+    // y[impl model.repr.node.scalar]
     String(String),
     /// An ordered sequence of values.
+    // y[impl model.repr.node.sequence]
     Sequence(Vec<Self>),
     /// An ordered mapping of key/value pairs.
     Mapping(Mapping),
@@ -38,6 +47,10 @@ pub enum Value {
 /// scan) rather than appending a duplicate. This keeps the API predictable at
 /// the cost of O(n) lookups — fine for typical YAML document sizes.
 #[derive(Debug, Clone, PartialEq)]
+// y[impl model.repr.node.mapping]
+// y[impl model.repr.uniqueness]
+// y[impl model.serial.key-order.serialization-detail]
+// y[impl model.serial.key-order.no-representation-order]
 pub struct Mapping {
     entries: Vec<(Value, Value)>,
 }
