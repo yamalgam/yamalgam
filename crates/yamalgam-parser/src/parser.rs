@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use yamalgam_core::Span;
+use yamalgam_core::{LoaderConfig, ResourceLimits, Span};
 use yamalgam_scanner::scanner::{ScanError, Scanner};
 use yamalgam_scanner::{ScalarStyle, Token, TokenKind};
 
@@ -80,6 +80,8 @@ pub struct Parser<'input> {
     /// True when a directive has been seen in the current prologue.
     /// Reset when a document starts. Used to require `---` after directives.
     seen_directive: bool,
+    /// Resource limits (depth, size, etc.).
+    config: ResourceLimits,
 }
 
 impl<'input> Parser<'input> {
@@ -89,6 +91,16 @@ impl<'input> Parser<'input> {
     #[must_use]
     pub fn new(input: &'input str) -> Self {
         Self::from_tokens(Scanner::new(input))
+    }
+
+    /// Create a parser from a YAML input string with a [`LoaderConfig`].
+    ///
+    /// The config's resource limits are enforced during parsing (e.g.
+    /// `max_depth` on the state stack), and the config is also forwarded
+    /// to the internal [`Scanner`].
+    #[must_use]
+    pub fn with_config(input: &'input str, config: &LoaderConfig) -> Self {
+        Self::from_tokens_with_config(Scanner::with_config(input, config), config)
     }
 
     /// Create a parser from an arbitrary token iterator.
@@ -104,6 +116,25 @@ impl<'input> Parser<'input> {
             peeked: None,
             done: false,
             seen_directive: false,
+            config: ResourceLimits::none(),
+        }
+    }
+
+    /// Create a parser from an arbitrary token iterator with a [`LoaderConfig`].
+    ///
+    /// The config's resource limits are enforced during parsing.
+    pub fn from_tokens_with_config(
+        tokens: impl Iterator<Item = Result<Token<'input>, ScanError>> + 'input,
+        config: &LoaderConfig,
+    ) -> Self {
+        Self {
+            tokens: Box::new(tokens),
+            state: ParserState::StreamStart,
+            state_stack: Vec::new(),
+            peeked: None,
+            done: false,
+            seen_directive: false,
+            config: config.limits.clone(),
         }
     }
 
@@ -124,9 +155,16 @@ impl<'input> Parser<'input> {
     }
 
     /// Push a state onto the state stack.
+    ///
+    /// Returns an error if the resulting stack depth exceeds the configured
+    /// [`max_depth`](ResourceLimits::max_depth).
     // cref: fy-parse.c:5673-5686 (fy_parse_state_push)
-    fn push_state(&mut self, state: ParserState) {
+    fn push_state(&mut self, state: ParserState) -> Result<(), ParseError> {
         self.state_stack.push(state);
+        if let Err(msg) = self.config.check_depth(self.state_stack.len()) {
+            return Err(ParseError::LimitExceeded(msg));
+        }
+        Ok(())
     }
 
     /// Pop a state from the state stack, defaulting to `End`.
@@ -266,7 +304,7 @@ impl<'input> Parser<'input> {
                 // Don't consume the token; let BlockNode handle it.
                 self.seen_directive = false;
                 let span = self.peek_token()?.expect("peeked").atom.span;
-                self.push_state(ParserState::DocumentEnd);
+                self.push_state(ParserState::DocumentEnd)?;
                 self.state = ParserState::BlockNode;
                 Ok(Some(Event::DocumentStart {
                     implicit: true,
@@ -287,7 +325,7 @@ impl<'input> Parser<'input> {
         let token = self.next_token()?;
         match token {
             Some(t) if t.kind == TokenKind::DocumentStart => {
-                self.push_state(ParserState::DocumentEnd);
+                self.push_state(ParserState::DocumentEnd)?;
                 self.state = ParserState::DocumentContent;
                 Ok(Some(Event::DocumentStart {
                     implicit: false,
@@ -560,7 +598,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Entry has content — recurse into BlockNode.
-                        self.push_state(ParserState::BlockSequenceEntry);
+                        self.push_state(ParserState::BlockSequenceEntry)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
@@ -598,7 +636,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Entry has content — recurse into BlockNode.
-                        self.push_state(ParserState::BlockSequenceEntry);
+                        self.push_state(ParserState::BlockSequenceEntry)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
@@ -693,7 +731,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Key has content — recurse into BlockNode.
-                        self.push_state(ParserState::BlockMappingValue);
+                        self.push_state(ParserState::BlockMappingValue)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
@@ -743,7 +781,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Value has content — recurse into BlockNode.
-                        self.push_state(ParserState::BlockMappingKey);
+                        self.push_state(ParserState::BlockMappingKey)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
@@ -784,7 +822,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Entry has content — recurse into BlockNode.
-                        self.push_state(ParserState::IndentlessSequenceEntry);
+                        self.push_state(ParserState::IndentlessSequenceEntry)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
@@ -867,7 +905,7 @@ impl<'input> Parser<'input> {
                 let t = self.next_token()?.expect("peeked");
                 // Push FlowSequenceEntryMappingValue as the return state for BlockNode.
                 // FlowSequenceEntryMappingValue will handle pushing FlowSequenceEntryMappingEnd.
-                self.push_state(ParserState::FlowSequenceEntryMappingValue);
+                self.push_state(ParserState::FlowSequenceEntryMappingValue)?;
                 self.state = ParserState::BlockNode;
                 Ok(Some(Event::MappingStart {
                     anchor: None,
@@ -889,7 +927,7 @@ impl<'input> Parser<'input> {
             }
             _ => {
                 // Normal entry — parse as a node.
-                self.push_state(ParserState::FlowSequenceEntry);
+                self.push_state(ParserState::FlowSequenceEntry)?;
                 self.state = ParserState::BlockNode;
                 self.parse_next()
             }
@@ -939,7 +977,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Value has content.
-                        self.push_state(ParserState::FlowSequenceEntryMappingEnd);
+                        self.push_state(ParserState::FlowSequenceEntryMappingEnd)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
@@ -1047,7 +1085,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Key has content.
-                        self.push_state(ParserState::FlowMappingValue);
+                        self.push_state(ParserState::FlowMappingValue)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
@@ -1061,7 +1099,7 @@ impl<'input> Parser<'input> {
             }
             _ => {
                 // Implicit key (no `?`) — parse key node directly.
-                self.push_state(ParserState::FlowMappingValue);
+                self.push_state(ParserState::FlowMappingValue)?;
                 self.state = ParserState::BlockNode;
                 self.parse_next()
             }
@@ -1086,7 +1124,7 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         // Value has content.
-                        self.push_state(ParserState::FlowMappingKey);
+                        self.push_state(ParserState::FlowMappingKey)?;
                         self.state = ParserState::BlockNode;
                         self.parse_next()
                     }
