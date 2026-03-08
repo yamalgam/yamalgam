@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 use std::io::Read;
 
-use yamalgam_core::{Diagnostic, Severity, Span};
+use yamalgam_core::{Diagnostic, LoaderConfig, Severity, Span};
 
 /// Detected byte-order mark / encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +144,51 @@ impl<'a> Input<'a> {
         reader
             .read_to_end(&mut buf)
             .map_err(|e| encoding_error(&format!("I/O error: {e}")))?;
+        Self::decode_buf(buf)
+    }
+
+    /// Create an `Input` by reading from a reader with size-limit enforcement.
+    ///
+    /// When `config.limits.max_input_bytes` is `Some(max)`, at most `max + 1`
+    /// bytes are read from the reader. If the read yields more than `max`
+    /// bytes, a [`Diagnostic`] error is returned before any decoding occurs.
+    /// This prevents OOM when reading untrusted input from a stream.
+    ///
+    /// When the limit is `None`, the entire reader is consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`Diagnostic`] on I/O errors, size-limit violations, or
+    /// invalid encoding.
+    pub fn from_reader_with_config(
+        reader: impl Read,
+        config: &LoaderConfig,
+    ) -> Result<Input<'static>, Diagnostic> {
+        let mut buf = Vec::new();
+        if let Some(max) = config.limits.max_input_bytes {
+            // Read at most max+1 bytes. If we get more than max, the input
+            // exceeds the limit — reject without reading the full stream.
+            let mut limited = reader.take((max as u64) + 1);
+            limited
+                .read_to_end(&mut buf)
+                .map_err(|e| encoding_error(&format!("I/O error: {e}")))?;
+            if buf.len() > max {
+                return Err(encoding_error(&format!(
+                    "input size {} bytes exceeds maximum of {max} bytes",
+                    buf.len()
+                )));
+            }
+        } else {
+            let mut unlimited = reader;
+            unlimited
+                .read_to_end(&mut buf)
+                .map_err(|e| encoding_error(&format!("I/O error: {e}")))?;
+        }
+        Self::decode_buf(buf)
+    }
+
+    /// Detect encoding and decode a raw byte buffer into an owned `Input`.
+    fn decode_buf(mut buf: Vec<u8>) -> Result<Input<'static>, Diagnostic> {
         let (encoding, bom_len) = detect_encoding(&buf);
         let owned = match encoding {
             Encoding::Utf8 => {

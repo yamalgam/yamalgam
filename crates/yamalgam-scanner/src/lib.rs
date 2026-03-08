@@ -15,6 +15,7 @@ mod style;
 mod token;
 
 pub use atom::Atom;
+pub use input::Input;
 pub use style::{AtomFlags, Chomp, ScalarStyle};
 pub use token::{Token, TokenKind};
 

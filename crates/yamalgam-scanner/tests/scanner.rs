@@ -1462,3 +1462,44 @@ fn max_key_bytes_allows_short_key() {
     let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
     assert!(result.is_ok());
 }
+
+// === from_reader_with_config (input size limits) ===
+
+#[test]
+fn from_reader_with_config_rejects_oversized_input() {
+    use yamalgam_core::LoaderConfig;
+    use yamalgam_scanner::Input;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_input_bytes = Some(10);
+
+    let data = b"this input is way too long for the configured limit";
+    let result = Input::from_reader_with_config(&data[..], &config);
+    assert!(result.is_err());
+}
+
+#[test]
+fn from_reader_with_config_allows_within_limit() {
+    use yamalgam_core::LoaderConfig;
+    use yamalgam_scanner::Input;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_input_bytes = Some(1000);
+
+    let data = b"short: input";
+    let result = Input::from_reader_with_config(&data[..], &config);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().as_str(), "short: input");
+}
+
+#[test]
+fn from_reader_with_config_unlimited_reads_all() {
+    use yamalgam_core::LoaderConfig;
+    use yamalgam_scanner::Input;
+
+    let config = LoaderConfig::unchecked();
+    let data = b"unlimited: true";
+    let result = Input::from_reader_with_config(&data[..], &config);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().as_str(), "unlimited: true");
+}
