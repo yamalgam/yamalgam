@@ -55,4 +55,8 @@ pub enum ParseError {
         /// Source span of the tag reference.
         span: Span,
     },
+
+    /// A resource limit was exceeded (depth, size, etc.).
+    #[error("limit exceeded: {0}")]
+    LimitExceeded(String),
 }

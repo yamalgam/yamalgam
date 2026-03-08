@@ -896,3 +896,49 @@ fn directive_then_document_end_is_error() {
         "directives followed by ... without --- should error"
     );
 }
+
+// -- LoaderConfig / max_depth tests --
+
+#[test]
+fn max_depth_rejects_deep_nesting() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_depth = Some(3);
+
+    let input = "a:\n  b:\n    c:\n      d:\n        e: too deep";
+    let result: Vec<_> = Parser::with_config(input, &config).collect();
+    assert!(result.iter().any(|r| r.is_err()));
+}
+
+#[test]
+fn max_depth_allows_within_limit() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_depth = Some(10);
+
+    let input = "a:\n  b:\n    c: ok";
+    let result: Result<Vec<_>, _> = Parser::with_config(input, &config).collect();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn max_depth_rejects_deep_flow_nesting() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_depth = Some(2);
+
+    let input = "{a: {b: {c: deep}}}";
+    let result: Vec<_> = Parser::with_config(input, &config).collect();
+    assert!(result.iter().any(|r| r.is_err()));
+}
+
+#[test]
+fn parser_new_has_no_limits() {
+    // Parser::new() should work with no limits (backward compat)
+    let input = "a:\n  b:\n    c:\n      d:\n        e:\n          f: deep";
+    let result: Result<Vec<_>, _> = Parser::new(input).collect();
+    assert!(result.is_ok());
+}
