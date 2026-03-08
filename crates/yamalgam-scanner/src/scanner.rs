@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 
-use yamalgam_core::Span;
+use yamalgam_core::{ResourceLimits, Span};
 
 use crate::Atom;
 use crate::reader::Reader;
@@ -118,6 +118,8 @@ pub struct Scanner<'input> {
     /// Deferred error from a void fetch method (e.g., invalid escape).
     /// Checked and drained by the dispatch loop.
     error: Option<ScanError>,
+    /// Resource limits (depth caps, size caps, etc.).
+    config: ResourceLimits,
     /// Line of the most recent context token (Value, Anchor, Tag).
     /// Used to reject block entries on the same line as a preceding
     /// context token (e.g., `key: - a`, `&anchor - entry`).
@@ -150,6 +152,8 @@ pub struct Scanner<'input> {
 
 impl<'input> Scanner<'input> {
     /// Create a new scanner over decoded UTF-8 input.
+    ///
+    /// Uses [`ResourceLimits::none()`] — no depth or size limits.
     #[must_use]
     pub const fn new(input: &'input str) -> Self {
         Self {
@@ -163,6 +167,7 @@ impl<'input> Scanner<'input> {
             simple_key_allowed: true,
             pending_complex_key_column: -1,
             error: None,
+            config: ResourceLimits::none(),
             adjacent_value_offset: None,
             last_block_token_line: None,
             flow_indent: -1,
@@ -176,6 +181,19 @@ impl<'input> Scanner<'input> {
             next_token_id: 0,
             tokens_consumed: 0,
         }
+    }
+
+    /// Create a new scanner with resource limits from a [`LoaderConfig`].
+    ///
+    /// The scanner stores only the [`ResourceLimits`] sub-struct (it doesn't
+    /// need resolution policy). Use this when processing untrusted input.
+    ///
+    /// [`LoaderConfig`]: yamalgam_core::LoaderConfig
+    #[must_use]
+    pub fn with_config(input: &'input str, config: &yamalgam_core::LoaderConfig) -> Self {
+        let mut scanner = Self::new(input);
+        scanner.config = config.limits.clone();
+        scanner
     }
 
     // -- Token constructors --
@@ -361,6 +379,14 @@ impl<'input> Scanner<'input> {
             self.root_token_emitted = false;
         }
         self.indent_stack.push(self.indent);
+        // Enforce max_depth on combined block + flow nesting.
+        if let Err(msg) = self
+            .config
+            .check_depth(self.indent_stack.len() + self.flow_level as usize)
+        {
+            self.error = Some(ScanError { message: msg });
+            return;
+        }
         self.indent = column;
         let kind = if is_mapping {
             TokenKind::BlockMappingStart
@@ -753,6 +779,14 @@ impl<'input> Scanner<'input> {
             self.flow_indent = self.indent;
         }
         self.flow_level += 1;
+        // Enforce max_depth on combined nesting (block indent + flow level).
+        if let Err(msg) = self
+            .config
+            .check_depth(self.indent_stack.len() + self.flow_level as usize)
+        {
+            self.error = Some(ScanError { message: msg });
+            return;
+        }
         self.flow_is_mapping.push(c == '{');
         self.simple_key_allowed = true;
     }
@@ -978,6 +1012,14 @@ impl<'input> Scanner<'input> {
                             self.root_token_emitted = false;
                         }
                         self.indent_stack.push(self.indent);
+                        // Enforce max_depth on combined block + flow nesting.
+                        if let Err(msg) = self
+                            .config
+                            .check_depth(self.indent_stack.len() + self.flow_level as usize)
+                        {
+                            self.error = Some(ScanError { message: msg });
+                            return;
+                        }
                         self.indent = sk.mark.column as i32;
                         // Key goes after BlockMappingStart, before the key token.
                         let key = Self::marker_token(TokenKind::Key, sk.mark, sk.mark);

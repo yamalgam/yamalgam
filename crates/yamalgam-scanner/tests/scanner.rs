@@ -1321,3 +1321,54 @@ fn multi_document_root_nodes_valid() {
     let scalar_count = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).count();
     assert_eq!(scalar_count, 3);
 }
+
+// -- max_depth enforcement --
+
+#[test]
+fn max_depth_rejects_deep_flow_nesting() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_depth = Some(3);
+
+    let input = "[[[[nested]]]]";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.message.contains("depth"),
+        "expected depth error, got: {err}"
+    );
+}
+
+#[test]
+fn max_depth_allows_within_limit() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_depth = Some(3);
+
+    let input = "[[[ok]]]";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn max_depth_rejects_deep_block_nesting() {
+    use yamalgam_core::LoaderConfig;
+
+    let mut config = LoaderConfig::strict();
+    config.limits.max_depth = Some(2);
+
+    let input = "a:\n  b:\n    c:\n      d: too deep";
+    let result: Result<Vec<_>, _> = Scanner::with_config(input, &config).collect();
+    assert!(result.is_err());
+}
+
+#[test]
+fn unchecked_config_allows_deep_nesting() {
+    let input = "[[[[[[[[[[deep]]]]]]]]]]";
+    // Scanner::new() uses ResourceLimits::none() — no limit
+    let result: Result<Vec<_>, _> = Scanner::new(input).collect();
+    assert!(result.is_ok());
+}
