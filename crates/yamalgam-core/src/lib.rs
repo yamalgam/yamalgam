@@ -22,6 +22,29 @@
 //! ```
 #![deny(unsafe_code)]
 
+// y[impl intro.goals.human-readable]
+// y[impl intro.goals.native-match]
+// y[impl intro.goals.portable]
+// y[impl intro.goals.expressive]
+// y[impl intro.goals.easy-impl]
+// y[impl intro.goals.consistent-model]
+// y[impl intro.goals.one-pass]
+// y[impl intro.terminology.rfc2119]
+// y[impl model.repr.graph-definition]
+// y[impl model.repr.node-definition]
+// y[impl model.repr.tag-definition]
+// y[impl model.repr.canonical-form]
+// y[impl model.repr.equality]
+// y[impl model.repr.collection-vs-scalar]
+// y[impl model.loading.well-formed]
+// y[impl model.loading.reject-ill-formed]
+// y[impl model.loading.failure-points]
+// y[impl model.process.load.parse]
+// y[impl model.process.load.compose]
+// y[impl model.process.load.construct]
+// y[impl overview.tags.global-tags-uri+3]
+// y[impl overview.tags.local-tags+3]
+
 pub mod config;
 
 pub mod diagnostic;

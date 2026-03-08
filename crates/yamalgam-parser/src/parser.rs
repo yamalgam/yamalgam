@@ -228,6 +228,8 @@ impl<'input> Parser<'input> {
 
     /// Handle `StreamStart` state: consume the `StreamStart` token and
     /// transition to `ImplicitDocumentStart`.
+    // y[impl doc.l-yaml-stream+3]
+    // y[impl doc.well-formed-stream+3]
     fn parse_stream_start(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let token = self.next_token()?;
         match token {
@@ -250,6 +252,11 @@ impl<'input> Parser<'input> {
     /// Handle `ImplicitDocumentStart` state: process directives or begin a
     /// document (implicitly or explicitly).
     // cref: fy-parse.c:6156-6340
+    // y[impl doc.l-bare-document+3]
+    // y[impl doc.bare-no-percent-first+3]
+    // y[impl doc.l-any-document+3]
+    // y[impl doc.node-indent-minus-one+3]
+    // y[impl doc.l-document-prefix+3]
     fn parse_implicit_document_start(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -321,6 +328,13 @@ impl<'input> Parser<'input> {
     /// Handle `DocumentStart` state: consume the `---` token and emit
     /// an explicit `DocumentStart` event.
     // cref: fy-parse.c:6262-6340
+    // y[impl doc.l-explicit-document+3]
+    // y[impl doc.l-directive-document+3]
+    // y[impl doc.c-directives-end+3]
+    // y[impl doc.stream-separation-marker+3]
+    // y[impl struct.yaml-directive.must-accept-prior+2]
+    // y[impl struct.yaml-directive.should-process-prior-as-current+2]
+    // y[impl struct.directive.ignore-unknown+2]
     fn parse_document_start(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let token = self.next_token()?;
         match token {
@@ -347,6 +361,7 @@ impl<'input> Parser<'input> {
     /// Handle `DocumentContent` state: check if the document has content
     /// or is empty.
     // cref: fy-parse.c:6429-6455
+    // y[impl doc.content-no-marker-start+3]
     fn parse_document_content(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let token = self.peek_token()?;
         match token {
@@ -375,6 +390,10 @@ impl<'input> Parser<'input> {
     /// Handle `DocumentEnd` state: emit an implicit or explicit document
     /// end event, then transition back to `ImplicitDocumentStart`.
     // cref: fy-parse.c:6342-6428
+    // y[impl doc.c-document-end+3]
+    // y[impl doc.l-document-suffix+3]
+    // y[impl doc.encoding-same-stream+3]
+    // y[impl doc.c-forbidden+3]
     fn parse_document_end(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let token = self.peek_token()?;
         match token {
@@ -411,6 +430,24 @@ impl<'input> Parser<'input> {
     /// - A block/flow collection start with optional anchor and/or tag
     /// - An empty scalar (when anchor/tag present but no content follows)
     // cref: fy-parse.c:5715-5983 (fy_parse_node)
+    // y[impl struct.c-ns-properties]
+    // y[impl struct.c-ns-anchor-property]
+    // y[impl struct.c-ns-tag-property+2]
+    // y[impl flow.c-ns-alias-node]
+    // y[impl flow.ns-flow-node]
+    // y[impl flow.ns-flow-content]
+    // y[impl flow.ns-flow-yaml-content]
+    // y[impl flow.ns-flow-yaml-node]
+    // y[impl flow.e-node]
+    // y[impl flow.e-scalar]
+    // y[impl flow.scalar-style.must-not-convey-content]
+    // y[impl block.s-l-block-node]
+    // y[impl block.s-l-block-in-block]
+    // y[impl block.s-l-block-scalar]
+    // y[impl block.s-l-flow-in-block]
+    // y[impl block.s-l-block-collection]
+    // y[impl block.s-l-block-indented]
+    // y[impl block.properties-indent]
     fn parse_node(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         // 1. Check for alias first — aliases never carry anchor/tag.
         let kind = self.peek_token()?.map(|t| t.kind);
@@ -581,6 +618,11 @@ impl<'input> Parser<'input> {
 
     /// Handle `BlockSequenceFirstEntry` state: expect the first `BlockEntry`.
     // cref: fy-parse.c:6465-6500
+    // y[impl block.l-block-sequence]
+    // y[impl block.c-l-block-seq-entry]
+    // y[impl block.seq.dash-separated]
+    // y[impl block.seq-space]
+    // y[impl block.ns-l-compact-sequence]
     fn parse_block_sequence_first_entry(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         // First entry MUST be a BlockEntry token.
         let kind = self.peek_token()?.map(|t| t.kind);
@@ -621,6 +663,7 @@ impl<'input> Parser<'input> {
 
     /// Handle `BlockSequenceEntry` state: expect another `BlockEntry` or `BlockEnd`.
     // cref: fy-parse.c:6502-6550
+    // y[impl block.c-l-block-seq-entry]
     fn parse_block_sequence_entry(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -663,6 +706,7 @@ impl<'input> Parser<'input> {
     }
 
     /// Parse a `%YAML` version string like `"1.2"` into `(major, minor)`.
+    // y[impl struct.ns-yaml-version]
     fn parse_version_string(data: &str, span: Span) -> Result<(u8, u8), ParseError> {
         let parts: Vec<&str> = data.split('.').collect();
         if parts.len() != 2 {
@@ -693,6 +737,7 @@ impl<'input> Parser<'input> {
     ///
     /// The scanner emits e.g. `"!e! tag:example.com,2000:"` — split on
     /// the first space.
+    // y[impl struct.ns-tag-directive+2]
     fn parse_tag_directive_data(data: &str) -> (&str, &str) {
         match data.split_once(' ') {
             Some((handle, prefix)) => (handle, prefix),
@@ -715,6 +760,13 @@ impl<'input> Parser<'input> {
     }
 
     /// Shared implementation for `BlockMappingFirstKey` and `BlockMappingKey`.
+    // y[impl block.l-block-mapping]
+    // y[impl block.ns-l-block-map-entry]
+    // y[impl block.c-l-block-map-explicit-entry]
+    // y[impl block.c-l-block-map-explicit-key]
+    // y[impl block.ns-l-block-map-implicit-entry]
+    // y[impl block.ns-s-block-map-implicit-key]
+    // y[impl block.ns-l-compact-mapping]
     fn parse_block_mapping_key_impl(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -765,6 +817,10 @@ impl<'input> Parser<'input> {
 
     /// Handle `BlockMappingValue`: expect a value indicator or implicit empty value.
     // cref: fy-parse.c:6620-6664
+    // y[impl block.c-l-block-map-implicit-value]
+    // y[impl block.l-block-map-explicit-value]
+    // y[impl block.explicit-key-separate-value]
+    // y[impl block.value-not-adjacent]
     fn parse_block_mapping_value(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -804,6 +860,7 @@ impl<'input> Parser<'input> {
 
     /// Handle `IndentlessSequenceEntry`: expect `BlockEntry` or end of sequence.
     // cref: fy-parse.c:6465-6478
+    // y[impl block.ns-l-compact-sequence]
     fn parse_indentless_sequence_entry(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -845,6 +902,8 @@ impl<'input> Parser<'input> {
 
     /// Handle `FlowSequenceFirstEntry`: expect first entry or `]`.
     // cref: fy-parse.c:6666-6826
+    // y[impl flow.c-flow-sequence]
+    // y[impl flow.ns-s-flow-seq-entries]
     fn parse_flow_sequence_first_entry(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         if kind == Some(TokenKind::FlowSequenceEnd) {
@@ -858,6 +917,7 @@ impl<'input> Parser<'input> {
 
     /// Handle `FlowSequenceEntry`: expect `,` + entry or `]`.
     // cref: fy-parse.c:6666-6826
+    // y[impl flow.ns-flow-seq-entry]
     fn parse_flow_sequence_entry(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -897,6 +957,10 @@ impl<'input> Parser<'input> {
     /// Parse the content of a flow sequence entry (after `[` or `,`).
     ///
     /// Handles implicit mappings (`Key` token) and plain entries.
+    // y[impl flow.ns-flow-pair]
+    // y[impl flow.ns-flow-pair-entry]
+    // y[impl flow.ns-flow-pair-yaml-key-entry]
+    // y[impl flow.ns-s-implicit-yaml-key]
     fn parse_flow_sequence_entry_content(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -940,6 +1004,7 @@ impl<'input> Parser<'input> {
     /// after the MappingStart was already emitted. We need to emit the empty
     /// scalar for the key and then transition to parse the value.
     // cref: fy-parse.c:6780-6826
+    // y[impl flow.ns-flow-map-yaml-key-entry]
     fn parse_flow_sequence_entry_mapping_key(
         &mut self,
     ) -> Result<Option<Event<'input>>, ParseError> {
@@ -957,6 +1022,8 @@ impl<'input> Parser<'input> {
 
     /// Handle `FlowSequenceEntryMappingValue`: expect `:` + value or empty value.
     // cref: fy-parse.c:6800-6826
+    // y[impl flow.c-ns-flow-map-adjacent-value+3]
+    // y[impl flow.c-ns-flow-map-separate-value+4]
     fn parse_flow_sequence_entry_mapping_value(
         &mut self,
     ) -> Result<Option<Event<'input>>, ParseError> {
@@ -1015,6 +1082,8 @@ impl<'input> Parser<'input> {
 
     /// Handle `FlowMappingFirstKey`: expect first key or `}`.
     // cref: fy-parse.c:6827-6964
+    // y[impl flow.c-flow-mapping]
+    // y[impl flow.ns-s-flow-map-entries]
     fn parse_flow_mapping_first_key(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         if kind == Some(TokenKind::FlowMappingEnd) {
@@ -1028,6 +1097,9 @@ impl<'input> Parser<'input> {
 
     /// Handle `FlowMappingKey`: expect `,` + key or `}`.
     // cref: fy-parse.c:6827-6964
+    // y[impl flow.ns-flow-map-entry]
+    // y[impl flow.ns-flow-map-explicit-entry]
+    // y[impl flow.ns-flow-map-implicit-entry]
     fn parse_flow_mapping_key(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -1067,6 +1139,14 @@ impl<'input> Parser<'input> {
     }
 
     /// Parse the key content of a flow mapping entry (after `{` or `,`).
+    // y[impl flow.c-ns-flow-map-empty-key-entry]
+    // y[impl flow.c-ns-flow-map-json-key-entry+3]
+    // y[impl flow.c-ns-flow-pair-json-key-entry+3]
+    // y[impl flow.c-s-implicit-json-key+3]
+    // y[impl flow.implicit-key.must-limit-1024+3]
+    // y[impl flow.json-key.should-separate-value+3]
+    // y[impl flow.c-flow-json-content+3]
+    // y[impl flow.c-flow-json-node+3]
     fn parse_flow_mapping_key_content(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -1108,6 +1188,7 @@ impl<'input> Parser<'input> {
 
     /// Handle `FlowMappingValue`: expect `:` + value or empty value.
     // cref: fy-parse.c:6930-6964
+    // y[impl flow.c-ns-flow-map-adjacent-value+3]
     fn parse_flow_mapping_value(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
@@ -1145,6 +1226,8 @@ impl<'input> Parser<'input> {
 
     /// Handle `FlowMappingEmptyValue`: emit empty scalar, transition to key.
     // cref: fy-parse.c:6960-6964
+    // y[impl flow.e-node]
+    // y[impl flow.e-scalar]
     fn parse_flow_mapping_empty_value(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let span = self
             .peek_token()

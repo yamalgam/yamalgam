@@ -15,24 +15,20 @@ reuse [constructed] object instances.
 Subsequent occurrences of a previously [serialized] node are [presented] as
 _alias nodes_.
 
-y[flow.alias.must-anchor-first]
 The first occurrence of the [node] must be marked by an [anchor] to allow
 subsequent occurrences to be [presented] as alias nodes.
 
 An alias node is denoted by the "`*`" indicator.
 The alias refers to the most recent preceding [node] having the same [anchor].
 
-y[flow.alias.error-undefined-anchor]
 It is an error for an alias node to use an [anchor] that does not previously
 occur in the [document].
 
 It is not an error to specify an [anchor] that is not used by any alias node.
 
-y[flow.alias.must-not-specify-properties]
 Note that an alias node must not specify any [properties] or [content], as
 these were already specified at the first occurrence of the [node].
 
-y[flow.c-ns-alias-node]
 ```
 [#] c-ns-alias-node ::=
   c-alias           # '*'
@@ -68,7 +64,6 @@ YAML allows the [node content] to be omitted in many cases.
 with an empty value.
 Such [nodes] are commonly resolved to a "`null`" value.
 
-y[flow.e-scalar]
 ```
 [#] e-scalar ::= ""
 ```
@@ -103,7 +98,6 @@ This allows for a _completely empty node_.
 Completely empty nodes are only valid when following some explicit indication
 for their existence.
 
-y[flow.e-node]
 ```
 [#] e-node ::=
   e-scalar    # ""
@@ -134,7 +128,6 @@ YAML provides three _flow scalar styles_: [double-quoted], [single-quoted] and
 [plain] (unquoted).
 Each provides a different trade-off between readability and expressive power.
 
-y[flow.scalar-style.must-not-convey-content]
 The [scalar style] is a [presentation detail] and must not be used to convey
 [content] information, with the exception that [plain scalars] are
 distinguished for the purpose of [tag resolution].
@@ -147,7 +140,6 @@ This is the only [style] capable of expressing arbitrary strings, by using
 "`\`" [escape sequences].
 This comes at the cost of having to escape the "`\`" and "`"`" characters.
 
-y[flow.nb-double-char]
 ```
 [#] nb-double-char ::=
     c-ns-esc-char
@@ -158,7 +150,6 @@ y[flow.nb-double-char]
     )
 ```
 
-y[flow.ns-double-char]
 ```
 [#] ns-double-char ::=
   nb-double-char - s-white
@@ -168,7 +159,6 @@ y[flow.ns-double-char]
 Double-quoted scalars are restricted to a single line when contained inside an
 [implicit key].
 
-y[flow.c-double-quoted]
 ```
 [#] c-double-quoted(n,c) ::=
   c-double-quote         # '"'
@@ -176,7 +166,6 @@ y[flow.c-double-quoted]
   c-double-quote         # '"'
 ```
 
-y[flow.nb-double-text]
 ```
 [#]
 nb-double-text(n,FLOW-OUT)  ::= nb-double-multi-line(n)
@@ -185,7 +174,6 @@ nb-double-text(n,BLOCK-KEY) ::= nb-double-one-line
 nb-double-text(n,FLOW-KEY)  ::= nb-double-one-line
 ```
 
-y[flow.nb-double-one-line]
 ```
 [#] nb-double-one-line ::=
   nb-double-char*
@@ -219,7 +207,6 @@ preserved.
 Combined with the ability to [escape] [white space] characters, this allows
 double-quoted lines to be broken at arbitrary positions.
 
-y[flow.s-double-escaped]
 ```
 [#] s-double-escaped(n) ::=
   s-white*
@@ -229,7 +216,6 @@ y[flow.s-double-escaped]
   s-flow-line-prefix(n)
 ```
 
-y[flow.s-double-break]
 ```
 [#] s-double-break(n) ::=
     s-double-escaped(n)
@@ -259,13 +245,11 @@ to a line feed, or·→\↓
 All leading and trailing [white space] characters on each line are excluded
 from the [content].
 
-y[flow.double-quoted.continuation-must-contain-non-space]
 Each continuation line must therefore contain at least one non-[space]
 character.
 
 Empty lines, if any, are consumed as part of the [line folding].
 
-y[flow.nb-ns-double-in-line]
 ```
 [#] nb-ns-double-in-line ::=
   (
@@ -274,7 +258,6 @@ y[flow.nb-ns-double-in-line]
   )*
 ```
 
-y[flow.s-double-next-line]
 ```
 [#] s-double-next-line(n) ::=
   s-double-break(n)
@@ -287,7 +270,6 @@ y[flow.s-double-next-line]
   )?
 ```
 
-y[flow.nb-double-multi-line]
 ```
 [#] nb-double-multi-line(n) ::=
   nb-ns-double-in-line
@@ -326,12 +308,10 @@ This restricts single-quoted scalars to [printable] characters.
 In addition, it is only possible to break a long single-quoted line where a
 [space] character is surrounded by non-[spaces].
 
-y[flow.c-quoted-quote]
 ```
 [#] c-quoted-quote ::= "''"
 ```
 
-y[flow.nb-single-char]
 ```
 [#] nb-single-char ::=
     c-quoted-quote
@@ -341,7 +321,6 @@ y[flow.nb-single-char]
     )
 ```
 
-y[flow.ns-single-char]
 ```
 [#] ns-single-char ::=
   nb-single-char - s-white
@@ -365,7 +344,6 @@ y[flow.ns-single-char]
 Single-quoted scalars are restricted to a single line when contained inside a
 [implicit key].
 
-y[flow.c-single-quoted]
 ```
 [#] c-single-quoted(n,c) ::=
   c-single-quote    # "'"
@@ -373,7 +351,6 @@ y[flow.c-single-quoted]
   c-single-quote    # "'"
 ```
 
-y[flow.nb-single-text]
 ```
 [#]
 nb-single-text(FLOW-OUT)  ::= nb-single-multi-line(n)
@@ -382,7 +359,6 @@ nb-single-text(BLOCK-KEY) ::= nb-single-one-line
 nb-single-text(FLOW-KEY)  ::= nb-single-one-line
 ```
 
-y[flow.nb-single-one-line]
 ```
 [#] nb-single-one-line ::=
   nb-single-char*
@@ -410,13 +386,11 @@ y[flow.nb-single-one-line]
 All leading and trailing [white space] characters are excluded from the
 [content].
 
-y[flow.single-quoted.continuation-must-contain-non-space]
 Each continuation line must therefore contain at least one non-[space]
 character.
 
 Empty lines, if any, are consumed as part of the [line folding].
 
-y[flow.nb-ns-single-in-line]
 ```
 [#] nb-ns-single-in-line ::=
   (
@@ -425,7 +399,6 @@ y[flow.nb-ns-single-in-line]
   )*
 ```
 
-y[flow.s-single-next-line]
 ```
 [#] s-single-next-line(n) ::=
   s-flow-folded(n)
@@ -439,7 +412,6 @@ y[flow.s-single-next-line]
   )?
 ```
 
-y[flow.nb-single-multi-line]
 ```
 [#] nb-single-multi-line(n) ::=
   nb-ns-single-in-line
@@ -475,14 +447,12 @@ form of escaping.
 It is therefore the most readable, most limited and most [context] sensitive
 [style].
 
-y[flow.plain.must-not-be-empty]
 In addition to a restricted character set, a plain scalar must not be empty or
 contain leading or trailing [white space] characters.
 
 It is only possible to break a long plain line where a [space] character is
 surrounded by non-[spaces].
 
-y[flow.plain.must-not-begin-with-indicators]
 Plain scalars must not begin with most [indicators], as this would cause
 ambiguity with other YAML constructs.
 
@@ -490,7 +460,6 @@ However, the "`:`", "`?`" and "`-`" [indicators] may be used as the first
 character if followed by a non-[space] "safe" character, as this causes no
 ambiguity.
 
-y[flow.ns-plain-first+4]
 ```
 [#] ns-plain-first(c) ::=
     (
@@ -508,17 +477,14 @@ y[flow.ns-plain-first+4]
 ```
 
 
-y[flow.plain.must-not-contain-colon-space-space-hash]
 Plain scalars must never contain the "`: `" and "` #`" character combinations.
 Such combinations would cause ambiguity with [mapping] [key/value pairs] and
 [comments].
 
-y[flow.plain.must-not-contain-flow-indicators+3]
 In addition, inside [flow collections], or when used as [implicit keys], plain
 scalars must not contain the "`[`", "`]`", "`{`", "`}`" and "`,`" characters.
 These characters would cause ambiguity with [flow collection] structures.
 
-y[flow.ns-plain-safe+4]
 ```
 [#]
 ns-plain-safe(FLOW-OUT)  ::= ns-plain-safe-out
@@ -527,19 +493,16 @@ ns-plain-safe(BLOCK-KEY) ::= ns-plain-safe-out
 ns-plain-safe(FLOW-KEY)  ::= ns-plain-safe-in
 ```
 
-y[flow.ns-plain-safe-out+4]
 ```
 [#] ns-plain-safe-out ::=
   ns-char
 ```
 
-y[flow.ns-plain-safe-in+4]
 ```
 [#] ns-plain-safe-in ::=
   ns-char - c-flow-indicator
 ```
 
-y[flow.ns-plain-char+4]
 ```
 [#] ns-plain-char(c) ::=
     (
@@ -598,7 +561,6 @@ y[flow.ns-plain-char+4]
 Plain scalars are further restricted to a single line when contained inside an
 [implicit key].
 
-y[flow.ns-plain]
 ```
 [#]
 ns-plain(n,FLOW-OUT)  ::= ns-plain-multi-line(n,FLOW-OUT)
@@ -607,7 +569,6 @@ ns-plain(n,BLOCK-KEY) ::= ns-plain-one-line(BLOCK-KEY)
 ns-plain(n,FLOW-KEY)  ::= ns-plain-one-line(FLOW-KEY)
 ```
 
-y[flow.nb-ns-plain-in-line]
 ```
 [#] nb-ns-plain-in-line(c) ::=
   (
@@ -616,7 +577,6 @@ y[flow.nb-ns-plain-in-line]
   )*
 ```
 
-y[flow.ns-plain-one-line]
 ```
 [#] ns-plain-one-line(c) ::=
   ns-plain-first(c)
@@ -644,13 +604,11 @@ implicit block key : [
 All leading and trailing [white space] characters are excluded from the
 [content].
 
-y[flow.plain.continuation-must-contain-non-space]
 Each continuation line must therefore contain at least one non-[space]
 character.
 
 Empty lines, if any, are consumed as part of the [line folding].
 
-y[flow.s-ns-plain-next-line]
 ```
 [#] s-ns-plain-next-line(n,c) ::=
   s-flow-folded(n)
@@ -658,7 +616,6 @@ y[flow.s-ns-plain-next-line]
   nb-ns-plain-in-line(c)
 ```
 
-y[flow.ns-plain-multi-line]
 ```
 [#] ns-plain-multi-line(n,c) ::=
   ns-plain-one-line(c)
@@ -694,7 +651,6 @@ The final "`,`" may be omitted.
 This does not cause ambiguity because flow collection entries can never be
 [completely empty].
 
-y[flow.in-flow+3]
 ```
 [#]
 in-flow(n,FLOW-OUT)  ::= ns-s-flow-seq-entries(n,FLOW-IN)
@@ -708,7 +664,6 @@ in-flow(n,FLOW-KEY)  ::= ns-s-flow-seq-entries(n,FLOW-KEY)
 
 _Flow sequence content_ is denoted by surrounding "`[`" and "`]`" characters.
 
-y[flow.c-flow-sequence]
 ```
 [#] c-flow-sequence(n,c) ::=
   c-sequence-start    # '['
@@ -720,7 +675,6 @@ y[flow.c-flow-sequence]
 
 Sequence entries are separated by a "`,`" character.
 
-y[flow.ns-s-flow-seq-entries]
 ```
 [#] ns-s-flow-seq-entries(n,c) ::=
   ns-flow-seq-entry(n,c)
@@ -756,7 +710,6 @@ Any [flow node] may be used as a flow sequence entry.
 In addition, YAML provides a [compact notation] for the case where a flow
 sequence entry is a [mapping] with a [single key/value pair].
 
-y[flow.ns-flow-seq-entry]
 ```
 [#] ns-flow-seq-entry(n,c) ::=
   ns-flow-pair(n,c) | ns-flow-node(n,c)
@@ -793,7 +746,6 @@ single: pair,
 
 _Flow mappings_ are denoted by surrounding "`{`" and "`}`" characters.
 
-y[flow.c-flow-mapping]
 ```
 [#] c-flow-mapping(n,c) ::=
   c-mapping-start       # '{'
@@ -805,7 +757,6 @@ y[flow.c-flow-mapping]
 
 Mapping entries are separated by a "`,`" character.
 
-y[flow.ns-s-flow-map-entries]
 ```
 [#] ns-s-flow-map-entries(n,c) ::=
   ns-flow-map-entry(n,c)
@@ -840,7 +791,6 @@ y[flow.ns-s-flow-map-entries]
 If the optional "`?`" mapping key indicator is specified, the rest of the entry
 may be [completely empty].
 
-y[flow.ns-flow-map-entry]
 ```
 [#] ns-flow-map-entry(n,c) ::=
     (
@@ -851,7 +801,6 @@ y[flow.ns-flow-map-entry]
   | ns-flow-map-implicit-entry(n,c)
 ```
 
-y[flow.ns-flow-map-explicit-entry]
 ```
 [#] ns-flow-map-explicit-entry(n,c) ::=
     ns-flow-map-implicit-entry(n,c)
@@ -895,7 +844,6 @@ not a [key/value pair].
 Note that the [value] may be [completely empty] since its existence is
 indicated by the "`:`".
 
-y[flow.ns-flow-map-implicit-entry]
 ```
 [#] ns-flow-map-implicit-entry(n,c) ::=
     ns-flow-map-yaml-key-entry(n,c)
@@ -903,7 +851,6 @@ y[flow.ns-flow-map-implicit-entry]
   | c-ns-flow-map-json-key-entry(n,c)
 ```
 
-y[flow.ns-flow-map-yaml-key-entry]
 ```
 [#] ns-flow-map-yaml-key-entry(n,c) ::=
   ns-flow-yaml-node(n,c)
@@ -916,14 +863,12 @@ y[flow.ns-flow-map-yaml-key-entry]
   )
 ```
 
-y[flow.c-ns-flow-map-empty-key-entry]
 ```
 [#] c-ns-flow-map-empty-key-entry(n,c) ::=
   e-node    # ""
   c-ns-flow-map-separate-value(n,c)
 ```
 
-y[flow.c-ns-flow-map-separate-value+4]
 ```
 [#] c-ns-flow-map-separate-value(n,c) ::=
   c-mapping-value    # ':'
@@ -962,7 +907,6 @@ omitted value:°,
 * [c-ns-flow-map-separate-value(n,c)] <!-- 4:15 5:1 -->
 
 
-y[flow.json-key.should-separate-value+3]
 To ensure [JSON compatibility], if a [key] inside a flow mapping is
 [JSON-like], YAML allows the following [value] to be specified adjacent to the
 "`:`".
@@ -971,7 +915,6 @@ This causes no ambiguity, as all [JSON-like] [keys] are surrounded by
 However, as this greatly reduces readability, YAML [processors] should
 [separate] the [value] from the "`:`" on output, even in this case.
 
-y[flow.c-ns-flow-map-json-key-entry+3]
 ```
 [#] c-ns-flow-map-json-key-entry(n,c) ::=
   c-flow-json-node(n,c)
@@ -984,7 +927,6 @@ y[flow.c-ns-flow-map-json-key-entry+3]
   )
 ```
 
-y[flow.c-ns-flow-map-adjacent-value+3]
 ```
 [#] c-ns-flow-map-adjacent-value(n,c) ::=
   c-mapping-value          # ':'
@@ -1046,7 +988,6 @@ foo: bar
 If the "`?`" indicator is explicitly specified, [parsing] is unambiguous and
 the syntax is identical to the general case.
 
-y[flow.ns-flow-pair]
 ```
 [#] ns-flow-pair(n,c) ::=
     (
@@ -1078,11 +1019,9 @@ y[flow.ns-flow-pair]
 If the "`?`" indicator is omitted, [parsing] needs to see past the _implicit
 key_ to recognize it as such.
 
-y[flow.implicit-key.must-limit-1024+3]
 To limit the amount of lookahead required, the "`:`" indicator must appear at
 most 1024 Unicode characters beyond the start of the [key].
 
-y[flow.implicit-key.must-single-line]
 In addition, the [key] is restricted to a single line.
 
 Note that YAML allows arbitrary [nodes] to be used as [keys].
@@ -1090,7 +1029,6 @@ In particular, a [key] may be a [sequence] or a [mapping].
 Thus, without the above restrictions, practical one-pass [parsing] would have
 been impossible to implement.
 
-y[flow.ns-flow-pair-entry]
 ```
 [#] ns-flow-pair-entry(n,c) ::=
     ns-flow-pair-yaml-key-entry(n,c)
@@ -1098,21 +1036,18 @@ y[flow.ns-flow-pair-entry]
   | c-ns-flow-pair-json-key-entry(n,c)
 ```
 
-y[flow.ns-flow-pair-yaml-key-entry]
 ```
 [#] ns-flow-pair-yaml-key-entry(n,c) ::=
   ns-s-implicit-yaml-key(FLOW-KEY)
   c-ns-flow-map-separate-value(n,c)
 ```
 
-y[flow.c-ns-flow-pair-json-key-entry+3]
 ```
 [#] c-ns-flow-pair-json-key-entry(n,c) ::=
   c-s-implicit-json-key(FLOW-KEY)
   c-ns-flow-map-adjacent-value(n,c)
 ```
 
-y[flow.ns-s-implicit-yaml-key]
 ```
 [#] ns-s-implicit-yaml-key(c) ::=
   ns-flow-yaml-node(0,c)
@@ -1120,7 +1055,6 @@ y[flow.ns-s-implicit-yaml-key]
   /* At most 1024 characters altogether */
 ```
 
-y[flow.c-s-implicit-json-key+3]
 ```
 [#] c-s-implicit-json-key(c) ::=
   c-flow-json-node(0,c)
@@ -1176,13 +1110,11 @@ The only [flow style] that does not have this property is the [plain scalar].
 Note that none of the "JSON-like" styles is actually acceptable by JSON.
 Even the [double-quoted style] is a superset of the JSON string format.
 
-y[flow.ns-flow-yaml-content]
 ```
 [#] ns-flow-yaml-content(n,c) ::=
   ns-plain(n,c)
 ```
 
-y[flow.c-flow-json-content+3]
 ```
 [#] c-flow-json-content(n,c) ::=
     c-flow-sequence(n,c)
@@ -1191,7 +1123,6 @@ y[flow.c-flow-json-content+3]
   | c-double-quoted(n,c)
 ```
 
-y[flow.ns-flow-content]
 ```
 [#] ns-flow-content(n,c) ::=
     ns-flow-yaml-content(n,c)
@@ -1225,7 +1156,6 @@ y[flow.ns-flow-content]
 A complete [flow] [node] also has optional [node properties], except for [alias
 nodes] which refer to the [anchored] [node properties].
 
-y[flow.ns-flow-yaml-node]
 ```
 [#] ns-flow-yaml-node(n,c) ::=
     c-ns-alias-node
@@ -1242,7 +1172,6 @@ y[flow.ns-flow-yaml-node]
     )
 ```
 
-y[flow.c-flow-json-node+3]
 ```
 [#] c-flow-json-node(n,c) ::=
   (
@@ -1252,7 +1181,6 @@ y[flow.c-flow-json-node+3]
   c-flow-json-content(n,c)
 ```
 
-y[flow.ns-flow-node]
 ```
 [#] ns-flow-node(n,c) ::=
     c-ns-alias-node

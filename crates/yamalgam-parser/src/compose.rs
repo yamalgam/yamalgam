@@ -109,6 +109,9 @@ where
     pub fn new(events: I) -> Self {
         Self {
             events: events.peekable(),
+            // y[impl model.serial.anchor-definition]
+            // y[impl model.serial.alias-resolution]
+            // y[impl model.serial.tree-definition]
             anchors: HashMap::new(),
         }
     }
@@ -117,6 +120,8 @@ where
     ///
     /// Returns one [`Value`] per YAML document. An empty input produces an
     /// empty vec.
+    // y[impl model.loading.well-formed]
+    // y[impl model.loading.reject-ill-formed]
     pub fn compose_stream(&mut self) -> Result<Vec<Value>, ComposeError> {
         // Consume StreamStart.
         self.expect_event(|e| matches!(e, Event::StreamStart), "StreamStart")?;
@@ -181,6 +186,11 @@ where
     }
 
     /// Compose a single YAML node from the event stream.
+    // y[impl model.repr.node-definition]
+    // y[impl model.repr.tag-definition]
+    // y[impl flow.alias.error-undefined-anchor]
+    // y[impl flow.alias.must-anchor-first]
+    // y[impl flow.alias.must-not-specify-properties]
     fn compose_node(&mut self) -> Result<Value, ComposeError> {
         let event = self
             .next_event()?

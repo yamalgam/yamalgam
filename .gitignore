@@ -4,6 +4,7 @@
 #
 
 assets/
+.claude/projects/
 
 ### direnv ###
 .direnv

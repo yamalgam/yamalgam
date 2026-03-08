@@ -116,6 +116,21 @@ There are hundreds of different languages for programming, but only a handful of
 
 ## 1.1. Goals
 
+
+y[intro.goals.consistent-model]
+
+y[intro.goals.easy-impl]
+
+y[intro.goals.expressive]
+
+y[intro.goals.human-readable]
+
+y[intro.goals.native-match]
+
+y[intro.goals.one-pass]
+
+y[intro.goals.portable]
+
 The design goals for YAML are:
 
 1. YAML documents are easily readable by humans.
@@ -156,6 +171,9 @@ It should be mentioned that there are ongoing efforts to define standard XML/YAM
 
 ## 1.4. Terminology
 
+
+y[intro.terminology.rfc2119]
+
 This specification uses key words in accordance with [RFC2119](http://www.ietf.org/rfc/rfc2119.txt) to indicate requirement level. In particular, the following words are used to describe the actions of a YAML processor:
 
 *may*
@@ -172,6 +190,21 @@ This word, or the term "*required*" or "*shall*", mean that the behavior describ
 This section provides a quick glimpse into the expressive power of YAML. It is not expected that the first-time reader grok all of the examples. Rather, these selections are used as motivation for the remainder of the specification.
 
 ## 2.1. Collections
+
+
+y[overview.collections.block-indent]
+
+y[overview.collections.block-seq-indicator]
+
+y[overview.collections.comment-indicator]
+
+y[overview.collections.flow-map-syntax]
+
+y[overview.collections.flow-seq-syntax]
+
+y[overview.collections.flow-styles]
+
+y[overview.collections.mapping-indicator]
 
 YAML's block collections use indentation for scope and begin each member on its own line. Block sequences indicate each member with a dash ("**-**"). Block mappings use a colon to mark each (key: value) pair.
 
@@ -235,6 +268,17 @@ Sammy Sosa: {     hr: 63,     avg: 0.288   }
 ```
 
 ## 2.2. Structures
+
+
+y[overview.structures.anchor-alias]
+
+y[overview.structures.compact-notation]
+
+y[overview.structures.complex-key]
+
+y[overview.structures.doc-end-marker]
+
+y[overview.structures.doc-start-marker]
 
 YAML uses three dashes ("**---**") to separate documents within a stream. Comment lines begin with the pound sign ("**#**"). Three dots ("**...**") indicate the end of a document without starting a new one, for use in communication channels.
 
@@ -325,6 +369,19 @@ The question mark indicates a complex key. Within a block sequence, mapping pair
 
 ## 2.3. Scalars
 
+
+y[overview.scalars.double-quoted-escapes]
+
+y[overview.scalars.flow-multiline-fold]
+
+y[overview.scalars.flow-plain]
+
+y[overview.scalars.folded-style]
+
+y[overview.scalars.literal-style]
+
+y[overview.scalars.single-quoted-no-escape]
+
 Scalar values can be written in block form using a literal style ("**|**") where all new lines count. Or they can be written with the folded style ("**>**") for content that can be word wrapped. In the folded style, newlines are treated as a space unless they are part of a blank or indented line.
 
 **Example 2.13. In literals, newlines are preserved**
@@ -395,6 +452,11 @@ quoted: "So does this
 ```
 
 ## 2.4. Tags
+
+
+y[overview.tags.explicit-tag-indicator]
+
+y[overview.tags.untagged-nodes]
 
 In YAML, plain (unquoted) scalars are given an implicit type depending on the application. The examples in this specification use types from YAML's tag repository, which includes types like integers, floating point values, timestamps, null, boolean, and string values.
 
@@ -584,6 +646,23 @@ A processor need not expose the serialization or representation stages. It may t
 
 ## 3.1. Processes
 
+
+y[model.process.dump.present]
+
+y[model.process.dump.represent]
+
+y[model.process.dump.represent.tag]
+
+y[model.process.dump.serialize]
+
+y[model.process.load.compose]
+
+y[model.process.load.construct]
+
+y[model.process.load.parse]
+
+y[model.process.no-serial-details]
+
 This section details the processes shown in the diagram above.
 
 ### 3.1.1. Represent
@@ -619,6 +698,145 @@ Composing takes a series of events and produces a node graph representation. See
 Construction converts construct YAML representations into native language objects.
 
 ## 3.2. Information Models
+
+
+y[model.loading.complete-representation]
+
+y[model.loading.error-recovery]
+
+y[model.loading.failure-points]
+
+y[model.loading.identified-alias]
+
+y[model.loading.non-specific-tag]
+
+y[model.loading.partial-representation]
+
+y[model.loading.reject-ill-formed]
+
+y[model.loading.tag-resolution-alias]
+
+y[model.loading.tag-resolution-app-specific]
+
+y[model.loading.tag-resolution-bang-convention]
+
+y[model.loading.tag-resolution-no-other-content]
+
+y[model.loading.tag-resolution-no-presentation]
+
+y[model.loading.tag-resolution-no-sibling]
+
+y[model.loading.tag-resolution-override]
+
+y[model.loading.tag-resolution-params]
+
+y[model.loading.tag-resolution-required]
+
+y[model.loading.unavailable-tag]
+
+y[model.loading.unrecognized-collection]
+
+y[model.loading.unrecognized-scalar]
+
+y[model.loading.unresolved-tags]
+
+y[model.loading.valid-node]
+
+y[model.loading.well-formed]
+
+y[model.present.comments-no-effect]
+
+y[model.present.comments-not-in-scalars]
+
+y[model.present.detail-not-content]
+
+y[model.present.directives-defined]
+
+y[model.present.directives-not-in-model]
+
+y[model.present.directives-per-document]
+
+y[model.present.format-canonical]
+
+y[model.present.format-definition]
+
+y[model.present.format-not-in-model]
+
+y[model.present.multi-document]
+
+y[model.present.scalar-styles]
+
+y[model.present.stream-definition]
+
+y[model.present.style-groups]
+
+y[model.present.style-not-in-model]
+
+y[model.repr.canonical-form]
+
+y[model.repr.collection-vs-scalar]
+
+y[model.repr.equality]
+
+y[model.repr.equality.cyclic]
+
+y[model.repr.equality.mapping]
+
+y[model.repr.equality.recursive]
+
+y[model.repr.equality.scalar]
+
+y[model.repr.equality.scalar-identity]
+
+y[model.repr.equality.sequence]
+
+y[model.repr.equality.tag-comparison]
+
+y[model.repr.graph-definition]
+
+y[model.repr.node-definition]
+
+y[model.repr.node.mapping]
+
+y[model.repr.node.scalar]
+
+y[model.repr.node.sequence]
+
+y[model.repr.serial-detail-not-content]
+
+y[model.repr.tag-definition]
+
+y[model.repr.tag.global]
+
+y[model.repr.tag.local]
+
+y[model.repr.tag.local-uri-charset]
+
+y[model.repr.tag.no-substring-relationship]
+
+y[model.repr.tag.node-kind]
+
+y[model.repr.tag.scalar-canonical]
+
+y[model.repr.uniqueness]
+
+y[model.serial.alias-resolution]
+
+y[model.serial.anchor-definition]
+
+y[model.serial.anchor-discard]
+
+y[model.serial.anchor-no-alias-required]
+
+y[model.serial.key-order.no-representation-order]
+
+y[model.serial.key-order.serialization-detail]
+
+y[model.serial.key-order.use-sequence]
+
+y[model.serial.no-key-order-or-anchor-names]
+
+y[model.serial.tree-definition]
 
 This section has the formal details of the results of the processes.
 
@@ -738,6 +956,52 @@ In a given processing environment, there may not be an available native type cor
 
 ## Chapter 4. Syntax
 
+y[syntax.naming.b-prefix]
+
+y[syntax.naming.c-prefix]
+
+y[syntax.naming.e-prefix]
+
+y[syntax.naming.l-prefix]
+
+y[syntax.naming.nb-prefix]
+
+y[syntax.naming.ns-prefix]
+
+y[syntax.naming.plus-suffix]
+
+y[syntax.naming.prefix-convention]
+
+y[syntax.naming.s-prefix]
+
+y[syntax.naming.xy-prefix]
+
+y[syntax.params.chomping]
+
+y[syntax.params.context]
+
+y[syntax.params.definition]
+
+y[syntax.params.indentation]
+
+y[syntax.production.alternation]
+
+y[syntax.production.atomic]
+
+y[syntax.production.concatenation]
+
+y[syntax.production.definition]
+
+y[syntax.production.lookaround]
+
+y[syntax.production.parenthesized]
+
+y[syntax.production.precedence]
+
+y[syntax.production.quantified]
+
+y[syntax.production.special]
+
 Following are the BNF productions defining the syntax of YAML character streams. The productions introduce the relevant character classes, describe the processing of white space, and then follow with the decomposition of the stream into logical chunks. To make this chapter easier to follow, production names use Hungarian-style notation:
 
 **c-**
@@ -765,6 +1029,141 @@ a production matching a sequence of characters, starting with an X**-** producti
 a production matching a single line (shorthand for **i-b-**)
 
 ## 4.1. Characters
+
+
+y[char.b-as-line-feed]
+
+y[char.b-break]
+
+y[char.b-carriage-return]
+
+y[char.b-non-content]
+
+y[char.c-alias]
+
+y[char.c-anchor]
+
+y[char.c-byte-order-mark]
+
+y[char.c-collect-entry]
+
+y[char.c-comment]
+
+y[char.c-directive]
+
+y[char.c-double-quote]
+
+y[char.c-escape]
+
+y[char.c-flow-indicator]
+
+y[char.c-folded]
+
+y[char.c-indicator]
+
+y[char.c-literal]
+
+y[char.c-mapping-end]
+
+y[char.c-mapping-key]
+
+y[char.c-mapping-start]
+
+y[char.c-mapping-value]
+
+y[char.c-reserved]
+
+y[char.c-sequence-end]
+
+y[char.c-sequence-entry]
+
+y[char.c-sequence-start]
+
+y[char.c-single-quote]
+
+y[char.encoding.ascii-first]
+
+y[char.encoding.bom-detection]
+
+y[char.encoding.not-content]
+
+y[char.encoding.same-encoding]
+
+y[char.escape.must-escape]
+
+y[char.escape.not-content]
+
+y[char.escape.parse-to-unicode]
+
+y[char.line-break.format-not-content]
+
+y[char.line-break.normalize]
+
+y[char.line-break.parse-as-lf]
+
+y[char.misc.uri-no-expand]
+
+y[char.nb-char]
+
+y[char.ns-ascii-letter]
+
+y[char.ns-char]
+
+y[char.ns-dec-digit]
+
+y[char.ns-esc-16-bit]
+
+y[char.ns-esc-32-bit]
+
+y[char.ns-esc-8-bit]
+
+y[char.ns-esc-backslash]
+
+y[char.ns-esc-backspace]
+
+y[char.ns-esc-bell]
+
+y[char.ns-esc-carriage-return]
+
+y[char.ns-esc-double-quote]
+
+y[char.ns-esc-escape]
+
+y[char.ns-esc-form-feed]
+
+y[char.ns-esc-line-feed]
+
+y[char.ns-esc-line-separator]
+
+y[char.ns-esc-next-line]
+
+y[char.ns-esc-non-breaking-space]
+
+y[char.ns-esc-null]
+
+y[char.ns-esc-paragraph-separator]
+
+y[char.ns-esc-space]
+
+y[char.ns-esc-vertical-tab]
+
+y[char.ns-hex-digit]
+
+y[char.ns-uri-char]
+
+y[char.ns-word-char]
+
+y[char.s-space]
+
+y[char.s-tab]
+
+y[char.s-white]
+
+y[char.set.escape-outside]
+
+y[char.set.input-accept]
+
+y[char.set.output-produce]
 
 ### 4.1.1. Character Set
 
@@ -833,6 +1232,101 @@ This section includes several common character range definitions.
 | [37] | ns-word-char | ::= | [ns-decimal-digit](#ns-decimal-digit) \| [ns-ascii-letter](#ns-ascii-letter) \| "-" | /* characters valid in a word */ |
 
 ## 4.2. Space Processing
+
+
+y[struct.anchor.not-content]
+
+y[struct.b-as-space]
+
+y[struct.b-comment]
+
+y[struct.b-l-folded]
+
+y[struct.b-l-trimmed]
+
+y[struct.c-nb-comment-text]
+
+y[struct.c-ns-anchor-property]
+
+y[struct.c-ns-properties]
+
+y[struct.comment.json-compat-final-break]
+
+y[struct.comment.not-content]
+
+y[struct.comment.separated-by-whitespace]
+
+y[struct.comment.should-terminate-with-break]
+
+y[struct.directive.not-content]
+
+y[struct.flow-folding.spaces-not-content]
+
+y[struct.global-tag-prefix.must-be-valid-uri]
+
+y[struct.global-tag-prefix.same-semantics]
+
+y[struct.indent.node-deeper-than-parent]
+
+y[struct.indent.not-content]
+
+y[struct.indent.siblings-same-level]
+
+y[struct.indent.tab-forbidden]
+
+y[struct.l-comment]
+
+y[struct.l-directive]
+
+y[struct.l-empty]
+
+y[struct.line-prefix.not-content]
+
+y[struct.ns-anchor-name]
+
+y[struct.ns-directive-name]
+
+y[struct.ns-directive-parameter]
+
+y[struct.ns-reserved-directive]
+
+y[struct.ns-yaml-version]
+
+y[struct.s-b-comment]
+
+y[struct.s-block-line-prefix]
+
+y[struct.s-flow-folded]
+
+y[struct.s-flow-line-prefix]
+
+y[struct.s-indent]
+
+y[struct.s-indent-less-or-equal]
+
+y[struct.s-indent-less-than]
+
+y[struct.s-l-comments]
+
+y[struct.s-line-prefix]
+
+y[struct.s-separate]
+
+y[struct.s-separate-in-line]
+
+y[struct.s-separate-lines]
+
+y[struct.separation.indented-after-comments]
+
+y[struct.separation.not-content]
+
+y[struct.yaml-directive.at-most-once]
+
+y[struct.yaml-directive.must-accept-current]
+
+y[struct.yaml-directive.should-reject-higher-major]
+
+y[struct.yaml-directive.should-warn-higher-minor]
 
 YAML streams use lines and spaces to convey structure. This requires special processing rules for white space (space and tab).
 
@@ -1119,6 +1613,13 @@ An anchor is a property that can be used to mark a node for future reference. An
 
 ## 4.4. Alias
 
+
+y[flow.alias.error-undefined-anchor]
+
+y[flow.alias.must-anchor-first]
+
+y[flow.alias.must-not-specify-properties]
+
 An alias node is a place holder for subsequent occurrences of a previously serialized node. The first occurence of the node must be marked by an anchor to allow subsequent occurences to be represented as alias nodes.
 
 An alias refers to the most recent preceding node having the same anchor. It is an error to have an alias use an anchor that does not occur previously in the serialization of the documeht. It is not an error to have an anchor that is not used by any alias node.
@@ -1132,6 +1633,215 @@ alias : *A001
 ```
 
 ## 4.5. Collection
+
+
+y[block.b-l-spaced]
+
+y[block.b-nb-literal-next]
+
+y[block.c-b-block-header]
+
+y[block.c-chomping-indicator]
+
+y[block.c-indentation-indicator]
+
+y[block.c-l-block-map-explicit-entry]
+
+y[block.c-l-block-map-explicit-key]
+
+y[block.c-l-block-map-implicit-value]
+
+y[block.c-l-block-seq-entry]
+
+y[block.c-l-folded]
+
+y[block.c-l-literal]
+
+y[block.chomping.not-content]
+
+y[block.explicit-key-separate-value]
+
+y[block.flow-indent-requirement]
+
+y[block.header.comment-no-follow]
+
+y[block.implicit-key-restrictions]
+
+y[block.indent.emit-explicit]
+
+y[block.indent.leading-empty-error]
+
+y[block.indent.non-empty-line-error]
+
+y[block.l-block-map-explicit-value]
+
+y[block.l-block-mapping]
+
+y[block.l-block-sequence]
+
+y[block.l-chomped-empty]
+
+y[block.l-folded-content]
+
+y[block.l-keep-empty]
+
+y[block.l-literal-content]
+
+y[block.l-nb-diff-lines]
+
+y[block.l-nb-folded-lines]
+
+y[block.l-nb-literal-text]
+
+y[block.l-nb-same-lines]
+
+y[block.l-nb-spaced-lines]
+
+y[block.l-strip-empty]
+
+y[block.l-trail-comments]
+
+y[block.ns-l-block-map-entry]
+
+y[block.ns-l-block-map-implicit-entry]
+
+y[block.ns-l-compact-mapping]
+
+y[block.ns-l-compact-sequence]
+
+y[block.ns-s-block-map-implicit-key]
+
+y[block.properties-indent]
+
+y[block.s-l-block-collection]
+
+y[block.s-l-block-in-block]
+
+y[block.s-l-block-indented]
+
+y[block.s-l-block-node]
+
+y[block.s-l-block-scalar]
+
+y[block.s-l-flow-in-block]
+
+y[block.s-nb-folded-text]
+
+y[block.s-nb-spaced-text]
+
+y[block.seq-space]
+
+y[block.seq.dash-separated]
+
+y[block.trail-comment.indent]
+
+y[block.value-not-adjacent]
+
+y[flow.c-double-quoted]
+
+y[flow.c-flow-mapping]
+
+y[flow.c-flow-sequence]
+
+y[flow.c-ns-alias-node]
+
+y[flow.c-ns-flow-map-empty-key-entry]
+
+y[flow.c-quoted-quote]
+
+y[flow.c-single-quoted]
+
+y[flow.double-quoted.continuation-must-contain-non-space]
+
+y[flow.e-node]
+
+y[flow.e-scalar]
+
+y[flow.implicit-key.must-single-line]
+
+y[flow.nb-double-char]
+
+y[flow.nb-double-multi-line]
+
+y[flow.nb-double-one-line]
+
+y[flow.nb-double-text]
+
+y[flow.nb-ns-double-in-line]
+
+y[flow.nb-ns-plain-in-line]
+
+y[flow.nb-ns-single-in-line]
+
+y[flow.nb-single-char]
+
+y[flow.nb-single-multi-line]
+
+y[flow.nb-single-one-line]
+
+y[flow.nb-single-text]
+
+y[flow.ns-double-char]
+
+y[flow.ns-flow-content]
+
+y[flow.ns-flow-map-entry]
+
+y[flow.ns-flow-map-explicit-entry]
+
+y[flow.ns-flow-map-implicit-entry]
+
+y[flow.ns-flow-map-yaml-key-entry]
+
+y[flow.ns-flow-node]
+
+y[flow.ns-flow-pair]
+
+y[flow.ns-flow-pair-entry]
+
+y[flow.ns-flow-pair-yaml-key-entry]
+
+y[flow.ns-flow-seq-entry]
+
+y[flow.ns-flow-yaml-content]
+
+y[flow.ns-flow-yaml-node]
+
+y[flow.ns-plain]
+
+y[flow.ns-plain-multi-line]
+
+y[flow.ns-plain-one-line]
+
+y[flow.ns-s-flow-map-entries]
+
+y[flow.ns-s-flow-seq-entries]
+
+y[flow.ns-s-implicit-yaml-key]
+
+y[flow.ns-single-char]
+
+y[flow.plain.continuation-must-contain-non-space]
+
+y[flow.plain.must-not-be-empty]
+
+y[flow.plain.must-not-begin-with-indicators]
+
+y[flow.plain.must-not-contain-colon-space-space-hash]
+
+y[flow.s-double-break]
+
+y[flow.s-double-escaped]
+
+y[flow.s-double-next-line]
+
+y[flow.s-ns-plain-next-line]
+
+y[flow.s-single-next-line]
+
+y[flow.scalar-style.must-not-convey-content]
+
+y[flow.single-quoted.continuation-must-contain-non-space]
 
 Collection nodes come in two kinds, sequence and mapping. Each kind has two styles, block and flow. Block styles begin on the next line and use indentation for internal structure. Flow collection styles start on the current line, may span multiple lines, and rely on indicators to represent internal structure.
 

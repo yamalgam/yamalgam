@@ -34,6 +34,8 @@ use std::time::Duration;
 ///
 /// The [`Default`] implementation returns [`LoaderConfig::moderate()`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+// y[impl model.loading.well-formed]
+// y[impl model.loading.reject-ill-formed]
 pub struct LoaderConfig {
     /// Resource limits applied during loading.
     pub limits: ResourceLimits,

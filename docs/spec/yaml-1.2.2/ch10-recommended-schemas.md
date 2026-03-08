@@ -4,7 +4,6 @@
 > Source: [YAML 1.2.2 Specification](https://yaml.org/spec/1.2.2/)
 > Prefix: `yaml12`
 
-y[schema.definition+3]
 A YAML _schema_ is a combination of a set of [tags] and a mechanism for
 [resolving] [non-specific tags].
 
@@ -14,7 +13,6 @@ A YAML _schema_ is a combination of a set of [tags] and a mechanism for
 The _failsafe schema_ is guaranteed to work with any YAML [document].
 It is therefore the recommended [schema] for generic YAML tools.
 
-y[schema.failsafe.processor-should-support+3]
 A YAML [processor] should therefore support this [schema], at least as an
 option.
 
@@ -23,7 +21,6 @@ option.
 
 #### 10.1.1.1. Generic Mapping
 
-y[schema.failsafe.tag-mapping+3]
 URI
 :
 `tag:yaml.org,2002:map`
@@ -58,7 +55,6 @@ Flow style: !!map { Clark: Evans, Ingy: döt Net, Oren: Ben-Kiki }
 
 #### 10.1.1.2. Generic Sequence
 
-y[schema.failsafe.tag-seq+3]
 URI
 :
 `tag:yaml.org,2002:seq`
@@ -90,7 +86,6 @@ Flow style: !!seq [ Clark Evans, Ingy döt Net, Oren Ben-Kiki ]
 
 #### 10.1.1.3. Generic String
 
-y[schema.failsafe.tag-str+3]
 URI
 :
 `tag:yaml.org,2002:str`
@@ -125,12 +120,10 @@ Flow style: !!str "String: just a theory."
 
 ### 10.1.2. Tag Resolution
 
-y[schema.failsafe.tag-resolution-bang+3]
 All [nodes] with the "`!`" non-specific tag are [resolved], by the standard
 [convention], to "`tag:yaml.org,2002:seq`", "`tag:yaml.org,2002:map`" or
 "`tag:yaml.org,2002:str`", according to their [kind].
 
-y[schema.failsafe.tag-resolution-question+3]
 All [nodes] with the "`?`" non-specific tag are left [unresolved].
 This constrains the [application] to deal with a [partial representation].
 
@@ -140,7 +133,6 @@ This constrains the [application] to deal with a [partial representation].
 The _JSON schema_ is the lowest common denominator of most modern computer
 languages and allows [parsing] JSON files.
 
-y[schema.json.processor-should-support+3]
 A YAML [processor] should therefore support this [schema], at least as an
 option.
 It is also strongly recommended that other [schemas] should be based on it.
@@ -154,7 +146,6 @@ The JSON [schema] uses the following [tags] in addition to those defined by the
 
 #### 10.2.1.1. Null
 
-y[schema.json.tag-null+3]
 URI
 :
 `tag:yaml.org,2002:null`
@@ -189,7 +180,6 @@ key with null value: !!null null
 
 #### 10.2.1.2. Boolean
 
-y[schema.json.tag-bool+3]
 URI
 :
 `tag:yaml.org,2002:bool`
@@ -222,7 +212,6 @@ Pluto is a planet: !!bool false
 
 #### 10.2.1.3. Integer
 
-y[schema.json.tag-int+3]
 URI
 :
 `tag:yaml.org,2002:int`
@@ -247,7 +236,6 @@ properly.
 In some languages (such as C), an integer may overflow the [native] type's
 storage capability.
 
-y[schema.json.int-overflow-handling+3]
 A YAML [processor] may reject such a value as an error, truncate it with a
 warning or find some other manner to round-trip it.
 In general, integers representable using 32 binary digits should safely
@@ -271,7 +259,6 @@ positive: !!int 34
 
 #### 10.2.1.4. Floating Point
 
-y[schema.json.tag-float+3]
 URI
 :
 `tag:yaml.org,2002:float`
@@ -297,7 +284,6 @@ Hence a float value may change by "a small amount" when round-tripped.
 The supported range and accuracy depends on the implementation, though 32 bit
 IEEE floats should be safe.
 
-y[schema.json.float-key-not-recommended+3]
 Since YAML does not specify a particular accuracy, using floating-point
 [mapping keys] requires great care and is not recommended.
 
@@ -325,28 +311,23 @@ not a number: !!float .nan
 The [JSON schema] [tag resolution] is an extension of the [failsafe schema]
 [tag resolution].
 
-y[schema.json.tag-resolution-bang+3]
 All [nodes] with the "`!`" non-specific tag are [resolved], by the standard
 [convention], to "`tag:yaml.org,2002:seq`", "`tag:yaml.org,2002:map`" or
 "`tag:yaml.org,2002:str`", according to their [kind].
 
-y[schema.json.tag-resolution-collections+3]
 [Collections] with the "`?`" non-specific tag (that is, [untagged]
 [collections]) are [resolved] to "`tag:yaml.org,2002:seq`" or
 "`tag:yaml.org,2002:map`" according to their [kind].
 
-y[schema.json.tag-resolution-scalars+3]
 [Scalars] with the "`?`" non-specific tag (that is, [plain scalars]) are
 matched with a list of regular expressions (first match wins, e.g. `0` is
 resolved as `!!int`).
 
-y[schema.json.unmatched-scalar-error+3]
 In principle, JSON files should not contain any [scalars] that do not match at
 least one of these.
 Hence the YAML [processor] should consider them to be an error.
 
 
-y[schema.json.tag-resolution-table+3]
 | Regular expression        | Resolved to tag
 | --                        | --
 | `null`                    | tag:yaml.org,2002:null
@@ -386,7 +367,6 @@ Invalid: [ True, Null,
 The _Core schema_ is an extension of the [JSON schema], allowing for more
 human-readable [presentation] of the same types.
 
-y[schema.core.recommended-default+3]
 This is the recommended default [schema] that YAML [processor] should use
 unless instructed otherwise.
 It is also strongly recommended that other [schemas] should be based on it.
@@ -402,26 +382,21 @@ The core [schema] uses the same [tags] as the [JSON schema].
 The [core schema] [tag resolution] is an extension of the [JSON schema] [tag
 resolution].
 
-y[schema.core.tag-resolution-bang+3]
 All [nodes] with the "`!`" non-specific tag are [resolved], by the standard
 [convention], to "`tag:yaml.org,2002:seq`", "`tag:yaml.org,2002:map`" or
 "`tag:yaml.org,2002:str`", according to their [kind].
 
-y[schema.core.tag-resolution-collections+3]
 [Collections] with the "`?`" non-specific tag (that is, [untagged]
 [collections]) are [resolved] to "`tag:yaml.org,2002:seq`" or
 "`tag:yaml.org,2002:map`" according to their [kind].
 
-y[schema.core.tag-resolution-scalars+3]
 [Scalars] with the "`?`" non-specific tag (that is, [plain scalars]) are
 matched with an extended list of regular expressions.
 
-y[schema.core.unmatched-scalar-str+3]
 However, in this case, if none of the regular expressions matches, the [scalar]
 is [resolved] to `tag:yaml.org,2002:str` (that is, considered to be a string).
 
 
-y[schema.core.tag-resolution-table+3]
 | Regular expression                | Resolved to tag
 | --                                | --
 | `null | Null | NULL | ~`          | tag:yaml.org,2002:null
@@ -464,19 +439,16 @@ Also floats: [
 
 ## 10.4. Other Schemas
 
-y[schema.other.explicit-tags-allowed+3]
 None of the above recommended [schemas] preclude the use of arbitrary explicit
 [tags].
 Hence YAML [processors] for a particular programming language typically provide
 some form of [local tags] that map directly to the language's [native data
 structures] (e.g., `!ruby/object:Set`).
 
-y[schema.other.local-tags-insufficient+3]
 While such [local tags] are useful for ad hoc [applications], they do not
 suffice for stable, interoperable cross-[application] or cross-platform data
 exchange.
 
-y[schema.other.interoperable-global-tags+3]
 Interoperable [schemas] make use of [global tags] (URIs) that [represent] the
 same data across different programming languages.
 In addition, an interoperable [schema] may provide additional [tag resolution]
@@ -485,6 +457,5 @@ Such rules may provide additional regular expressions, as well as consider the
 path to the [node].
 This allows interoperable [schemas] to use [untagged] [nodes].
 
-y[schema.other.recommended-base-core+3]
 It is strongly recommended that such [schemas] be based on the [core schema]
 defined above.

@@ -1,0 +1,9 @@
+{"level":"debug","message":"observability initialized","target":"yamalgam_core::observability","timestamp":"2026-03-08T19:54:57.299Z"}
+{"chdir":"None","color":"Auto","json":false,"level":"debug","message":"CLI initialized","quiet":false,"target":"yamalgam","timestamp":"2026-03-08T19:54:57.299Z","verbose":2}
+{"json_output":false,"level":"debug","message":"executing info command","target":"yamalgam::commands::info","timestamp":"2026-03-08T19:54:57.299Z"}
+{"level{""level":"debug","message"::""debugobservability initialized"",,""messagetarget""::""observability initializedyamalgam_core::observability"","timestamp,""target:""2026-03-08T19:54:57.556Z:""}yamalgam_core::observability
+"{,""chdirtimestamp""::""2026-03-08T19:54:57.554ZNone"}"
+,{""color":"chdir"Auto:",""None","color":"Auto","jsonjson":"false:false,","levellevel""::""debug"debug,"","messagemessage""::""CLI initialized"CLI initialized,"","quietquiet"":false:,false",target"target""::"yamalgam""yamalgam,"","timestamp":"2026-03-08T19:54:57.556Z","verbosetimestamp":":"12026-03-08T19:54:57.554Z}
+{"json_output":false,",""verbose":1level}
+":{""debug",json_output"":false,"level"message:"":"debugexecuting info command"","target",:"message"yamalgam::commands::info"":"executing info command","target":"yamalgam::commands::info",","timestamp":timestamp""2026-03-08T19:54:57.554Z:"2026-03-08T19:54:57.556Z"}
+"}
