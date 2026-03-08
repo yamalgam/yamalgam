@@ -32,6 +32,8 @@ pub mod loader;
 
 pub mod observability;
 
+pub mod value;
+
 pub use config::{Config, ConfigLoader, LogLevel};
 
 pub use diagnostic::{Diagnostic, Label, Mark, Severity, Span};
@@ -39,3 +41,5 @@ pub use diagnostic::{Diagnostic, Label, Mark, Severity, Span};
 pub use error::{ConfigError, ConfigResult};
 
 pub use loader::{IncludePolicy, LoaderConfig, RefPolicy, ResolutionPolicy, ResourceLimits};
+
+pub use value::{Mapping, Value};
