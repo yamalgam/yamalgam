@@ -618,7 +618,7 @@ Each directive is specified on a separate non-[indented] line starting with the
 "`%`" indicator, followed by the directive name and a list of parameters.
 The semantics of these parameters depends on the specific directive.
 
-y[struct.directive.ignore-unknown]
+y[struct.directive.ignore-unknown+2]
 A YAML [processor] should ignore unknown directives with an appropriate
 warning.
 
@@ -683,18 +683,18 @@ y[struct.yaml-directive.should-reject-higher-major]
 [Documents] with a "`YAML`" directive specifying a higher major version (e.g.
 "`%YAML 2.0`") should be rejected with an appropriate error message.
 
-y[struct.yaml-directive.must-accept-prior]
+y[struct.yaml-directive.must-accept-prior+2]
 A version 1.2 YAML [processor] must also accept [documents] with an explicit
 "`%YAML 1.1`" directive.
 Note that version 1.2 is mostly a superset of version 1.1, defined for the
 purpose of ensuring _JSON compatibility_.
 
-y[struct.yaml-directive.should-process-prior-as-current]
+y[struct.yaml-directive.should-process-prior-as-current+2]
 Hence a version 1.2 [processor] should process version 1.1 [documents] as if
 they were version 1.2, giving a warning on points of incompatibility (handling
 of [non-ASCII line breaks], as described [above]).
 
-y[struct.ns-yaml-directive]
+y[struct.ns-yaml-directive+2]
 ```
 [#] ns-yaml-directive ::=
   "YAML"
@@ -758,7 +758,7 @@ The "`TAG`" directive establishes a [tag shorthand] notation for specifying
 Each "`TAG`" directive associates a [handle] with a [prefix].
 This allows for compact and readable [tag] notation.
 
-y[struct.ns-tag-directive]
+y[struct.ns-tag-directive+2]
 ```
 [#] ns-tag-directive ::=
   "TAG"
@@ -787,7 +787,7 @@ y[struct.ns-tag-directive]
 * [ns-tag-prefix] <!-- 1:13, -->
 
 
-y[struct.tag-directive.at-most-once-per-handle]
+y[struct.tag-directive.at-most-once-per-handle+2]
 It is an error to specify more than one "`TAG`" directive for the same [handle]
 in the same document, even if both occurrences give the same [prefix].
 
@@ -815,7 +815,7 @@ handle in the same document.
 The _tag handle_ exactly matches the prefix of the affected [tag shorthand].
 There are three tag handle variants:
 
-y[struct.c-tag-handle]
+y[struct.c-tag-handle+2]
 ```
 [#] c-tag-handle ::=
     c-named-tag-handle
@@ -838,7 +838,7 @@ It is possible to override the default behavior by providing an explicit
 This provides smooth migration from using [local tags] to using [global tags]
 by the simple addition of a single "`TAG`" directive.
 
-y[struct.c-primary-tag-handle]
+y[struct.c-primary-tag-handle+2]
 ```
 [#] c-primary-tag-handle ::= '!'
 ```
@@ -875,7 +875,7 @@ By default, the prefix associated with this handle is "`tag:yaml.org,2002:`".
 It is possible to override this default behavior by providing an explicit
 "`TAG`" directive associating a different prefix for this handle.
 
-y[struct.c-secondary-tag-handle]
+y[struct.c-secondary-tag-handle+2]
 ```
 [#] c-secondary-tag-handle ::= "!!"
 ```
@@ -901,18 +901,18 @@ Named Handles
 :
 A _named tag handle_ surrounds a non-empty name with "`!`" characters.
 
-y[struct.named-tag-handle.must-be-declared]
+y[struct.named-tag-handle.must-be-declared+2]
 A handle name must not be used in a [tag shorthand] unless an explicit "`TAG`"
 directive has associated some prefix with it.
 
-y[struct.named-tag-handle.not-content]
+y[struct.named-tag-handle.not-content+2]
 :
 The name of the handle is a [presentation detail] and must not be used to
 convey [content] information.
 In particular, the YAML [processor] need not preserve the handle name once
 [parsing] is completed.
 
-y[struct.c-named-tag-handle]
+y[struct.c-named-tag-handle+2]
 ```
 [#] c-named-tag-handle ::=
   c-tag            # '!'
@@ -941,7 +941,7 @@ y[struct.c-named-tag-handle]
 
 There are two _tag prefix_ variants:
 
-y[struct.ns-tag-prefix]
+y[struct.ns-tag-prefix+2]
 ```
 [#] ns-tag-prefix ::=
   c-ns-local-tag-prefix | ns-global-tag-prefix
@@ -957,7 +957,7 @@ specific to the [application].
 In particular, two [documents] in the same [stream] may assign different
 semantics to the same [local tag].
 
-y[struct.c-ns-local-tag-prefix]
+y[struct.c-ns-local-tag-prefix+2]
 ```
 [#] c-ns-local-tag-prefix ::=
   c-tag           # '!'
@@ -1001,7 +1001,7 @@ y[struct.global-tag-prefix.same-semantics]
 In particular, every [document] in every [stream] must assign the same
 semantics to the same [global tag].
 
-y[struct.ns-global-tag-prefix]
+y[struct.ns-global-tag-prefix+2]
 ```
 [#] ns-global-tag-prefix ::=
   ns-tag-char
@@ -1077,7 +1077,7 @@ The _tag property_ identifies the type of the [native data structure]
 [presented] by the [node].
 A tag is denoted by the "`!`" indicator.
 
-y[struct.c-ns-tag-property]
+y[struct.c-ns-tag-property+2]
 ```
 [#] c-ns-tag-property ::=
     c-verbatim-tag
@@ -1091,16 +1091,16 @@ Verbatim Tags
 A tag may be written _verbatim_ by surrounding it with the "`<`" and "`>`"
 characters.
 
-y[struct.verbatim-tag.deliver-as-is]
+y[struct.verbatim-tag.deliver-as-is+2]
 In this case, the YAML [processor] must deliver the verbatim tag as-is to the
 [application].
 In particular, verbatim tags are not subject to [tag resolution].
 
-y[struct.verbatim-tag.must-be-local-or-uri]
+y[struct.verbatim-tag.must-be-local-or-uri+2]
 A verbatim tag must either begin with a "`!`" (a [local tag]) or be a valid URI
 (a [global tag]).
 
-y[struct.c-verbatim-tag]
+y[struct.c-verbatim-tag+2]
 ```
 [#] c-verbatim-tag ::=
   "!<"
@@ -1150,39 +1150,39 @@ Tag Shorthands
 A _tag shorthand_ consists of a valid [tag handle] followed by a non-empty
 suffix.
 
-y[struct.shorthand-tag.handle-must-have-prefix]
+y[struct.shorthand-tag.handle-must-have-prefix+2]
 The [tag handle] must be associated with a [prefix], either by default or by
 using a "`TAG`" directive.
 
-y[struct.shorthand-tag.result-must-be-local-or-uri]
+y[struct.shorthand-tag.result-must-be-local-or-uri+2]
 The resulting [parsed] [tag] is the concatenation of the [prefix] and the
 suffix and must either begin with "`!`" (a [local tag]) or be a valid URI (a
 [global tag]).
 
-y[struct.shorthand-tag.handle-not-content]
+y[struct.shorthand-tag.handle-not-content+2]
 :
 The choice of [tag handle] is a [presentation detail] and must not be used to
 convey [content] information.
 In particular, the [tag handle] may be discarded once [parsing] is completed.
 
-y[struct.shorthand-tag.suffix-no-bang]
+y[struct.shorthand-tag.suffix-no-bang+2]
 :
 The suffix must not contain any "`!`" character.
 This would cause the tag shorthand to be interpreted as having a [named tag
 handle].
 
-y[struct.shorthand-tag.suffix-no-flow-chars]
+y[struct.shorthand-tag.suffix-no-flow-chars+3]
 In addition, the suffix must not contain the "`[`", "`]`", "`{`", "`}`" and
 "`,`" characters.
 These characters would cause ambiguity with [flow collection] structures.
 
-y[struct.shorthand-tag.suffix-escape]
+y[struct.shorthand-tag.suffix-escape+2]
 If the suffix needs to specify any of the above restricted characters, they
 must be [escaped] using the "`%`" character.
 This behavior is consistent with the URI character escaping rules
 (specifically, section 2.3 of URI RFC).
 
-y[struct.c-ns-shorthand-tag]
+y[struct.c-ns-shorthand-tag+2]
 ```
 [#] c-ns-shorthand-tag ::=
   c-tag-handle
@@ -1248,7 +1248,7 @@ interpreted as "`tag:yaml.org,2002:seq`", "`tag:yaml.org,2002:map`" or
 There is no way to explicitly specify the "`?`" non-specific tag.
 This is intentional.
 
-y[struct.c-non-specific-tag]
+y[struct.c-non-specific-tag+2]
 ```
 [#] c-non-specific-tag ::= '!'
 ```
@@ -1299,12 +1299,12 @@ to convey [content] information.
 In particular, the YAML [processor] need not preserve the anchor name once the
 [representation] is [composed].
 
-y[struct.anchor.no-flow-chars]
+y[struct.anchor.no-flow-chars+3]
 Anchor names must not contain the "`[`", "`]`", "`{`", "`}`" and "`,`"
 characters.
 These characters would cause ambiguity with [flow collection] structures.
 
-y[struct.ns-anchor-char]
+y[struct.ns-anchor-char+3]
 ```
 [#] ns-anchor-char ::=
     ns-char - c-flow-indicator

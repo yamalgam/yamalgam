@@ -30,7 +30,7 @@ In addition, any allowed characters known to be non-printable should also be
 > Note: This isn't mandatory since a full implementation would require
 extensive character property tables.
 
-y[char.c-printable]
+y[char.c-printable+3]
 ```
 [#] c-printable ::=
                          # 8 bit
@@ -46,7 +46,7 @@ y[char.c-printable]
 ```
 
 
-y[char.set.json-compat]
+y[char.set.json-compat+3]
 To ensure [JSON compatibility], YAML [processors] must allow all non-C0
 characters inside [quoted scalars].
 To ensure readability, non-printable characters should be [escaped] on output,
@@ -55,7 +55,7 @@ even inside such [scalars].
 > Note: JSON [quoted scalars] cannot span multiple lines or contain [tabs], but
 YAML [quoted scalars] can.
 
-y[char.nb-json]
+y[char.nb-json+3]
 ```
 [#] nb-json ::=
     x09              # Tab character
@@ -77,11 +77,11 @@ y[char.encoding.not-content]
 The character encoding is a [presentation detail] and must not be used to
 convey [content] information.
 
-y[char.encoding.input-utf8-utf16]
+y[char.encoding.input-utf8-utf16+3]
 On input, a YAML [processor] must support the UTF-8 and UTF-16 character
 encodings.
 
-y[char.encoding.json-utf32]
+y[char.encoding.json-utf32+3]
 For [JSON compatibility], the UTF-32 encodings must also be supported.
 
 y[char.encoding.bom-detection]
@@ -97,7 +97,7 @@ y[char.encoding.same-encoding]
 Byte order marks may appear at the start of any [document], however all
 [documents] in the same [stream] must use the same character encoding.
 
-y[char.encoding.bom-in-quoted]
+y[char.encoding.bom-in-quoted+3]
 To allow for [JSON compatibility], byte order marks are also allowed inside
 [quoted scalars].
 For readability, such [content] byte order marks should be [escaped] on output.
@@ -327,7 +327,7 @@ It is used to denote [tag handles] used in [tag directives] and [tag
 properties]; to denote [local tags]; and as the [non-specific tag] for
 non-[plain scalars].
 
-y[char.c-tag]
+y[char.c-tag+2]
 ```
 [#] c-tag ::= '!'
 ```
@@ -517,7 +517,7 @@ y[char.c-flow-indicator]
 
 YAML recognizes the following ASCII _line break_ characters.
 
-y[char.b-line-feed]
+y[char.b-line-feed+3]
 ```
 [#] b-line-feed ::= x0A
 ```
@@ -529,7 +529,7 @@ y[char.b-carriage-return]
 ```
 
 
-y[char.b-char]
+y[char.b-char+3]
 ```
 [#] b-char ::=
     b-line-feed          # x0A
@@ -542,13 +542,13 @@ non-break characters.
 Note that these include the _non-ASCII line breaks_: next line (`x85`), line
 separator (`x2028`) and paragraph separator (`x2029`).
 
-y[char.line-break.non-ascii-compat]
+y[char.line-break.non-ascii-compat+3]
 [YAML version 1.1] did support the above non-ASCII line break characters;
 however, JSON does not.
 Hence, to ensure [JSON compatibility], YAML treats them as non-break characters
 as of version 1.2.
 
-y[char.line-break.v11-warning]
+y[char.line-break.v11-warning+3]
 YAML 1.2 [processors] [parsing] a [version 1.1] [document] should therefore
 treat these line breaks as non-break characters, with an appropriate warning.
 
@@ -736,7 +736,7 @@ the "`%`" character.
 y[char.misc.uri-no-expand]
 The YAML [processor] must not expand such escaped characters.
 
-y[char.misc.tag-preserve]
+y[char.misc.tag-preserve+2]
 [Tag] characters must be preserved and compared exactly as [presented] in the
 YAML [stream], without any processing.
 
@@ -775,12 +775,12 @@ y[char.ns-uri-char]
 The "`!`" character is used to indicate the end of a [named tag handle]; hence
 its use in [tag shorthands] is restricted.
 
-y[char.misc.tag-shorthand-restrict]
+y[char.misc.tag-shorthand-restrict+3]
 In addition, such [shorthands] must not contain the "`[`", "`]`", "`{`", "`}`"
 and "`,`" characters.
 These characters would cause ambiguity with [flow collection] structures.
 
-y[char.ns-tag-char]
+y[char.ns-tag-char+3]
 ```
 [#] ns-tag-char ::=
     ns-uri-char
@@ -843,7 +843,7 @@ Escaped ASCII horizontal tab (`x09`) character.
 This is useful at the start or the end of a line to force a leading or trailing
 tab to become part of the [content].
 
-y[char.ns-esc-horizontal-tab]
+y[char.ns-esc-horizontal-tab+2]
 ```
 [#] ns-esc-horizontal-tab ::=
   't' | x09
@@ -910,7 +910,7 @@ y[char.ns-esc-double-quote]
 
 Escaped ASCII slash (`x2F`), for [JSON compatibility].
 
-y[char.ns-esc-slash]
+y[char.ns-esc-slash+3]
 ```
 [#] ns-esc-slash ::= '/'
 ```
@@ -988,7 +988,7 @@ y[char.ns-esc-32-bit]
 
 Any escaped character:
 
-y[char.c-ns-esc-char]
+y[char.c-ns-esc-char+3]
 ```
 [#] c-ns-esc-char ::=
   c-escape         # '\'

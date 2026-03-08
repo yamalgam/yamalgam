@@ -158,11 +158,11 @@ y[overview.tags.explicit-tag-indicator]
 Explicit typing is denoted with a [tag] using the exclamation point ("`!`")
 symbol.
 
-y[overview.tags.global-tags-uri]
+y[overview.tags.global-tags-uri+3]
 [Global tags] are URIs and may be specified in a [tag shorthand] notation using
 a [handle].
 
-y[overview.tags.local-tags]
+y[overview.tags.local-tags+3]
 [Application]\-specific [local tags] may also be used.
 
 <!-- Examples 2.23 through 2.28 omitted — see vendor/yaml-spec/spec-1.2.2.md -->

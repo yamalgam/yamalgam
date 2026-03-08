@@ -490,7 +490,7 @@ However, the "`:`", "`?`" and "`-`" [indicators] may be used as the first
 character if followed by a non-[space] "safe" character, as this causes no
 ambiguity.
 
-y[flow.ns-plain-first]
+y[flow.ns-plain-first+4]
 ```
 [#] ns-plain-first(c) ::=
     (
@@ -513,12 +513,12 @@ Plain scalars must never contain the "`: `" and "` #`" character combinations.
 Such combinations would cause ambiguity with [mapping] [key/value pairs] and
 [comments].
 
-y[flow.plain.must-not-contain-flow-indicators]
+y[flow.plain.must-not-contain-flow-indicators+3]
 In addition, inside [flow collections], or when used as [implicit keys], plain
 scalars must not contain the "`[`", "`]`", "`{`", "`}`" and "`,`" characters.
 These characters would cause ambiguity with [flow collection] structures.
 
-y[flow.ns-plain-safe]
+y[flow.ns-plain-safe+4]
 ```
 [#]
 ns-plain-safe(FLOW-OUT)  ::= ns-plain-safe-out
@@ -527,19 +527,19 @@ ns-plain-safe(BLOCK-KEY) ::= ns-plain-safe-out
 ns-plain-safe(FLOW-KEY)  ::= ns-plain-safe-in
 ```
 
-y[flow.ns-plain-safe-out]
+y[flow.ns-plain-safe-out+4]
 ```
 [#] ns-plain-safe-out ::=
   ns-char
 ```
 
-y[flow.ns-plain-safe-in]
+y[flow.ns-plain-safe-in+4]
 ```
 [#] ns-plain-safe-in ::=
   ns-char - c-flow-indicator
 ```
 
-y[flow.ns-plain-char]
+y[flow.ns-plain-char+4]
 ```
 [#] ns-plain-char(c) ::=
     (
@@ -694,7 +694,7 @@ The final "`,`" may be omitted.
 This does not cause ambiguity because flow collection entries can never be
 [completely empty].
 
-y[flow.in-flow]
+y[flow.in-flow+3]
 ```
 [#]
 in-flow(n,FLOW-OUT)  ::= ns-s-flow-seq-entries(n,FLOW-IN)
@@ -923,7 +923,7 @@ y[flow.c-ns-flow-map-empty-key-entry]
   c-ns-flow-map-separate-value(n,c)
 ```
 
-y[flow.c-ns-flow-map-separate-value]
+y[flow.c-ns-flow-map-separate-value+4]
 ```
 [#] c-ns-flow-map-separate-value(n,c) ::=
   c-mapping-value    # ':'
@@ -962,7 +962,7 @@ omitted value:°,
 * [c-ns-flow-map-separate-value(n,c)] <!-- 4:15 5:1 -->
 
 
-y[flow.json-key.should-separate-value]
+y[flow.json-key.should-separate-value+3]
 To ensure [JSON compatibility], if a [key] inside a flow mapping is
 [JSON-like], YAML allows the following [value] to be specified adjacent to the
 "`:`".
@@ -971,7 +971,7 @@ This causes no ambiguity, as all [JSON-like] [keys] are surrounded by
 However, as this greatly reduces readability, YAML [processors] should
 [separate] the [value] from the "`:`" on output, even in this case.
 
-y[flow.c-ns-flow-map-json-key-entry]
+y[flow.c-ns-flow-map-json-key-entry+3]
 ```
 [#] c-ns-flow-map-json-key-entry(n,c) ::=
   c-flow-json-node(n,c)
@@ -984,7 +984,7 @@ y[flow.c-ns-flow-map-json-key-entry]
   )
 ```
 
-y[flow.c-ns-flow-map-adjacent-value]
+y[flow.c-ns-flow-map-adjacent-value+3]
 ```
 [#] c-ns-flow-map-adjacent-value(n,c) ::=
   c-mapping-value          # ':'
@@ -1078,7 +1078,7 @@ y[flow.ns-flow-pair]
 If the "`?`" indicator is omitted, [parsing] needs to see past the _implicit
 key_ to recognize it as such.
 
-y[flow.implicit-key.must-limit-1024]
+y[flow.implicit-key.must-limit-1024+3]
 To limit the amount of lookahead required, the "`:`" indicator must appear at
 most 1024 Unicode characters beyond the start of the [key].
 
@@ -1105,7 +1105,7 @@ y[flow.ns-flow-pair-yaml-key-entry]
   c-ns-flow-map-separate-value(n,c)
 ```
 
-y[flow.c-ns-flow-pair-json-key-entry]
+y[flow.c-ns-flow-pair-json-key-entry+3]
 ```
 [#] c-ns-flow-pair-json-key-entry(n,c) ::=
   c-s-implicit-json-key(FLOW-KEY)
@@ -1120,7 +1120,7 @@ y[flow.ns-s-implicit-yaml-key]
   /* At most 1024 characters altogether */
 ```
 
-y[flow.c-s-implicit-json-key]
+y[flow.c-s-implicit-json-key+3]
 ```
 [#] c-s-implicit-json-key(c) ::=
   c-flow-json-node(0,c)
@@ -1182,7 +1182,7 @@ y[flow.ns-flow-yaml-content]
   ns-plain(n,c)
 ```
 
-y[flow.c-flow-json-content]
+y[flow.c-flow-json-content+3]
 ```
 [#] c-flow-json-content(n,c) ::=
     c-flow-sequence(n,c)
@@ -1242,7 +1242,7 @@ y[flow.ns-flow-yaml-node]
     )
 ```
 
-y[flow.c-flow-json-node]
+y[flow.c-flow-json-node+3]
 ```
 [#] c-flow-json-node(n,c) ::=
   (

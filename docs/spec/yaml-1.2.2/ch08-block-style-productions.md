@@ -209,7 +209,7 @@ c-chomping-indicator(CLIP)  ::= ""
 The interpretation of the final [line break] of a [block scalar] is controlled
 by the chomping indicator specified in the [block scalar header].
 
-y[block.b-chomped-last]
+y[block.b-chomped-last+4]
 ```
 [#]
 b-chomped-last(STRIP) ::= b-non-content  | <end-of-input>
