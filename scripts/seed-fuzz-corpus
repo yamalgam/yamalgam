@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SUITE_DIR="vendor/yaml-test-suite"
+SEED_DIR="fuzz/corpus/seed"
+
+mkdir -p "$SEED_DIR"
+
+count=0
+for f in "$SUITE_DIR"/*.yaml; do
+    id=$(basename "$f" .yaml)
+    cp "$f" "$SEED_DIR/${id}.yaml"
+    count=$((count + 1))
+done
+
+echo "Seeded $count test cases into $SEED_DIR"

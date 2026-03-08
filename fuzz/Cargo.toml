@@ -1,0 +1,57 @@
+[package]
+name = "yamalgam-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+yamalgam-scanner = { path = "../crates/yamalgam-scanner" }
+yamalgam-parser = { path = "../crates/yamalgam-parser" }
+yamalgam-core = { path = "../crates/yamalgam-core" }
+
+[lib]
+name = "yamalgam_fuzz"
+path = "src/lib.rs"
+
+# Prevent workspace lints from breaking fuzz harnesses
+[lints.rust]
+missing_docs = "allow"
+unsafe_code = "allow"
+[lints.clippy]
+all = "allow"
+nursery = "allow"
+
+[[bin]]
+name = "fuzz_scanner_bytes"
+path = "fuzz_targets/fuzz_scanner_bytes.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_parser_bytes"
+path = "fuzz_targets/fuzz_parser_bytes.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_scanner_structured"
+path = "fuzz_targets/fuzz_scanner_structured.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_parser_structured"
+path = "fuzz_targets/fuzz_parser_structured.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_limits"
+path = "fuzz_targets/fuzz_limits.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_differential"
+path = "fuzz_targets/fuzz_differential.rs"
+doc = false
