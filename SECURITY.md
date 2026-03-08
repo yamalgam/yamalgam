@@ -14,12 +14,12 @@ Instead, please report them via one of the following methods:
 
 ### Option 1: GitHub Security Advisories (Preferred)
 
-Use [GitHub's private vulnerability reporting](https://github.com/claylo/yamalgam/security/advisories/new)
+Use [GitHub's private vulnerability reporting](https://github.com/yamalgam/yamalgam/security/advisories/new)
 to submit a report directly.
 
 ### Option 2: Email
 
-Send an email to the maintainers with:
+Send an email to `security@yamalgam.com` with:
 
 - A description of the vulnerability
 - Steps to reproduce the issue
