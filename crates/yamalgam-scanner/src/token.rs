@@ -57,6 +57,8 @@ pub enum TokenKind {
     Tag,
     /// Scalar content (plain, quoted, or block).
     Scalar,
+    /// `# ...` comment (text includes the `#` prefix).
+    Comment,
 }
 
 impl TokenKind {
