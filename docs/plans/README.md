@@ -67,20 +67,13 @@ Resolver trait (composable event-stream middleware), NoopResolver, Value type, Y
 
 ---
 
-## Milestone 7 — Schema Resolver Trait
-**Status:** Not started
+## Milestone 7 — Tag Resolution Trait
+**Status:** Complete
 
-Trait-based schema resolution for plain scalar typing. Replaces the current hardcoded `resolve_plain_scalar()` with a `SchemaResolver` trait and four built-in implementations.
+Pluggable tag resolution for plain scalar typing via `TagResolver` trait. Four built-in implementations: `Yaml12TagResolver` (default), `FailsafeTagResolver`, `JsonTagResolver`, `Yaml11TagResolver`. `TagResolution` enum in `LoaderConfig`, `Box<dyn TagResolver>` in Composer.
 
-Key deliverables:
-- `SchemaResolver` trait in `yamalgam-core` — `fn resolve_scalar(&self, value: &str) -> Value`
-- `CoreSchema` — YAML 1.2 Core (current behavior, extracted from `tag.rs`)
-- `FailsafeSchema` — all plain scalars are strings, no implicit typing
-- `JsonSchema` — JSON-compatible type rules
-- `Yaml11Schema` — legacy YAML 1.1 booleans (yes/no/on/off)
-- Composer accepts `&dyn SchemaResolver` (default: `CoreSchema`)
-- Wire into `LoaderConfig` or as a Composer parameter
-- Users can implement custom schemas without forking
+- Design: `2026-03-09-tag-resolution-trait-design.md`
+- Plan: `2026-03-09-tag-resolution-trait-plan.md`
 
 Prerequisite for yg CLI's `--schema` flag and `resolve_as()` filter.
 

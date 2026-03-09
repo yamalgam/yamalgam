@@ -23,6 +23,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::tag_resolution::TagResolution;
+
 // ---------------------------------------------------------------------------
 // LoaderConfig
 // ---------------------------------------------------------------------------
@@ -41,6 +43,8 @@ pub struct LoaderConfig {
     pub limits: ResourceLimits,
     /// Policy for resolving `!include` and `$ref` references.
     pub resolution: ResolutionPolicy,
+    /// Tag resolution scheme for plain scalar typing.
+    pub tag_resolution: TagResolution,
 }
 
 impl Default for LoaderConfig {
@@ -73,6 +77,7 @@ impl LoaderConfig {
                 max_merge_depth: Some(64),
             },
             resolution: ResolutionPolicy::disabled(),
+            tag_resolution: TagResolution::Yaml12,
         }
     }
 
@@ -99,6 +104,7 @@ impl LoaderConfig {
                 max_merge_depth: Some(10),
             },
             resolution: ResolutionPolicy::disabled(),
+            tag_resolution: TagResolution::Yaml12,
         }
     }
 
@@ -125,6 +131,7 @@ impl LoaderConfig {
                 max_merge_depth: Some(256),
             },
             resolution: ResolutionPolicy::disabled(),
+            tag_resolution: TagResolution::Yaml12,
         }
     }
 
@@ -134,7 +141,15 @@ impl LoaderConfig {
         Self {
             limits: ResourceLimits::none(),
             resolution: ResolutionPolicy::disabled(),
+            tag_resolution: TagResolution::Yaml12,
         }
+    }
+
+    /// Set the tag resolution scheme.
+    #[must_use]
+    pub const fn with_tag_resolution(mut self, tag_resolution: TagResolution) -> Self {
+        self.tag_resolution = tag_resolution;
+        self
     }
 }
 
@@ -468,5 +483,18 @@ mod tests {
         };
         assert!(limits.check_input_size(11 * 1024 * 1024).is_err());
         assert!(limits.check_input_size(10 * 1024 * 1024).is_ok());
+    }
+
+    #[test]
+    fn default_tag_resolution_is_yaml12() {
+        let cfg = LoaderConfig::default();
+        assert_eq!(cfg.tag_resolution, TagResolution::Yaml12);
+    }
+
+    #[test]
+    fn with_tag_resolution_builder() {
+        let cfg = LoaderConfig::strict().with_tag_resolution(TagResolution::Yaml11);
+        assert_eq!(cfg.tag_resolution, TagResolution::Yaml11);
+        assert_eq!(cfg.limits.max_depth, Some(64));
     }
 }

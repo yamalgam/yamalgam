@@ -27,6 +27,7 @@
 // y[impl schema.failsafe.tag-seq+3]
 // y[impl schema.definition+3]
 use crate::Value;
+use crate::tag_resolution::TagResolver;
 
 /// Resolve a plain (unquoted) scalar string to a typed [`Value`] per the
 /// YAML 1.2 Core Schema.
@@ -129,6 +130,22 @@ fn try_integer(s: &str) -> Option<Value> {
     }
 
     None
+}
+
+/// YAML 1.2 Core Schema tag resolver.
+///
+/// Delegates to [`resolve_plain_scalar()`] — the existing YAML 1.2 Core
+/// implementation. This struct exists to provide a [`TagResolver`] impl
+/// without moving or duplicating the resolution logic.
+// y[impl schema.core.recommended-default+3]
+// y[impl schema.core.tag-resolution-scalars+3]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Yaml12TagResolver;
+
+impl TagResolver for Yaml12TagResolver {
+    fn resolve_scalar(&self, value: &str) -> Value {
+        resolve_plain_scalar(value)
+    }
 }
 
 // ---------------------------------------------------------------------------
