@@ -121,6 +121,174 @@ fn try_json_number(s: &str) -> Option<Value> {
 // Re-export Yaml12TagResolver from tag.rs so it's accessible via this module.
 pub use crate::tag::Yaml12TagResolver;
 
+/// YAML 1.1 type resolution — extended booleans, legacy octal, binary integers,
+/// and underscore separators in numbers.
+///
+/// Extends YAML 1.2 Core with:
+/// - Extra booleans: `yes`/`no`, `on`/`off`, `y`/`n` (all case variants)
+/// - `0`-prefix octal: `017` = 15 (not `0o17`)
+/// - `0b` binary: `0b1010` = 10
+/// - Underscore separators in all numeric bases: `1_000`, `0xFF_FF`
+///
+/// Does **not** implement sexagesimal values (`1:30:00`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Yaml11TagResolver;
+
+impl TagResolver for Yaml11TagResolver {
+    fn resolve_scalar(&self, value: &str) -> Value {
+        // Null — same as Core
+        if value.is_empty() || value == "~" || value == "null" || value == "Null" || value == "NULL"
+        {
+            return Value::Null;
+        }
+
+        // Booleans — Core set plus extended 1.1 set
+        match value {
+            "true" | "True" | "TRUE" | "yes" | "Yes" | "YES" | "on" | "On" | "ON" | "y" | "Y" => {
+                return Value::Bool(true);
+            }
+            "false" | "False" | "FALSE" | "no" | "No" | "NO" | "off" | "Off" | "OFF" | "n"
+            | "N" => {
+                return Value::Bool(false);
+            }
+            _ => {}
+        }
+
+        // Special float values: .inf, .nan (with optional sign for .inf)
+        match value {
+            ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => {
+                return Value::Float(f64::INFINITY);
+            }
+            "-.inf" | "-.Inf" | "-.INF" => return Value::Float(f64::NEG_INFINITY),
+            ".nan" | ".NaN" | ".NAN" => return Value::Float(f64::NAN),
+            _ => {}
+        }
+
+        // Try numeric resolution (YAML 1.1 rules: 0-prefix octal, 0b binary, underscores)
+        if let Some(v) = try_yaml11_number(value) {
+            return v;
+        }
+
+        // Fallback: string
+        Value::String(value.to_owned())
+    }
+}
+
+/// Try to parse `s` as a YAML 1.1 number.
+///
+/// Supports:
+/// - Decimal integers with optional sign and underscore separators
+/// - `0`-prefix octal: `0[0-7_]+` (NOT `0o`)
+/// - `0x` hex: `0x[0-9a-fA-F_]+`
+/// - `0b` binary: `0b[01_]+`
+/// - Floats with `.` or exponent, with underscore separators
+fn try_yaml11_number(s: &str) -> Option<Value> {
+    if s.is_empty() {
+        return None;
+    }
+
+    let bytes = s.as_bytes();
+
+    // Determine sign and body
+    let (negative, body) = match bytes[0] {
+        b'+' => (false, &s[1..]),
+        b'-' => (true, &s[1..]),
+        _ => (false, s),
+    };
+
+    if body.is_empty() {
+        return None;
+    }
+
+    // Must start with a digit or '.' (for floats like .5)
+    let first = body.as_bytes()[0];
+    if !first.is_ascii_digit() && first != b'.' {
+        return None;
+    }
+
+    // Check for 0-prefix special forms
+    if body.starts_with('0') && body.len() > 1 {
+        let second = body.as_bytes()[1];
+
+        // 0x hex
+        if second == b'x' || second == b'X' {
+            let hex = &body[2..];
+            if hex.is_empty() {
+                return None;
+            }
+            let cleaned: String = hex.chars().filter(|&c| c != '_').collect();
+            if cleaned.is_empty()
+                || !cleaned.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return None;
+            }
+            let n = i64::from_str_radix(&cleaned, 16).ok()?;
+            return Some(Value::Integer(if negative { -n } else { n }));
+        }
+
+        // 0b binary
+        if second == b'b' || second == b'B' {
+            let bin = &body[2..];
+            if bin.is_empty() {
+                return None;
+            }
+            let cleaned: String = bin.chars().filter(|&c| c != '_').collect();
+            if cleaned.is_empty()
+                || !cleaned.bytes().all(|b| b == b'0' || b == b'1')
+            {
+                return None;
+            }
+            let n = i64::from_str_radix(&cleaned, 2).ok()?;
+            return Some(Value::Integer(if negative { -n } else { n }));
+        }
+
+        // 0-prefix octal: 0[0-7_]+ (but NOT 0o, and NOT digits 8-9)
+        if second.is_ascii_digit() || second == b'_' {
+            let oct = &body[1..];
+            let cleaned: String = oct.chars().filter(|&c| c != '_').collect();
+            if cleaned.is_empty() {
+                return None;
+            }
+            // All chars must be 0-7
+            if !cleaned.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+                return None;
+            }
+            let n = i64::from_str_radix(&cleaned, 8).ok()?;
+            return Some(Value::Integer(if negative { -n } else { n }));
+        }
+    }
+
+    // Strip underscores for decimal/float parsing
+    let cleaned: String = body.chars().filter(|&c| c != '_').collect();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    // Float check: contains '.' or 'e'/'E'
+    let is_float = cleaned.contains('.') || cleaned.contains('e') || cleaned.contains('E');
+
+    if is_float {
+        // Must start with a digit
+        if !cleaned.as_bytes()[0].is_ascii_digit() {
+            return None;
+        }
+        let full = if negative {
+            format!("-{cleaned}")
+        } else {
+            cleaned
+        };
+        let f: f64 = full.parse().ok()?;
+        Some(Value::Float(f))
+    } else {
+        // Decimal integer — all digits
+        if !cleaned.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let n: i64 = cleaned.parse().ok()?;
+        Some(Value::Integer(if negative { -n } else { n }))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -208,5 +376,98 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn yaml11_booleans() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar("true"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("True"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("TRUE"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("false"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("False"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("FALSE"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("yes"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("Yes"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("YES"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("no"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("No"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("NO"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("on"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("On"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("ON"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("off"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("Off"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("OFF"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("y"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("Y"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("n"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("N"), Value::Bool(false));
+    }
+
+    #[test]
+    fn yaml11_null() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar("null"), Value::Null);
+        assert_eq!(r.resolve_scalar("Null"), Value::Null);
+        assert_eq!(r.resolve_scalar("NULL"), Value::Null);
+        assert_eq!(r.resolve_scalar("~"), Value::Null);
+        assert_eq!(r.resolve_scalar(""), Value::Null);
+    }
+
+    #[test]
+    fn yaml11_octal() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar("017"), Value::Integer(15));
+        assert_eq!(r.resolve_scalar("0"), Value::Integer(0));
+        assert_eq!(r.resolve_scalar("010"), Value::Integer(8));
+        // 0o is NOT 1.1 octal
+        assert_eq!(r.resolve_scalar("0o17"), Value::String("0o17".into()));
+        // 09 is not valid octal, should be string
+        assert_eq!(r.resolve_scalar("09"), Value::String("09".into()));
+    }
+
+    #[test]
+    fn yaml11_binary() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar("0b1010"), Value::Integer(10));
+        assert_eq!(r.resolve_scalar("0b0"), Value::Integer(0));
+        assert_eq!(r.resolve_scalar("0b11111111"), Value::Integer(255));
+    }
+
+    #[test]
+    fn yaml11_hex() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar("0xFF"), Value::Integer(255));
+        assert_eq!(r.resolve_scalar("0x0"), Value::Integer(0));
+        assert_eq!(r.resolve_scalar("0xDEAD"), Value::Integer(0xDEAD));
+    }
+
+    #[test]
+    fn yaml11_underscores_in_numbers() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar("1_000"), Value::Integer(1000));
+        assert_eq!(r.resolve_scalar("1_000_000"), Value::Integer(1_000_000));
+        assert_eq!(r.resolve_scalar("0xFF_FF"), Value::Integer(0xFFFF));
+        assert_eq!(r.resolve_scalar("1_0.5"), Value::Float(10.5));
+    }
+
+    #[test]
+    fn yaml11_special_floats() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar(".inf"), Value::Float(f64::INFINITY));
+        assert_eq!(r.resolve_scalar(".Inf"), Value::Float(f64::INFINITY));
+        assert_eq!(r.resolve_scalar("-.inf"), Value::Float(f64::NEG_INFINITY));
+        match r.resolve_scalar(".nan") {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected Float(NaN), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yaml11_signed_integers() {
+        let r = Yaml11TagResolver;
+        assert_eq!(r.resolve_scalar("+42"), Value::Integer(42));
+        assert_eq!(r.resolve_scalar("-17"), Value::Integer(-17));
     }
 }

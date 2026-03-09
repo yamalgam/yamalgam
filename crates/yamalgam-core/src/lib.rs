@@ -71,6 +71,8 @@ pub use loader::{IncludePolicy, LoaderConfig, RefPolicy, ResolutionPolicy, Resou
 
 pub use tag::{resolve_plain_scalar, Yaml12TagResolver};
 
-pub use tag_resolution::{FailsafeTagResolver, JsonTagResolver, TagResolution, TagResolver};
+pub use tag_resolution::{
+    FailsafeTagResolver, JsonTagResolver, TagResolution, TagResolver, Yaml11TagResolver,
+};
 
 pub use value::{Mapping, Value};
