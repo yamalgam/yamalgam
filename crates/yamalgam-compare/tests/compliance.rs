@@ -145,6 +145,11 @@ fn event_to_snapshot(event: &Event<'_>) -> Option<EventSnapshot> {
             value: Some(name.to_string()),
             implicit: None,
         }),
+        // yamalgam-specific structural events — not in YAML Test Suite tree format.
+        Event::Comment { .. }
+        | Event::BlockEntry { .. }
+        | Event::KeyIndicator { .. }
+        | Event::ValueIndicator { .. } => None,
     }
 }
 

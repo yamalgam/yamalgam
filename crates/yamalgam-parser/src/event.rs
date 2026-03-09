@@ -111,4 +111,48 @@ pub enum Event<'input> {
         /// Source span.
         span: Span,
     },
+
+    // -- Full-fidelity structural events (yamalgam extension) --
+    // These events are emitted for CST, SAX, and streaming consumers.
+    // Semantic consumers (Value, serde) skip them.
+    /// A YAML comment (text includes the `#` prefix).
+    Comment {
+        /// The comment text, including `#`.
+        text: Cow<'input, str>,
+        /// Source span.
+        span: Span,
+    },
+
+    /// `-` block sequence entry indicator.
+    BlockEntry {
+        /// Source span of the `-`.
+        span: Span,
+    },
+
+    /// `?` or implicit key indicator.
+    KeyIndicator {
+        /// Source span of the `?` (or inferred position for implicit keys).
+        span: Span,
+    },
+
+    /// `:` value indicator.
+    ValueIndicator {
+        /// Source span of the `:`.
+        span: Span,
+    },
+}
+
+impl Event<'_> {
+    /// Returns `true` for yamalgam-specific structural events that semantic
+    /// consumers (Value, serde) should skip.
+    #[must_use]
+    pub const fn is_structural(&self) -> bool {
+        matches!(
+            self,
+            Event::Comment { .. }
+                | Event::BlockEntry { .. }
+                | Event::KeyIndicator { .. }
+                | Event::ValueIndicator { .. }
+        )
+    }
 }

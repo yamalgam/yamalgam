@@ -1,6 +1,7 @@
 //! YAML pull parser — consumes tokens, emits events.
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 
 use yamalgam_core::{LoaderConfig, ResourceLimits, Span};
 use yamalgam_scanner::scanner::{ScanError, Scanner};
@@ -82,6 +83,9 @@ pub struct Parser<'input> {
     seen_directive: bool,
     /// Resource limits (depth, size, etc.).
     config: ResourceLimits,
+    /// Queue for events produced by comment/structural token collection.
+    /// The Iterator drains this before calling `parse_next()`.
+    event_queue: VecDeque<Event<'input>>,
 }
 
 impl<'input> Parser<'input> {
@@ -117,6 +121,7 @@ impl<'input> Parser<'input> {
             done: false,
             seen_directive: false,
             config: ResourceLimits::none(),
+            event_queue: VecDeque::new(),
         }
     }
 
@@ -135,17 +140,17 @@ impl<'input> Parser<'input> {
             done: false,
             seen_directive: false,
             config: config.limits.clone(),
+            event_queue: VecDeque::new(),
         }
     }
 
     /// Peek at the next non-comment token without consuming it.
     ///
-    /// Comment tokens are transparently skipped — the parser doesn't use
-    /// them for state transitions. (A future milestone will emit them as
-    /// `Event::Comment` events before skipping.)
+    /// Comment tokens are collected as `Event::Comment` events into the
+    /// event queue rather than discarded.
     fn peek_token(&mut self) -> Result<Option<&Token<'input>>, ParseError> {
         if self.peeked.is_none() {
-            self.peeked = self.skip_comments()?;
+            self.peeked = self.collect_comments()?;
         }
         Ok(self.peeked.as_ref())
     }
@@ -155,14 +160,21 @@ impl<'input> Parser<'input> {
         if let Some(token) = self.peeked.take() {
             return Ok(Some(token));
         }
-        self.skip_comments()
+        self.collect_comments()
     }
 
-    /// Advance past any Comment tokens from the scanner.
-    fn skip_comments(&mut self) -> Result<Option<Token<'input>>, ParseError> {
+    /// Advance past Comment tokens, queuing them as `Event::Comment`.
+    ///
+    /// Returns the next non-comment token (or `None` at EOF).
+    fn collect_comments(&mut self) -> Result<Option<Token<'input>>, ParseError> {
         loop {
             match self.tokens.next().transpose()? {
-                Some(token) if token.kind == TokenKind::Comment => continue,
+                Some(token) if token.kind == TokenKind::Comment => {
+                    self.event_queue.push_back(Event::Comment {
+                        text: token.atom.data,
+                        span: token.atom.span,
+                    });
+                }
                 other => return Ok(other),
             }
         }
@@ -642,21 +654,23 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::BlockEntry) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let entry_span = t.atom.span;
                 // Peek to see if this entry is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::BlockEntry) | Some(TokenKind::BlockEnd) => {
-                        // Empty entry — emit empty scalar, stay in BlockSequenceEntry.
+                        // Empty entry — queue empty scalar, return BlockEntry.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::BlockSequenceEntry;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
                     _ => {
-                        // Entry has content — recurse into BlockNode.
+                        // Entry has content — return BlockEntry, next call handles BlockNode.
                         self.push_state(ParserState::BlockSequenceEntry)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
                 }
             }
@@ -682,20 +696,22 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::BlockEntry) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let entry_span = t.atom.span;
                 // Peek to see if this entry is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::BlockEntry) | Some(TokenKind::BlockEnd) => {
-                        // Empty entry — emit empty scalar, stay in BlockSequenceEntry.
+                        // Empty entry — queue empty scalar, return BlockEntry.
                         let span = self.peek_token()?.expect("peeked").atom.span;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
                     _ => {
-                        // Entry has content — recurse into BlockNode.
+                        // Entry has content — return BlockEntry, next call handles BlockNode.
                         self.push_state(ParserState::BlockSequenceEntry)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
                 }
             }
@@ -785,21 +801,23 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Key) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let key_span = t.atom.span;
                 // Peek at what follows the key indicator.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::Key) | Some(TokenKind::Value) | Some(TokenKind::BlockEnd) => {
-                        // Empty key — emit empty scalar, transition to value.
+                        // Empty key — queue empty scalar, return KeyIndicator.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::BlockMappingValue;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::KeyIndicator { span: key_span }))
                     }
                     _ => {
-                        // Key has content — recurse into BlockNode.
+                        // Key has content — return KeyIndicator, next call handles BlockNode.
                         self.push_state(ParserState::BlockMappingValue)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::KeyIndicator { span: key_span }))
                     }
                 }
             }
@@ -839,21 +857,23 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Value) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let val_span = t.atom.span;
                 // Peek at what follows the value indicator.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::Key) | Some(TokenKind::Value) | Some(TokenKind::BlockEnd) => {
-                        // Empty value — emit empty scalar, transition to next key.
+                        // Empty value — queue empty scalar, return ValueIndicator.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::BlockMappingKey;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::ValueIndicator { span: val_span }))
                     }
                     _ => {
-                        // Value has content — recurse into BlockNode.
+                        // Value has content — return ValueIndicator, next call handles BlockNode.
                         self.push_state(ParserState::BlockMappingKey)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::ValueIndicator { span: val_span }))
                     }
                 }
             }
@@ -879,7 +899,8 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::BlockEntry) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let entry_span = t.atom.span;
                 // Peek to see if this entry is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
@@ -887,15 +908,16 @@ impl<'input> Parser<'input> {
                     | Some(TokenKind::Key)
                     | Some(TokenKind::Value)
                     | Some(TokenKind::BlockEnd) => {
-                        // Empty entry — emit empty scalar, stay in IndentlessSequenceEntry.
+                        // Empty entry — queue empty scalar, return BlockEntry.
                         let span = self.peek_token()?.expect("peeked").atom.span;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
                     _ => {
-                        // Entry has content — recurse into BlockNode.
+                        // Entry has content — return BlockEntry, next call handles BlockNode.
                         self.push_state(ParserState::IndentlessSequenceEntry)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
                 }
             }
@@ -985,6 +1007,8 @@ impl<'input> Parser<'input> {
                 // FlowSequenceEntryMappingValue will handle pushing FlowSequenceEntryMappingEnd.
                 self.push_state(ParserState::FlowSequenceEntryMappingValue)?;
                 self.state = ParserState::BlockNode;
+                self.event_queue
+                    .push_back(Event::KeyIndicator { span: t.atom.span });
                 Ok(Some(Event::MappingStart {
                     anchor: None,
                     tag: None,
@@ -1044,23 +1068,25 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Value) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let val_span = t.atom.span;
                 // Peek to see if value is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::FlowEntry)
                     | Some(TokenKind::FlowSequenceEnd)
                     | Some(TokenKind::FlowMappingEnd) => {
-                        // Empty value.
+                        // Empty value — queue empty scalar, return ValueIndicator.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::FlowSequenceEntryMappingEnd;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::ValueIndicator { span: val_span }))
                     }
                     _ => {
-                        // Value has content.
+                        // Value has content — return ValueIndicator, next call handles BlockNode.
                         self.push_state(ParserState::FlowSequenceEntryMappingEnd)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::ValueIndicator { span: val_span }))
                     }
                 }
             }
@@ -1165,23 +1191,25 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Key) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let key_span = t.atom.span;
                 // Peek at what follows the explicit key.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::Value)
                     | Some(TokenKind::FlowEntry)
                     | Some(TokenKind::FlowMappingEnd) => {
-                        // Empty key.
+                        // Empty key — queue empty scalar, return KeyIndicator.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::FlowMappingValue;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::KeyIndicator { span: key_span }))
                     }
                     _ => {
-                        // Key has content.
+                        // Key has content — return KeyIndicator, next call handles BlockNode.
                         self.push_state(ParserState::FlowMappingValue)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::KeyIndicator { span: key_span }))
                     }
                 }
             }
@@ -1207,21 +1235,23 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Value) => {
-                let _t = self.next_token()?.expect("peeked");
+                let t = self.next_token()?.expect("peeked");
+                let val_span = t.atom.span;
                 // Peek to see if value is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::FlowEntry) | Some(TokenKind::FlowMappingEnd) => {
-                        // Empty value.
+                        // Empty value — queue empty scalar, return ValueIndicator.
                         let span = self.peek_token()?.expect("peeked").atom.span;
                         self.state = ParserState::FlowMappingKey;
-                        Ok(Some(Self::emit_empty_scalar(span)))
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                        Ok(Some(Event::ValueIndicator { span: val_span }))
                     }
                     _ => {
-                        // Value has content.
+                        // Value has content — return ValueIndicator, next call handles BlockNode.
                         self.push_state(ParserState::FlowMappingKey)?;
                         self.state = ParserState::BlockNode;
-                        self.parse_next()
+                        Ok(Some(Event::ValueIndicator { span: val_span }))
                     }
                 }
             }
@@ -1257,6 +1287,10 @@ impl<'input> Iterator for Parser<'input> {
     type Item = Result<Event<'input>, ParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Drain queued events (comments, structural indicators) first.
+        if let Some(event) = self.event_queue.pop_front() {
+            return Some(Ok(event));
+        }
         if self.done {
             return None;
         }

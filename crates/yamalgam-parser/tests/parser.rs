@@ -365,13 +365,13 @@ fn block_sequence() {
     let events: Vec<_> = Parser::new("- a\n- b\n- c")
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert!(matches!(
-        events[2],
+    assert!(events.iter().any(|e| matches!(
+        e,
         Event::SequenceStart {
             style: CollectionStyle::Block,
             ..
         }
-    ));
+    )));
     let scalars: Vec<_> = events
         .iter()
         .filter_map(|e| {
@@ -383,7 +383,11 @@ fn block_sequence() {
         })
         .collect();
     assert_eq!(scalars, vec!["a", "b", "c"]);
-    assert!(matches!(events[6], Event::SequenceEnd { .. }));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::SequenceEnd { .. }))
+    );
 }
 
 #[test]
@@ -461,12 +465,13 @@ fn anchor_only_empty_scalar() {
 
 #[test]
 fn sequence_event_count() {
-    // "- a\n- b" should produce:
-    // StreamStart, DocStart(i), SeqStart, Scalar(a), Scalar(b), SeqEnd, DocEnd(i), StreamEnd
+    // "- a\n- b" produces:
+    // StreamStart, DocStart(i), SeqStart, BlockEntry, Scalar(a),
+    // BlockEntry, Scalar(b), SeqEnd, DocEnd(i), StreamEnd
     let events: Vec<_> = Parser::new("- a\n- b")
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(events.len(), 8);
+    assert_eq!(events.len(), 10);
 }
 
 // === Block mapping tests ===
@@ -941,4 +946,166 @@ fn parser_new_has_no_limits() {
     let input = "a:\n  b:\n    c:\n      d:\n        e:\n          f: deep";
     let result: Result<Vec<_>, _> = Parser::new(input).collect();
     assert!(result.is_ok());
+}
+
+// -- Full-fidelity event stream tests --
+
+#[test]
+fn comment_event_emitted() {
+    let events: Vec<_> = Parser::new("# hello\nkey: val")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Comment { .. })),
+        "expected Comment event in {events:?}"
+    );
+}
+
+#[test]
+fn comment_event_has_text_and_span() {
+    let events: Vec<_> = Parser::new("# my comment\nfoo: bar")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let comment = events
+        .iter()
+        .find(|e| matches!(e, Event::Comment { .. }))
+        .expect("no Comment event");
+    match comment {
+        Event::Comment { text, span } => {
+            assert_eq!(text.as_ref(), "# my comment");
+            assert_eq!(span.start.line, 0);
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn inline_comment_emitted() {
+    let events: Vec<_> = Parser::new("key: val # inline")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let comments: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::Comment { .. }))
+        .collect();
+    assert_eq!(comments.len(), 1, "expected 1 comment, got {comments:?}");
+}
+
+#[test]
+fn multiple_comments_emitted_in_order() {
+    let events: Vec<_> = Parser::new("# first\n# second\nval")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let comments: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Comment { text, .. } => Some(text.as_ref().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(comments, vec!["# first", "# second"]);
+}
+
+#[test]
+fn block_entry_events_in_sequence() {
+    // "- a\n- b" should produce BlockEntry before each item
+    let events: Vec<_> = Parser::new("- a\n- b")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let block_entries: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::BlockEntry { .. }))
+        .collect();
+    assert_eq!(
+        block_entries.len(),
+        2,
+        "expected 2 BlockEntry events, got {block_entries:?}"
+    );
+}
+
+#[test]
+fn block_entry_before_each_scalar() {
+    let events: Vec<_> = Parser::new("- x\n- y")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    // Find positions of BlockEntry and Scalar events
+    let mut saw_entry = false;
+    for event in &events {
+        match event {
+            Event::BlockEntry { .. } => saw_entry = true,
+            Event::Scalar { .. } => {
+                assert!(saw_entry, "Scalar without preceding BlockEntry");
+                saw_entry = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn value_indicator_in_mapping() {
+    let events: Vec<_> = Parser::new("a: 1").collect::<Result<Vec<_>, _>>().unwrap();
+    let indicators: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::ValueIndicator { .. }))
+        .collect();
+    assert_eq!(
+        indicators.len(),
+        1,
+        "expected 1 ValueIndicator, got {indicators:?}"
+    );
+}
+
+#[test]
+fn key_indicator_for_explicit_key() {
+    let events: Vec<_> = Parser::new("? explicit\n: value")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::KeyIndicator { .. })),
+        "expected KeyIndicator event for explicit key"
+    );
+}
+
+#[test]
+fn structural_events_in_block_mapping() {
+    // "a: 1\nb: 2" should have KeyIndicator and ValueIndicator for each pair
+    let events: Vec<_> = Parser::new("a: 1\nb: 2")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let keys: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::KeyIndicator { .. }))
+        .collect();
+    let vals: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::ValueIndicator { .. }))
+        .collect();
+    assert_eq!(keys.len(), 2, "expected 2 KeyIndicators, got {keys:?}");
+    assert_eq!(vals.len(), 2, "expected 2 ValueIndicators, got {vals:?}");
+}
+
+#[test]
+fn no_structural_events_leak_into_flow() {
+    // Flow collections don't use BlockEntry
+    let events: Vec<_> = Parser::new("[1, 2, 3]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::BlockEntry { .. })),
+        "BlockEntry should not appear in flow sequences"
+    );
+}
+
+#[test]
+fn comment_only_stream() {
+    let events: Vec<_> = Parser::new("# just a comment")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Comment { .. })),
+        "comment-only stream should still emit Comment event"
+    );
 }

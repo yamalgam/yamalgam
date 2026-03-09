@@ -364,29 +364,49 @@ where
     // Helpers
     // -----------------------------------------------------------------------
 
-    /// Peek at the next event without consuming it.
+    /// Peek at the next non-structural event without consuming it.
     ///
+    /// Skips Comment, BlockEntry, KeyIndicator, and ValueIndicator events.
     /// Returns `Ok(None)` when the stream is exhausted. If the peeked value
     /// is an error, it is consumed and returned immediately.
     fn peek_event(&mut self) -> Result<Option<&Event<'input>>, ComposeError> {
-        // Check for error first and consume it if present.
-        if matches!(self.events.peek(), Some(Err(_))) {
-            let err = self.events.next().unwrap().unwrap_err();
-            return Err(ComposeError::Resolve(err));
-        }
-        match self.events.peek() {
-            Some(Ok(event)) => Ok(Some(event)),
-            Some(Err(_)) => unreachable!("error case handled above"),
-            None => Ok(None),
+        // Consume and discard structural events until we find a semantic one.
+        loop {
+            // Determine action without holding a borrow.
+            let action = match self.events.peek() {
+                Some(Err(_)) => 1,                             // error
+                Some(Ok(event)) if event.is_structural() => 2, // skip
+                Some(Ok(_)) => 3,                              // return ref
+                None => 0,                                     // exhausted
+            };
+            match action {
+                0 => return Ok(None),
+                1 => {
+                    let err = self.events.next().unwrap().unwrap_err();
+                    return Err(ComposeError::Resolve(err));
+                }
+                2 => {
+                    self.events.next();
+                }
+                _ => {
+                    // action == 3: peek again to return a fresh reference.
+                    return Ok(self.events.peek().and_then(|r| r.as_ref().ok()));
+                }
+            }
         }
     }
 
-    /// Consume and return the next event.
+    /// Consume and return the next non-structural event.
+    ///
+    /// Skips Comment, BlockEntry, KeyIndicator, and ValueIndicator events.
     fn next_event(&mut self) -> Result<Option<Event<'input>>, ComposeError> {
-        match self.events.next() {
-            Some(Ok(event)) => Ok(Some(event)),
-            Some(Err(e)) => Err(ComposeError::Resolve(e)),
-            None => Ok(None),
+        loop {
+            match self.events.next() {
+                Some(Ok(event)) if event.is_structural() => continue,
+                Some(Ok(event)) => return Ok(Some(event)),
+                Some(Err(e)) => return Err(ComposeError::Resolve(e)),
+                None => return Ok(None),
+            }
         }
     }
 
