@@ -118,6 +118,17 @@ fn try_json_number(s: &str) -> Option<Value> {
     }
 }
 
+impl TagResolver for TagResolution {
+    fn resolve_scalar(&self, value: &str) -> Value {
+        match self {
+            Self::Failsafe => FailsafeTagResolver.resolve_scalar(value),
+            Self::Json => JsonTagResolver.resolve_scalar(value),
+            Self::Yaml12 => Yaml12TagResolver.resolve_scalar(value),
+            Self::Yaml11 => Yaml11TagResolver.resolve_scalar(value),
+        }
+    }
+}
+
 // Re-export Yaml12TagResolver from tag.rs so it's accessible via this module.
 pub use crate::tag::Yaml12TagResolver;
 
@@ -469,5 +480,25 @@ mod tests {
         let r = Yaml11TagResolver;
         assert_eq!(r.resolve_scalar("+42"), Value::Integer(42));
         assert_eq!(r.resolve_scalar("-17"), Value::Integer(-17));
+    }
+
+    #[test]
+    fn tag_resolution_enum_dispatches_correctly() {
+        let r = TagResolution::default();
+        assert_eq!(r, TagResolution::Yaml12);
+        assert_eq!(r.resolve_scalar("true"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("yes"), Value::String("yes".into()));
+
+        let r = TagResolution::Failsafe;
+        assert_eq!(r.resolve_scalar("true"), Value::String("true".into()));
+        assert_eq!(r.resolve_scalar("42"), Value::String("42".into()));
+
+        let r = TagResolution::Json;
+        assert_eq!(r.resolve_scalar("true"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("True"), Value::String("True".into()));
+
+        let r = TagResolution::Yaml11;
+        assert_eq!(r.resolve_scalar("yes"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("017"), Value::Integer(15));
     }
 }
