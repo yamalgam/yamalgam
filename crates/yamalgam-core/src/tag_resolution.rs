@@ -55,6 +55,69 @@ impl TagResolver for FailsafeTagResolver {
     }
 }
 
+/// YAML 1.2 JSON Schema (§10.2) — strict JSON-compatible type resolution.
+///
+/// Only recognises the exact JSON spellings:
+/// - `null` (not `~`, `Null`, `NULL`, or empty)
+/// - `true` / `false` (case-sensitive)
+/// - Integers: `[0-9]+` or `-[0-9]+` (no `+`, no `0x`, no `0o`)
+/// - Floats: decimal with `.` or exponent (no `+` prefix, no `.inf`, no `.nan`)
+///
+/// Anything else becomes `Value::String` (lenient fallback).
+// y[impl schema.json.tag-null+3]
+// y[impl schema.json.tag-bool+3]
+// y[impl schema.json.tag-int+3]
+// y[impl schema.json.tag-float+3]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JsonTagResolver;
+
+impl TagResolver for JsonTagResolver {
+    fn resolve_scalar(&self, value: &str) -> Value {
+        match value {
+            "null" => Value::Null,
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => try_json_number(value).unwrap_or_else(|| Value::String(value.to_owned())),
+        }
+    }
+}
+
+/// Try to parse `s` as a JSON-schema number (integer or float).
+///
+/// JSON schema integers: `[0-9]+` or `-[0-9]+` (no leading `+`, no `0x`/`0o`).
+/// JSON schema floats: must contain `.` or `e`/`E`, no leading `+`, no `.inf`/`.nan`.
+fn try_json_number(s: &str) -> Option<Value> {
+    if s.is_empty() {
+        return None;
+    }
+
+    let body = s.strip_prefix('-').unwrap_or(s);
+
+    // Must start with a digit after optional `-`
+    if !body.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+
+    // No leading `+`
+    if s.starts_with('+') {
+        return None;
+    }
+
+    let is_float = s.contains('.') || s.contains('e') || s.contains('E');
+
+    if is_float {
+        let f: f64 = s.parse().ok()?;
+        Some(Value::Float(f))
+    } else {
+        // Integer — only ASCII digits (plus optional leading `-`)
+        if !body.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let i: i64 = s.parse().ok()?;
+        Some(Value::Integer(i))
+    }
+}
+
 // Re-export Yaml12TagResolver from tag.rs so it's accessible via this module.
 pub use crate::tag::Yaml12TagResolver;
 
@@ -77,6 +140,49 @@ mod tests {
         assert_eq!(r.resolve_scalar("hello"), Value::String("hello".into()));
         assert_eq!(r.resolve_scalar(""), Value::String(String::new()));
         assert_eq!(r.resolve_scalar("~"), Value::String("~".into()));
+    }
+
+    #[test]
+    fn json_null() {
+        let r = JsonTagResolver;
+        assert_eq!(r.resolve_scalar("null"), Value::Null);
+        assert_eq!(r.resolve_scalar("Null"), Value::String("Null".into()));
+        assert_eq!(r.resolve_scalar("NULL"), Value::String("NULL".into()));
+        assert_eq!(r.resolve_scalar("~"), Value::String("~".into()));
+        assert_eq!(r.resolve_scalar(""), Value::String(String::new()));
+    }
+
+    #[test]
+    fn json_bool() {
+        let r = JsonTagResolver;
+        assert_eq!(r.resolve_scalar("true"), Value::Bool(true));
+        assert_eq!(r.resolve_scalar("false"), Value::Bool(false));
+        assert_eq!(r.resolve_scalar("True"), Value::String("True".into()));
+        assert_eq!(r.resolve_scalar("FALSE"), Value::String("FALSE".into()));
+    }
+
+    #[test]
+    fn json_integer() {
+        let r = JsonTagResolver;
+        assert_eq!(r.resolve_scalar("0"), Value::Integer(0));
+        assert_eq!(r.resolve_scalar("42"), Value::Integer(42));
+        assert_eq!(r.resolve_scalar("-17"), Value::Integer(-17));
+        assert_eq!(r.resolve_scalar("0o17"), Value::String("0o17".into()));
+        assert_eq!(r.resolve_scalar("0xFF"), Value::String("0xFF".into()));
+        assert_eq!(r.resolve_scalar("+42"), Value::String("+42".into()));
+    }
+
+    #[test]
+    fn json_float() {
+        let r = JsonTagResolver;
+        assert_eq!(r.resolve_scalar("1.0"), Value::Float(1.0));
+        assert_eq!(r.resolve_scalar("-0.5"), Value::Float(-0.5));
+        assert_eq!(r.resolve_scalar("1e10"), Value::Float(1e10));
+        assert_eq!(r.resolve_scalar("1.5e-3"), Value::Float(1.5e-3));
+        assert_eq!(r.resolve_scalar(".inf"), Value::String(".inf".into()));
+        assert_eq!(r.resolve_scalar(".nan"), Value::String(".nan".into()));
+        assert_eq!(r.resolve_scalar(".Inf"), Value::String(".Inf".into()));
+        assert_eq!(r.resolve_scalar("+1.0"), Value::String("+1.0".into()));
     }
 
     #[test]
