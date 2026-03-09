@@ -34,21 +34,10 @@ const EVENT_MISMATCH_ALLOWLIST: &[&str] = &["JEF9#1", "JEF9#2"];
 /// Known token UNEXPECTED results (Rust accepts, C rejects) that are understood.
 /// These are `fail: true` sub-cases in multi-case files where our scanner is
 /// more permissive than libfyaml.
-/// - DK95#1: tab in double-quoted multiline scalar (tab strictness)
-/// - DK95#3: |2 block scalar with leading tab (tab strictness)
-/// - Y79Y#3-#9: tabs in various block/flow contexts (tab strictness)
-/// - ZYU8#3: `%YAML 1.12345` — extra-long version number (directive parsing)
-const TOKEN_UNEXPECTED_ALLOWLIST: &[&str] = &[
-    "DK95#1", "DK95#3", "Y79Y#3", "Y79Y#4", "Y79Y#5", "Y79Y#6", "Y79Y#7", "Y79Y#8", "Y79Y#9",
-    "ZYU8#3",
-];
+const TOKEN_UNEXPECTED_ALLOWLIST: &[&str] = &[];
 
 /// Known event UNEXPECTED results (Rust accepts, C rejects) that are understood.
-/// Same root causes as token UNEXPECTED — tab strictness and directive parsing.
-const EVENT_UNEXPECTED_ALLOWLIST: &[&str] = &[
-    "DK95#1", "DK95#3", "Y79Y#3", "Y79Y#4", "Y79Y#5", "Y79Y#6", "Y79Y#7", "Y79Y#8", "Y79Y#9",
-    "ZYU8#3",
-];
+const EVENT_UNEXPECTED_ALLOWLIST: &[&str] = &[];
 
 /// Find the workspace root by walking up from CARGO_MANIFEST_DIR.
 fn workspace_root() -> PathBuf {

@@ -1503,3 +1503,97 @@ fn from_reader_with_config_unlimited_reads_all() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap().as_str(), "unlimited: true");
 }
+
+// -- Tab rejection tests --
+
+#[test]
+fn rejects_malformed_yaml_version() {
+    // ZYU8#3: %YAML 1.12345 — minor version too long.
+    assert_scan_error("%YAML 1.12345\n---\n", "unsupported version number");
+}
+
+#[test]
+fn rejects_tab_in_double_quoted_continuation() {
+    // DK95#1: tab as first char on continuation line of double-quoted scalar.
+    assert_scan_error("foo: \"bar\n\tbaz\"\n", "invalid tab used as indentation");
+}
+
+#[test]
+fn allows_spaces_before_tab_in_double_quoted_continuation() {
+    // DK95#2: spaces before tab on continuation line — fine.
+    let tokens = scan("foo: \"bar\n  \tbaz\"\n");
+    let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
+    assert_eq!(scalars[1].1, "bar baz");
+}
+
+#[test]
+fn rejects_lone_tab() {
+    // DK95#3: lone tab at document level.
+    assert_scan_error("\t", "tab character cannot be used as content");
+}
+
+#[test]
+fn allows_tab_on_blank_line() {
+    // Tab followed by newline is a blank line, not indentation.
+    let tokens = scan("\t\n");
+    assert_eq!(tokens[0].0, TokenKind::StreamStart);
+    assert_eq!(tokens[1].0, TokenKind::StreamEnd);
+}
+
+#[test]
+fn rejects_tab_at_flow_line_start_with_content() {
+    // Y79Y#3: tab before content in flow context.
+    assert_scan_error(
+        "- [\n\tfoo,\n foo\n ]\n",
+        "tab character used for indentation in flow",
+    );
+}
+
+#[test]
+fn allows_tab_on_blank_line_in_flow() {
+    // Y79Y#2: tab on blank line in flow context — fine.
+    let tokens = scan("- [\n\t\n foo\n ]\n");
+    assert!(tokens.iter().any(|t| t.0 == TokenKind::FlowSequenceStart));
+}
+
+#[test]
+fn rejects_tab_before_block_entry() {
+    // Y79Y#4: tab between block entries.
+    assert_scan_error(
+        "-\t-\n",
+        "tab character used for indentation of block entry",
+    );
+    // Y79Y#5: space+tab between block entries.
+    assert_scan_error(
+        "- \t-\n",
+        "tab character used for indentation of block entry",
+    );
+}
+
+#[test]
+fn rejects_tab_before_block_entry_after_key() {
+    // Y79Y#6: tab immediately after `?` catches the tab before block entry dispatch.
+    assert_scan_error("?\t-\n", "tab character used for indentation");
+    // Y79Y#7: tab immediately after `:` catches the tab before block entry dispatch.
+    assert_scan_error("? -\n:\t-\n", "tab character used for indentation");
+}
+
+#[test]
+fn rejects_tab_after_explicit_key() {
+    // Y79Y#8: tab immediately after `?` indicator.
+    assert_scan_error("?\tkey:\n", "tab character used for indentation");
+}
+
+#[test]
+fn rejects_tab_after_value_indicator() {
+    // Y79Y#9: tab immediately after `:` value indicator.
+    assert_scan_error("? key:\n:\tkey:\n", "tab character used for indentation");
+}
+
+#[test]
+fn allows_tab_before_plain_scalar_after_block_entry() {
+    // Y79Y#10: tab after `-`, then plain scalar `-1` — fine.
+    let tokens = scan("-\t-1\n");
+    let scalar = tokens.iter().find(|t| t.0 == TokenKind::Scalar).unwrap();
+    assert_eq!(scalar.1, "-1");
+}

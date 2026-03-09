@@ -148,6 +148,10 @@ pub struct Scanner<'input> {
     /// Named tag handles registered via `%TAG` in the current directive prologue.
     /// Cleared on `...` and on `---` without a preceding prologue.
     tag_handles: Vec<String>,
+    /// Whether a tab was consumed in the preceding whitespace by
+    /// `scan_to_next_token()`. Used to reject tabs as indentation
+    /// before block indicators (`-`, `?`, `:`).
+    tab_in_preceding_whitespace: bool,
 }
 
 impl<'input> Scanner<'input> {
@@ -178,6 +182,7 @@ impl<'input> Scanner<'input> {
             document_start_line: None,
             root_token_emitted: false,
             tag_handles: Vec::new(),
+            tab_in_preceding_whitespace: false,
             next_token_id: 0,
             tokens_consumed: 0,
         }
@@ -300,7 +305,9 @@ impl<'input> Scanner<'input> {
     // y[impl struct.separation.indented-after-comments] — content after comments must be indented
     // y[impl struct.comment.json-compat-final-break] — final line may end at EOF without break
     fn scan_to_next_token(&mut self) {
+        self.tab_in_preceding_whitespace = false;
         let mut at_line_start = self.reader.mark().column == 0;
+        let mut tab_at_flow_line_start = false;
         loop {
             while let Some(c) = self.reader.peek() {
                 if c == ' ' {
@@ -312,16 +319,31 @@ impl<'input> Scanner<'input> {
                     // Only when there's an active block structure (indent >= 0),
                     // so tabs before the first block token (like `\t[`) are fine.
                     // cref: fy_scan_to_next_token (fy-parse.c)
+                    // y[impl struct.indent.tab-forbidden]
                     if at_line_start && self.flow_level == 0 && self.indent >= 0 {
                         self.error = Some(ScanError {
                             message: "tab character used for indentation".to_string(),
                         });
                         return;
                     }
+                    if at_line_start && self.flow_level > 0 {
+                        tab_at_flow_line_start = true;
+                    }
+                    self.tab_in_preceding_whitespace = true;
                     self.reader.advance();
                 } else {
                     break;
                 }
+            }
+
+            // Y79Y#3: tabs at line start in flow context with content
+            // on the same line are indentation — reject them. Tabs on
+            // blank lines (Y79Y#2) are fine (next char is newline/EOF).
+            if tab_at_flow_line_start && !matches!(self.reader.peek(), Some('\n' | '\r') | None) {
+                self.error = Some(ScanError {
+                    message: "tab character used for indentation in flow context".to_string(),
+                });
+                return;
             }
 
             // Content found — no longer at line start for tab checks.
@@ -363,6 +385,10 @@ impl<'input> Scanner<'input> {
                 Some('\n' | '\r') => {
                     self.reader.advance();
                     at_line_start = true;
+                    // Tabs on blank lines are fine — clear the flag when
+                    // a newline is consumed so they don't carry over.
+                    self.tab_in_preceding_whitespace = false;
+                    tab_at_flow_line_start = false;
                     // In block context, a newline allows a new simple key.
                     // cref: fy_scan_to_next_token (fy-parse.c:1312)
                     if self.flow_level == 0 {
@@ -728,6 +754,26 @@ impl<'input> Scanner<'input> {
         }
         let version_str = self.reader.slice(ver_start.offset, ver_end.offset);
 
+        // y[impl struct.yaml-directive.version-format] — validate MAJOR.MINOR format.
+        // Each component must be 1-4 digits with exactly one dot separator.
+        // Rejects malformed versions like `1.12345`, `1.`, `.1`, `1.2.3`.
+        // cref: fy_scan_directive (fy-parse.c) — "unsupport version number"
+        {
+            let parts: Vec<&str> = version_str.split('.').collect();
+            if parts.len() != 2
+                || parts[0].is_empty()
+                || parts[1].is_empty()
+                || parts[0].len() > 4
+                || parts[1].len() > 4
+                || !parts[0].chars().all(|c| c.is_ascii_digit())
+                || !parts[1].chars().all(|c| c.is_ascii_digit())
+            {
+                return Err(ScanError {
+                    message: format!("unsupported version number '{version_str}'"),
+                });
+            }
+        }
+
         // After the version, only whitespace + optional comment allowed.
         // `%YAML 1.2 foo` (H7TQ) and `%YAML 1.1#...` (MUS6) are invalid.
         {
@@ -952,6 +998,14 @@ impl<'input> Scanner<'input> {
     // y[impl block.c-l-block-seq-entry]
     // y[impl block.seq.dash-separated]
     fn fetch_block_entry(&mut self) {
+        // Y79Y#4-7: tabs in the whitespace before a block entry indicator
+        // are indentation — reject them.
+        if self.tab_in_preceding_whitespace {
+            self.error = Some(ScanError {
+                message: "tab character used for indentation of block entry".to_string(),
+            });
+            return;
+        }
         // A block entry that would create a new indent level cannot appear
         // on the same line as a preceding value indicator (e.g., `key: - a`).
         // cref: fy_fetch_block_entry (fy-parse.c:2703)
@@ -986,6 +1040,12 @@ impl<'input> Scanner<'input> {
         self.enqueue(Self::marker_token(TokenKind::Key, start, end));
         self.simple_key_allowed = true;
         self.pending_complex_key_column = col;
+        // Y79Y#8: tab immediately after `?` is indentation for the key content.
+        if self.reader.peek() == Some('\t') {
+            self.error = Some(ScanError {
+                message: "tab character used for indentation".to_string(),
+            });
+        }
     }
 
     /// Fetch a value indicator (`: `).
@@ -1140,6 +1200,12 @@ impl<'input> Scanner<'input> {
         // explicit key values (? key : - seq) where block entries are valid.
         if !is_explicit_key_value && self.flow_level == 0 {
             self.last_block_token_line = Some(start.line);
+        }
+        // Y79Y#9: tab immediately after `:` is indentation for the value content.
+        if self.flow_level == 0 && self.reader.peek() == Some('\t') {
+            self.error = Some(ScanError {
+                message: "tab character used for indentation".to_string(),
+            });
         }
     }
 
@@ -2223,6 +2289,15 @@ impl<'input> Scanner<'input> {
                             return;
                         }
                     }
+                    // DK95#1: tab as the first character on a continuation
+                    // line is indentation — reject it. Spaces before a tab
+                    // (DK95#2: `\n  \tbaz`) are fine.
+                    if self.reader.peek() == Some('\t') && self.reader.mark().column == 0 {
+                        self.error = Some(ScanError {
+                            message: "invalid tab used as indentation".to_string(),
+                        });
+                        return;
+                    }
                     // Count empty lines.
                     let mut empty_lines = 0u32;
                     loop {
@@ -2453,6 +2528,19 @@ impl<'input> Scanner<'input> {
             self.purge_stale_simple_keys();
 
             if self.reader.is_eof() {
+                // DK95#3: tab consumed as whitespace at document level but
+                // no content follows — reject. Tabs on blank lines are fine
+                // because the newline clears the flag.
+                if self.tab_in_preceding_whitespace
+                    && self.indent == -1
+                    && self.queue.is_empty()
+                    && self.tokens_consumed <= 1
+                {
+                    self.error = Some(ScanError {
+                        message: "tab character cannot be used as content".to_string(),
+                    });
+                    continue;
+                }
                 // 9MMA: directive-only stream — directives without a following document.
                 if self.seen_directive && self.in_directive_prologue {
                     self.error = Some(ScanError {
