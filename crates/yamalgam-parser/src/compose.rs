@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use yamalgam_core::{Mapping, ResourceLimits, Value, resolve_plain_scalar};
+use yamalgam_core::tag::Yaml12TagResolver;
+use yamalgam_core::tag_resolution::TagResolver;
+use yamalgam_core::{Mapping, ResourceLimits, Value};
 use yamalgam_scanner::ScalarStyle;
 
 use crate::error::ParseError;
@@ -73,6 +75,7 @@ where
     anchors: HashMap<String, Value>,
     config: ResourceLimits,
     alias_expansion_count: usize,
+    tag_resolver: Box<dyn TagResolver>,
 }
 
 impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
@@ -98,6 +101,26 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
             NoopResolver,
         );
         let mut composer = Composer::new_with_config(events, config);
+        composer.compose_stream()
+    }
+
+    /// Parse and compose all documents using a custom tag resolver.
+    pub fn from_str_with_tag_resolver(
+        input: &'input str,
+        tag_resolver: impl TagResolver + 'static,
+    ) -> Result<Vec<Value>, ComposeError> {
+        let parser = crate::parser::Parser::new(input);
+        let events = ResolvedEvents::new(
+            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
+            NoopResolver,
+        );
+        let mut composer = Composer {
+            events: events.peekable(),
+            anchors: HashMap::new(),
+            config: ResourceLimits::none(),
+            alias_expansion_count: 0,
+            tag_resolver: Box::new(tag_resolver),
+        };
         composer.compose_stream()
     }
 }
@@ -134,6 +157,7 @@ where
             anchors: HashMap::new(),
             config: ResourceLimits::none(),
             alias_expansion_count: 0,
+            tag_resolver: Box::new(Yaml12TagResolver),
         }
     }
 
@@ -145,6 +169,7 @@ where
             anchors: HashMap::new(),
             config: config.limits.clone(),
             alias_expansion_count: 0,
+            tag_resolver: Box::new(config.tag_resolution),
         }
     }
 
@@ -235,7 +260,7 @@ where
                 style,
                 ..
             } => {
-                let resolved = resolve_scalar(&value, style);
+                let resolved = self.resolve_scalar(&value, style);
                 if let Some(name) = anchor {
                     self.anchors.insert(name.into_owned(), resolved.clone());
                     if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
@@ -389,22 +414,22 @@ where
         }
         Ok(())
     }
+
+    /// Resolve a scalar value based on its style.
+    ///
+    /// Plain scalars are dispatched to the configured [`TagResolver`].
+    /// All other styles produce strings.
+    fn resolve_scalar(&self, value: &str, style: ScalarStyle) -> Value {
+        match style {
+            ScalarStyle::Plain => self.tag_resolver.resolve_scalar(value),
+            _ => Value::String(value.to_owned()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
-
-/// Resolve a scalar value based on its style.
-///
-/// Plain scalars undergo type resolution (null, bool, int, float, string).
-/// All other styles produce strings.
-fn resolve_scalar(value: &str, style: ScalarStyle) -> Value {
-    match style {
-        ScalarStyle::Plain => resolve_plain_scalar(value),
-        _ => Value::String(value.to_owned()),
-    }
-}
 
 /// Check whether a value is the merge key sentinel `<<`.
 fn is_merge_key(key: &Value) -> bool {
@@ -697,5 +722,61 @@ production:
             matches!(result, Err(ComposeError::UnexpectedEvent(_))),
             "expected error for non-mapping item in merge sequence, got {result:?}"
         );
+    }
+
+    #[test]
+    fn compose_with_failsafe_schema() {
+        use yamalgam_core::{LoaderConfig, TagResolution};
+        let config = LoaderConfig::unchecked().with_tag_resolution(TagResolution::Failsafe);
+        let docs = Composer::from_str_with_config("true", &config).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0], Value::String("true".into()));
+    }
+
+    #[test]
+    fn compose_with_yaml11_booleans() {
+        use yamalgam_core::{LoaderConfig, TagResolution};
+        let config = LoaderConfig::unchecked().with_tag_resolution(TagResolution::Yaml11);
+        let docs = Composer::from_str_with_config("yes", &config).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0], Value::Bool(true));
+    }
+
+    #[test]
+    fn compose_with_json_schema() {
+        use yamalgam_core::{LoaderConfig, TagResolution};
+        let config = LoaderConfig::unchecked().with_tag_resolution(TagResolution::Json);
+        let docs = Composer::from_str_with_config("True", &config).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0], Value::String("True".into()));
+    }
+
+    #[test]
+    fn compose_default_is_yaml12() {
+        let docs = Composer::from_str("yes").unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0], Value::String("yes".into()));
+    }
+
+    #[test]
+    fn compose_with_custom_tag_resolver() {
+        use yamalgam_core::tag_resolution::TagResolver;
+
+        struct MagicResolver;
+        impl TagResolver for MagicResolver {
+            fn resolve_scalar(&self, value: &str) -> Value {
+                if value == "MAGIC" {
+                    Value::Integer(42)
+                } else {
+                    Value::String(value.to_owned())
+                }
+            }
+        }
+
+        let docs = Composer::from_str_with_tag_resolver("MAGIC", MagicResolver).unwrap();
+        assert_eq!(docs[0], Value::Integer(42));
+
+        let docs = Composer::from_str_with_tag_resolver("true", MagicResolver).unwrap();
+        assert_eq!(docs[0], Value::String("true".into()));
     }
 }
