@@ -372,13 +372,20 @@ impl<'input> Scanner<'input> {
             // the start of a line (YAML §6.4). Check the byte before the
             // current offset — this works regardless of who consumed the
             // whitespace (this function, plain scalar trimming, etc.).
+            // y[impl struct.comment.preceded-by-whitespace]
+            // y[impl struct.comment.should-terminate-with-break]
             if self.reader.peek() == Some('#') && self.preceded_by_whitespace() {
+                let comment_start = self.reader.mark();
                 while let Some(c) = self.reader.peek() {
                     if c == '\n' || c == '\r' {
                         break;
                     }
                     self.reader.advance();
                 }
+                let comment_end = self.reader.mark();
+                let text = self.reader.slice(comment_start.offset, comment_end.offset);
+                let token = Self::data_token(TokenKind::Comment, text, comment_start, comment_end);
+                self.enqueue(token);
             }
 
             match self.reader.peek() {

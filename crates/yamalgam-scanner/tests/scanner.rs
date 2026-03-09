@@ -212,11 +212,12 @@ fn blank_lines_are_skipped() {
 }
 
 #[test]
-fn comments_are_skipped() {
+fn comments_are_emitted() {
     assert_eq!(
         kinds("# this is a comment\n---\n"),
         vec![
             TokenKind::StreamStart,
+            TokenKind::Comment,
             TokenKind::DocumentStart,
             TokenKind::StreamEnd,
         ]
@@ -230,6 +231,7 @@ fn comment_after_document_start() {
         vec![
             TokenKind::StreamStart,
             TokenKind::DocumentStart,
+            TokenKind::Comment,
             TokenKind::StreamEnd,
         ]
     );
@@ -857,6 +859,7 @@ fn flow_json_key_colon_after_comment_on_next_line() {
             TokenKind::FlowMappingStart,
             TokenKind::Key,
             TokenKind::Scalar,
+            TokenKind::Comment,
             TokenKind::Value,
             TokenKind::Scalar,
             TokenKind::FlowMappingEnd,
@@ -1596,4 +1599,95 @@ fn allows_tab_before_plain_scalar_after_block_entry() {
     let tokens = scan("-\t-1\n");
     let scalar = tokens.iter().find(|t| t.0 == TokenKind::Scalar).unwrap();
     assert_eq!(scalar.1, "-1");
+}
+
+// === Comment token tests ===
+
+#[test]
+fn comment_token_text_includes_hash() {
+    let tokens = scan("# hello world\n");
+    let comment = tokens.iter().find(|t| t.0 == TokenKind::Comment).unwrap();
+    assert_eq!(comment.1, "# hello world");
+}
+
+#[test]
+fn comment_token_text_no_trailing_newline() {
+    let tokens = scan("# foo\n");
+    let comment = tokens.iter().find(|t| t.0 == TokenKind::Comment).unwrap();
+    assert!(!comment.1.ends_with('\n'));
+}
+
+#[test]
+fn inline_comment_after_scalar() {
+    let tokens = scan("key: value # inline\n");
+    assert!(tokens.iter().any(|t| t.0 == TokenKind::Comment));
+    let comment = tokens.iter().find(|t| t.0 == TokenKind::Comment).unwrap();
+    assert_eq!(comment.1, "# inline");
+}
+
+#[test]
+fn multiple_comment_lines() {
+    let tokens = scan("# line 1\n# line 2\nkey: val\n");
+    let comments: Vec<_> = tokens
+        .iter()
+        .filter(|t| t.0 == TokenKind::Comment)
+        .collect();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[0].1, "# line 1");
+    assert_eq!(comments[1].1, "# line 2");
+}
+
+#[test]
+fn comment_at_eof_without_trailing_newline() {
+    let tokens = scan("key: val # end");
+    let comment = tokens.iter().find(|t| t.0 == TokenKind::Comment).unwrap();
+    assert_eq!(comment.1, "# end");
+}
+
+#[test]
+fn comment_preserves_position_in_token_stream() {
+    // Comment should appear between the tokens it's between in the source.
+    let tokens = scan("a: 1\n# between\nb: 2\n");
+    let kinds: Vec<_> = tokens.iter().map(|t| t.0).collect();
+    // Find Comment and verify it's between the two scalar "1" and
+    // the second BlockMappingStart/Key/Scalar "b" sequence.
+    let comment_idx = kinds.iter().position(|k| *k == TokenKind::Comment).unwrap();
+    // Comment must come after the first value scalar
+    let first_val_idx = tokens
+        .iter()
+        .position(|t| t.0 == TokenKind::Scalar && t.1 == "1")
+        .unwrap();
+    assert!(comment_idx > first_val_idx);
+}
+
+#[test]
+fn hash_without_preceding_whitespace_is_not_comment() {
+    // `a#b` in plain scalar context — `#` is not preceded by whitespace,
+    // so it's NOT a comment.
+    let tokens = scan("a#b\n");
+    assert!(tokens.iter().all(|t| t.0 != TokenKind::Comment));
+    let scalar = tokens.iter().find(|t| t.0 == TokenKind::Scalar).unwrap();
+    assert_eq!(scalar.1, "a#b");
+}
+
+#[test]
+fn comment_in_flow_sequence() {
+    let tokens = scan("[a, # comment\nb]\n");
+    let comment = tokens.iter().find(|t| t.0 == TokenKind::Comment).unwrap();
+    assert_eq!(comment.1, "# comment");
+}
+
+#[test]
+fn comment_span_is_correct() {
+    use yamalgam_scanner::scanner::Scanner;
+    let input = "  # hi\n";
+    let scanner = Scanner::new(input);
+    let tokens: Vec<_> = scanner.collect::<Result<Vec<_>, _>>().unwrap();
+    let comment = tokens
+        .iter()
+        .find(|t| t.kind == TokenKind::Comment)
+        .unwrap();
+    assert_eq!(comment.atom.span.start.column, 2); // after two spaces
+    assert_eq!(comment.atom.span.start.line, 0);
+    assert_eq!(comment.atom.data.as_ref(), "# hi");
 }

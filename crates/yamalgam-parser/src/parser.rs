@@ -138,20 +138,34 @@ impl<'input> Parser<'input> {
         }
     }
 
-    /// Peek at the next token without consuming it.
+    /// Peek at the next non-comment token without consuming it.
+    ///
+    /// Comment tokens are transparently skipped — the parser doesn't use
+    /// them for state transitions. (A future milestone will emit them as
+    /// `Event::Comment` events before skipping.)
     fn peek_token(&mut self) -> Result<Option<&Token<'input>>, ParseError> {
         if self.peeked.is_none() {
-            self.peeked = self.tokens.next().transpose()?;
+            self.peeked = self.skip_comments()?;
         }
         Ok(self.peeked.as_ref())
     }
 
-    /// Consume and return the next token.
+    /// Consume and return the next non-comment token.
     fn next_token(&mut self) -> Result<Option<Token<'input>>, ParseError> {
         if let Some(token) = self.peeked.take() {
             return Ok(Some(token));
         }
-        Ok(self.tokens.next().transpose()?)
+        self.skip_comments()
+    }
+
+    /// Advance past any Comment tokens from the scanner.
+    fn skip_comments(&mut self) -> Result<Option<Token<'input>>, ParseError> {
+        loop {
+            match self.tokens.next().transpose()? {
+                Some(token) if token.kind == TokenKind::Comment => continue,
+                other => return Ok(other),
+            }
+        }
     }
 
     /// Push a state onto the state stack.

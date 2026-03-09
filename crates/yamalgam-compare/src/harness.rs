@@ -282,27 +282,7 @@ pub fn compare_input_cached(
     let c_result = c_cached.map_or_else(|| run_c_tokenizer(input), parse_cached_tokens);
     let rust_result = run_rust_scanner(input);
 
-    match (c_result, rust_result) {
-        (Ok(c_tokens), Ok(rust_tokens)) => compare_token_streams(&c_tokens, &rust_tokens),
-        (Err(c_err), Err(rust_err)) => {
-            if c_err == rust_err {
-                CompareResult::BothErrorMatch
-            } else {
-                CompareResult::BothErrorMismatch {
-                    c_error: c_err,
-                    rust_error: rust_err,
-                }
-            }
-        }
-        (Ok(c_tokens), Err(rust_err)) => CompareResult::CSuccessRustError {
-            rust_error: rust_err,
-            c_token_count: c_tokens.len(),
-        },
-        (Err(c_err), Ok(rust_tokens)) => CompareResult::RustSuccessCError {
-            c_error: c_err,
-            rust_token_count: rust_tokens.len(),
-        },
-    }
+    compare_token_results(c_result, rust_result)
 }
 
 /// Compare both implementations on the same input (event-level).
@@ -346,8 +326,25 @@ pub fn compare_input(input: &[u8]) -> CompareResult {
     let c_result = run_c_tokenizer(input);
     let rust_result = run_rust_scanner(input);
 
+    compare_token_results(c_result, rust_result)
+}
+
+/// Shared logic for token-level comparison.
+///
+/// Filters yamalgam-only token kinds (e.g., `Comment`) from the Rust side
+/// before comparing, since libfyaml doesn't emit them.
+fn compare_token_results(
+    c_result: Result<Vec<TokenSnapshot>, String>,
+    rust_result: Result<Vec<TokenSnapshot>, String>,
+) -> CompareResult {
     match (c_result, rust_result) {
-        (Ok(c_tokens), Ok(rust_tokens)) => compare_token_streams(&c_tokens, &rust_tokens),
+        (Ok(c_tokens), Ok(rust_tokens)) => {
+            let rust_filtered: Vec<_> = rust_tokens
+                .into_iter()
+                .filter(|t| t.kind != "Comment")
+                .collect();
+            compare_token_streams(&c_tokens, &rust_filtered)
+        }
         (Err(c_err), Err(rust_err)) => {
             if c_err == rust_err {
                 CompareResult::BothErrorMatch
