@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::iter::Peekable;
 
-use serde::de::{self, Visitor};
+use serde::de::{self, DeserializeSeed, Visitor};
 use yamalgam_core::value::Value;
 use yamalgam_core::{ResourceLimits, TagResolver, Yaml12TagResolver, resolve_plain_scalar};
 use yamalgam_parser::{Event, ParseError, Parser, ScalarStyle};
@@ -53,12 +53,10 @@ impl<'input> Deserializer<'input> {
             let event = self
                 .events
                 .next()
-                .ok_or_else(|| {
-                    Error::Unexpected {
-                        expected: "event",
-                        found: "end of stream".to_string(),
-                        span: None,
-                    }
+                .ok_or_else(|| Error::Unexpected {
+                    expected: "event",
+                    found: "end of stream".to_string(),
+                    span: None,
                 })?
                 .map_err(Error::Parse)?;
 
@@ -234,12 +232,8 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                     }
                 }
             }
-            Event::SequenceStart { .. } => {
-                todo!("sequence deserialization (Task 6)")
-            }
-            Event::MappingStart { .. } => {
-                todo!("mapping deserialization (Task 6)")
-            }
+            Event::SequenceStart { .. } => self.deserialize_seq(visitor),
+            Event::MappingStart { .. } => self.deserialize_map(visitor),
             Event::Alias { name, span, .. } => {
                 let _ = self.next_event()?;
                 Err(Error::UndefinedAlias {
@@ -247,9 +241,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                     span: Some(span),
                 })
             }
-            Event::StreamEnd => {
-                visitor.visit_unit()
-            }
+            Event::StreamEnd => visitor.visit_unit(),
             Event::DocumentEnd { .. } => {
                 // Empty document — treat as null.
                 let _ = self.next_event()?;
@@ -425,59 +417,122 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         visitor.visit_newtype_struct(self)
     }
 
-    fn deserialize_seq<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        todo!("sequence deserialization (Task 6)")
+    fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        match self.next_event()? {
+            Event::SequenceStart { .. } => {
+                let mut access = SeqAccess {
+                    de: self,
+                    finished: false,
+                };
+                let value = visitor.visit_seq(&mut access)?;
+                // If the visitor returned early (e.g. fixed-size tuple)
+                // without draining to SequenceEnd, consume remaining
+                // elements and the end marker.
+                if !access.finished {
+                    access.drain()?;
+                }
+                Ok(value)
+            }
+            other => Err(Error::Unexpected {
+                expected: "sequence",
+                found: format!("{other:?}"),
+                span: None,
+            }),
+        }
     }
 
     fn deserialize_tuple<V: Visitor<'de>>(
         self,
         _len: usize,
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        todo!("tuple deserialization (Task 6)")
+        self.deserialize_seq(visitor)
     }
 
     fn deserialize_tuple_struct<V: Visitor<'de>>(
         self,
         _name: &'static str,
         _len: usize,
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        todo!("tuple struct deserialization (Task 6)")
+        self.deserialize_seq(visitor)
     }
 
-    fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        todo!("map deserialization (Task 6)")
+    fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        match self.next_event()? {
+            Event::MappingStart { .. } => {
+                let mut access = MapAccess {
+                    de: self,
+                    finished: false,
+                };
+                let value = visitor.visit_map(&mut access)?;
+                // If the visitor returned early without draining to MappingEnd,
+                // skip remaining entries and consume the end marker.
+                if !access.finished {
+                    access.drain()?;
+                }
+                Ok(value)
+            }
+            other => Err(Error::Unexpected {
+                expected: "mapping",
+                found: format!("{other:?}"),
+                span: None,
+            }),
+        }
     }
 
     fn deserialize_struct<V: Visitor<'de>>(
         self,
         _name: &'static str,
         _fields: &'static [&'static str],
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        todo!("struct deserialization (Task 6)")
+        self.deserialize_map(visitor)
     }
 
     fn deserialize_enum<V: Visitor<'de>>(
         self,
         _name: &'static str,
         _variants: &'static [&'static str],
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        todo!("enum deserialization (Task 7)")
+        let event = self.peek_event()?.clone();
+        match event {
+            // Unit variant: bare scalar like `Red`
+            Event::Scalar { value, .. } => {
+                let _ = self.next_event()?;
+                visitor.visit_enum(EnumAccess {
+                    de: self,
+                    variant: value,
+                    in_mapping: false,
+                })
+            }
+            // Newtype/tuple/struct variant: single-key mapping like `Circle: 5.0`
+            Event::MappingStart { .. } => {
+                let _ = self.next_event()?; // consume MappingStart
+                let (variant_name, _style) = self.expect_scalar()?;
+                visitor.visit_enum(EnumAccess {
+                    de: self,
+                    variant: variant_name,
+                    in_mapping: true,
+                })
+            }
+            other => Err(Error::Unexpected {
+                expected: "string or mapping (for enum)",
+                found: format!("{other:?}"),
+                span: None,
+            }),
+        }
     }
 
     fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         self.deserialize_str(visitor)
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(
-        self,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error> {
-        // Consume and discard the next value.
-        self.deserialize_any(visitor)
+    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        // Skip the next value entirely, including nested structures.
+        self.skip_value()?;
+        visitor.visit_unit()
     }
 }
 
@@ -505,6 +560,29 @@ impl Deserializer<'_> {
                 found: value.to_string(),
                 span: None,
             })
+        }
+    }
+
+    /// Skip the next value in the event stream, including nested structures.
+    ///
+    /// Used by `deserialize_ignored_any` (e.g. for unknown struct fields with
+    /// `#[serde(deny_unknown_fields)]` disabled).
+    fn skip_value(&mut self) -> Result<(), Error> {
+        let mut depth: u32 = 0;
+        loop {
+            let event = self.next_event()?;
+            match &event {
+                Event::SequenceStart { .. } | Event::MappingStart { .. } => {
+                    depth += 1;
+                }
+                Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
+                    depth -= 1;
+                }
+                _ => {}
+            }
+            if depth == 0 {
+                return Ok(());
+            }
         }
     }
 
@@ -573,4 +651,241 @@ fn i64_to_u32(i: i64) -> Result<u32, Error> {
 
 fn i64_to_u64(i: i64) -> Result<u64, Error> {
     u64::try_from(i).map_err(|_| Error::Custom(format!("integer {i} out of range for u64")))
+}
+
+// ---------------------------------------------------------------------------
+// SeqAccess — iterates sequence elements until SequenceEnd
+// ---------------------------------------------------------------------------
+
+struct SeqAccess<'a, 'de> {
+    de: &'a mut Deserializer<'de>,
+    /// `true` once `SequenceEnd` has been consumed.
+    finished: bool,
+}
+
+impl SeqAccess<'_, '_> {
+    /// Drain remaining elements and consume `SequenceEnd`.
+    fn drain(&mut self) -> Result<(), Error> {
+        let mut depth: u32 = 0;
+        loop {
+            let event = self.de.next_event()?;
+            match &event {
+                Event::SequenceStart { .. } | Event::MappingStart { .. } => depth += 1,
+                Event::SequenceEnd { .. } if depth == 0 => {
+                    self.finished = true;
+                    return Ok(());
+                }
+                Event::SequenceEnd { .. } | Event::MappingEnd { .. } => depth -= 1,
+                _ => {}
+            }
+        }
+    }
+}
+
+impl<'de> de::SeqAccess<'de> for &mut SeqAccess<'_, 'de> {
+    type Error = Error;
+
+    fn next_element_seed<T: DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>, Error> {
+        let event = self.de.peek_event()?;
+        if matches!(event, Event::SequenceEnd { .. }) {
+            // Consume SequenceEnd.
+            let _ = self.de.next_event()?;
+            self.finished = true;
+            return Ok(None);
+        }
+        seed.deserialize(&mut *self.de).map(Some)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MapAccess — iterates mapping key/value pairs until MappingEnd
+// ---------------------------------------------------------------------------
+
+struct MapAccess<'a, 'de> {
+    de: &'a mut Deserializer<'de>,
+    /// `true` once `MappingEnd` has been consumed.
+    finished: bool,
+}
+
+impl MapAccess<'_, '_> {
+    /// Drain remaining key/value pairs and consume `MappingEnd`.
+    fn drain(&mut self) -> Result<(), Error> {
+        let mut depth: u32 = 0;
+        loop {
+            let event = self.de.next_event()?;
+            match &event {
+                Event::SequenceStart { .. } | Event::MappingStart { .. } => depth += 1,
+                Event::MappingEnd { .. } if depth == 0 => {
+                    self.finished = true;
+                    return Ok(());
+                }
+                Event::SequenceEnd { .. } | Event::MappingEnd { .. } => depth -= 1,
+                _ => {}
+            }
+        }
+    }
+}
+
+impl<'de> de::MapAccess<'de> for &mut MapAccess<'_, 'de> {
+    type Error = Error;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Error> {
+        let event = self.de.peek_event()?;
+        if matches!(event, Event::MappingEnd { .. }) {
+            // Consume MappingEnd.
+            let _ = self.de.next_event()?;
+            self.finished = true;
+            return Ok(None);
+        }
+        seed.deserialize(&mut *self.de).map(Some)
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
+        seed.deserialize(&mut *self.de)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EnumAccess — handles enum variant dispatch
+// ---------------------------------------------------------------------------
+
+struct EnumAccess<'a, 'de> {
+    de: &'a mut Deserializer<'de>,
+    /// Variant name, already consumed from the event stream.
+    variant: Cow<'de, str>,
+    /// `true` if we consumed a `MappingStart` (non-unit variant).
+    in_mapping: bool,
+}
+
+impl<'de> de::EnumAccess<'de> for EnumAccess<'_, 'de> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
+        let variant = seed.deserialize(VariantNameDeserializer {
+            value: self.variant.clone(),
+        })?;
+        Ok((variant, self))
+    }
+}
+
+impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Error> {
+        if self.in_mapping {
+            // Unit variant shouldn't come via a mapping, but if it does,
+            // consume the MappingEnd.
+            // Actually: `Point` as a unit variant is a bare scalar, so
+            // `in_mapping` should be false. If someone writes `Point: ~`
+            // we should consume the null value + MappingEnd.
+            self.de.skip_value()?;
+            match self.de.next_event()? {
+                Event::MappingEnd { .. } => Ok(()),
+                other => Err(Error::Unexpected {
+                    expected: "mapping end",
+                    found: format!("{other:?}"),
+                    span: None,
+                }),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Error> {
+        let value = seed.deserialize(&mut *self.de)?;
+        if self.in_mapping {
+            match self.de.next_event()? {
+                Event::MappingEnd { .. } => {}
+                other => {
+                    return Err(Error::Unexpected {
+                        expected: "mapping end",
+                        found: format!("{other:?}"),
+                        span: None,
+                    });
+                }
+            }
+        }
+        Ok(value)
+    }
+
+    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Error> {
+        let value = de::Deserializer::deserialize_tuple(&mut *self.de, len, visitor)?;
+        if self.in_mapping {
+            match self.de.next_event()? {
+                Event::MappingEnd { .. } => {}
+                other => {
+                    return Err(Error::Unexpected {
+                        expected: "mapping end",
+                        found: format!("{other:?}"),
+                        span: None,
+                    });
+                }
+            }
+        }
+        Ok(value)
+    }
+
+    fn struct_variant<V: Visitor<'de>>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error> {
+        let value = de::Deserializer::deserialize_struct(&mut *self.de, "", fields, visitor)?;
+        if self.in_mapping {
+            match self.de.next_event()? {
+                Event::MappingEnd { .. } => {}
+                other => {
+                    return Err(Error::Unexpected {
+                        expected: "mapping end",
+                        found: format!("{other:?}"),
+                        span: None,
+                    });
+                }
+            }
+        }
+        Ok(value)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VariantNameDeserializer — deserializes a variant name from a Cow<str>
+// ---------------------------------------------------------------------------
+
+/// Minimal deserializer that yields a string value for variant name dispatch.
+struct VariantNameDeserializer<'de> {
+    value: Cow<'de, str>,
+}
+
+impl<'de> de::Deserializer<'de> for VariantNameDeserializer<'de> {
+    type Error = Error;
+
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        visit_cow_str(visitor, self.value)
+    }
+
+    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        visit_cow_str(visitor, self.value)
+    }
+
+    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        visitor.visit_string(self.value.into_owned())
+    }
+
+    fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        visit_cow_str(visitor, self.value)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char bytes byte_buf
+        option unit unit_struct newtype_struct seq tuple tuple_struct
+        map struct enum ignored_any
+    }
 }
