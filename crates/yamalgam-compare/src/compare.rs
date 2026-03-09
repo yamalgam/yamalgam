@@ -182,7 +182,7 @@ pub enum CompareEventResult {
 /// - `value` must match exactly
 /// - `anchor` must match exactly
 /// - `implicit` must match exactly
-/// - `tag` is **skipped** — libfyaml resolves tags to URIs while yamalgam keeps shorthand forms
+/// - `tag` is **skipped** — implementations may resolve tags to full URIs or keep shorthand forms
 pub fn compare_event_streams(
     c_events: &[EventSnapshot],
     rust_events: &[EventSnapshot],
@@ -224,8 +224,8 @@ pub fn compare_event_streams(
 /// Compare two events, skipping tag comparison.
 ///
 /// Two events match when their kind, value, anchor, and implicit all agree.
-/// Tags are intentionally skipped because libfyaml resolves tags to full URIs
-/// while yamalgam keeps the shorthand form.
+/// Tags are intentionally skipped because implementations may resolve tags to
+/// full URIs or keep the shorthand form.
 fn events_match(a: &EventSnapshot, b: &EventSnapshot) -> bool {
     a.kind == b.kind && a.value == b.value && a.anchor == b.anchor && a.implicit == b.implicit
 }

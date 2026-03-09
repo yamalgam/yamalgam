@@ -1,3 +1,0 @@
-foo: bar # comment
-{ foo: bar }: # comment2 
-  baz

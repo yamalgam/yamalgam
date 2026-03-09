@@ -8,8 +8,9 @@ This is a Cargo workspace. All crates live under `crates/` (plus `xtask/`):
 |-------|---------|
 | `yamalgam` | CLI binary (thin shell) |
 | `yamalgam-core` | Shared library (config, types, logic) |
-| `yamalgam-scanner` | YAML scanner — port of libfyaml's tokenizer |
-| `yamalgam-compare` | Comparison harness — runs C and Rust scanners side-by-side |
+| `yamalgam-scanner` | YAML scanner (ported from libfyaml 0.9.5, now independent) |
+| `yamalgam-parser` | StAX-style pull parser over the scanner's token stream |
+| `yamalgam-compare` | YAML Test Suite compliance and cross-implementation comparison |
 | `xtask` | Dev automation (completions, man pages, benchmarks) |
 
 Configuration files live in `config/` with `.toml.example` and `.yaml.example` templates.
@@ -23,7 +24,9 @@ just test           # cargo nextest run
 just clippy         # lint with pinned toolchain
 just fmt            # cargo fmt --all
 just deny           # security/license audit
-just fix            # auto-fix clippy warningsjust bench          # run all benchmarksjust release-check  # pre-release validation
+just fix            # auto-fix clippy warnings
+just bench          # run all benchmarks
+just release-check  # pre-release validation
 just outdated       # check for outdated dependencies
 just upgrade        # update deps in Cargo.toml and Cargo.lock
 ```
@@ -51,36 +54,23 @@ just upgrade        # update deps in Cargo.toml and Cargo.lock
 
 ## Scanner Testing
 
-The scanner is tested at three levels:
+The scanner is tested at two levels:
 
 ### 1. Unit tests (fast, run first)
 ```
 cargo nextest run -p yamalgam-scanner
 ```
-126+ scanner unit tests in `crates/yamalgam-scanner/tests/scanner.rs`. Run these after any scanner change — they catch regressions fast.
+178 scanner unit tests in `crates/yamalgam-scanner/tests/scanner.rs`. Run these after any scanner change — they catch regressions fast.
 
-### 2. YAML Test Suite compliance (slower, needs C harness)
+### 2. YAML Test Suite compliance
 ```
-cargo nextest run -p yamalgam-compare --test compliance --success-output=immediate 2>&1 | grep -oE "^    (PASS|UNEXPECTED|MISMATCH|EXPECTED)" | sort | uniq -c | sort -rn
+just test-compliance
 ```
-Runs 351 YAML Test Suite cases through **both** the C scanner (`tools/fyaml-tokenize/fyaml-tokenize`) and our Rust scanner, then compares token streams. The C harness must be built first:
-```
-cd tools/fyaml-tokenize && make clean && make && cd ../..
-```
-
-**Result categories:**
-| Category | Meaning |
-|----------|---------|
-| `PASS` | Both scanners agree (tokens match, or both error) |
-| `UNEXPECTED` | Rust succeeds but C errors — our scanner is too permissive |
-| `EXPECTED` | C succeeds but Rust errors — our scanner is stricter (check if `fail: true`) |
-| `MISMATCH` | Both succeed but produce different tokens |
+Runs 351 YAML Test Suite cases through the yamalgam parser and compares event output against the expected `tree` field in each test file. No external dependencies — pure Rust.
 
 To check a specific test case: `cargo nextest run -p yamalgam-compare --test compliance -E 'test(TEST_ID)' --success-output=immediate`
 
 To see what a test expects: `cat vendor/yaml-test-suite/TEST_ID.yaml`
-
-To see what C produces: `printf 'yaml input' | ./tools/fyaml-tokenize/fyaml-tokenize`
 
 ### 3. Full check (before pushing)
 ```
@@ -94,4 +84,3 @@ just check    # fmt + clippy + deny + nextest + doc-test
 - Skip `--all-targets --all-features` when running clippy
 - Use `cargo test` instead of `cargo nextest run`
 - Run raw cargo commands when a `just` recipe exists
-

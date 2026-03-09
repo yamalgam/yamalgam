@@ -1,6 +1,0 @@
-@PACKAGE_INIT@
-
-# Any dependency?
-#find_package(...)
-
-include(${CMAKE_CURRENT_LIST_DIR}/fyaml-targets.cmake)

@@ -1,2 +1,0 @@
-{ a: b, { e: f, g: h}: d}: foo
-{ { g: h, e: f}: d, a: b}: bar

@@ -131,12 +131,7 @@ cov:
 update-test-suite:
     scripts/update-test-suite
 
-# Generate C baseline cache (2 process spawns instead of ~700)
-c-baseline:
-    cd tools/fyaml-tokenize && make -q || make
-    cargo run -p yamalgam-compare --bin generate_baseline
-
-# Run YAML Test Suite compliance tests (uses cached C baseline if available)
+# Run YAML Test Suite compliance tests
 test-compliance:
     cargo nextest run -p yamalgam-compare --test compliance
 
