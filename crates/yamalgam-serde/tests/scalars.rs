@@ -1,4 +1,4 @@
-#![allow(clippy::bool_assert_comparison)]
+#![allow(clippy::bool_assert_comparison, missing_docs)]
 
 use yamalgam_serde::from_str;
 
