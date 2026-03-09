@@ -77,7 +77,23 @@ Pluggable tag resolution for plain scalar typing via `TagResolver` trait. Four b
 
 Prerequisite for yg CLI's `--schema` flag and `resolve_as()` filter.
 
-## Milestone 8 — yg CLI + Query Engine
+## Milestone 8 — CST (Concrete Syntax Tree)
+**Status:** Not started
+
+Lossless tree preserving comments, whitespace, quoting style. Error nodes for LSP error recovery. Unlocks round-trip editing, `yg -i`, linter, pretty emitter.
+
+Key design questions:
+- Arena vs Box allocation
+- Trivia (comments/whitespace) representation
+- Error nodes for partial parses
+- Incremental reparsing
+
+## Milestone 9 — Streaming serde Deserializer
+**Status:** Not started
+
+`yamalgam::from_str::<T>()` for library consumers. Erased-serde pattern internally — parser never monomorphizes. Zero materialization for large files.
+
+## Milestone 10 — yg CLI + Query Engine
 **Status:** Not started
 
 Integrate jaq-syn/jaq-core as expression engine. Implement `YamlVal` with jaq's `ValT` trait. Build `yg` CLI with core jq-compatible filters, YAML-native extensions (tag, anchor, style, kind, raw), and schema flags.
@@ -88,28 +104,12 @@ Integrate jaq-syn/jaq-core as expression engine. Implement `YamlVal` with jaq's 
 Key deliverables:
 - `yg <filter> [files...]` — YAML query and transformation
 - jq-familiar expression language via jaq (not reimplemented)
-- YAML 1.2 Core Schema by default, configurable (`--schema`) via SchemaResolver trait
+- YAML 1.2 Core Schema by default, configurable (`--schema`) via TagResolver trait
 - `type` returns YAML names (`"mapping"`, `"sequence"`)
 - `keys` returns insertion order (not sorted — use `keys_sorted`)
 - `-j` JSON output with implicit `explode`
 - `-r` raw string output
 - Exit codes matching jq convention
-
-## Milestone 9 — Streaming serde Deserializer
-**Status:** Not started
-
-`yamalgam::from_str::<T>()` for library consumers. Erased-serde pattern internally — parser never monomorphizes. Zero materialization for large files.
-
-## Milestone 10 — CST (Concrete Syntax Tree)
-**Status:** Not started
-
-Lossless tree preserving comments, whitespace, quoting style. Error nodes for LSP error recovery. Unlocks round-trip editing, `yg -i`, linter, pretty emitter.
-
-Key design questions:
-- Arena vs Box allocation
-- Trivia (comments/whitespace) representation
-- Error nodes for partial parses
-- Incremental reparsing
 
 ## Milestone 11 — Built-in Resolvers
 **Status:** Not started
