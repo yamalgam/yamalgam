@@ -103,6 +103,11 @@ fn try_json_number(s: &str) -> Option<Value> {
         return None;
     }
 
+    // JSON numbers: 0 | -?[1-9][0-9]* (no leading zeros)
+    if body.len() > 1 && body.starts_with('0') && body.as_bytes()[1].is_ascii_digit() {
+        return None;
+    }
+
     let is_float = s.contains('.') || s.contains('e') || s.contains('E');
 
     if is_float {
@@ -228,9 +233,7 @@ fn try_yaml11_number(s: &str) -> Option<Value> {
                 return None;
             }
             let cleaned: String = hex.chars().filter(|&c| c != '_').collect();
-            if cleaned.is_empty()
-                || !cleaned.bytes().all(|b| b.is_ascii_hexdigit())
-            {
+            if cleaned.is_empty() || !cleaned.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return None;
             }
             let n = i64::from_str_radix(&cleaned, 16).ok()?;
@@ -244,9 +247,7 @@ fn try_yaml11_number(s: &str) -> Option<Value> {
                 return None;
             }
             let cleaned: String = bin.chars().filter(|&c| c != '_').collect();
-            if cleaned.is_empty()
-                || !cleaned.bytes().all(|b| b == b'0' || b == b'1')
-            {
+            if cleaned.is_empty() || !cleaned.bytes().all(|b| b == b'0' || b == b'1') {
                 return None;
             }
             let n = i64::from_str_radix(&cleaned, 2).ok()?;
@@ -349,6 +350,9 @@ mod tests {
         assert_eq!(r.resolve_scalar("0o17"), Value::String("0o17".into()));
         assert_eq!(r.resolve_scalar("0xFF"), Value::String("0xFF".into()));
         assert_eq!(r.resolve_scalar("+42"), Value::String("+42".into()));
+        // No leading zeros in JSON integers
+        assert_eq!(r.resolve_scalar("017"), Value::String("017".into()));
+        assert_eq!(r.resolve_scalar("00"), Value::String("00".into()));
     }
 
     #[test]
@@ -361,6 +365,8 @@ mod tests {
         assert_eq!(r.resolve_scalar(".inf"), Value::String(".inf".into()));
         assert_eq!(r.resolve_scalar(".nan"), Value::String(".nan".into()));
         assert_eq!(r.resolve_scalar(".Inf"), Value::String(".Inf".into()));
+        // No leading zeros in JSON floats
+        assert_eq!(r.resolve_scalar("01.5"), Value::String("01.5".into()));
         assert_eq!(r.resolve_scalar("+1.0"), Value::String("+1.0".into()));
     }
 
@@ -369,10 +375,8 @@ mod tests {
         use crate::resolve_plain_scalar;
         let r = Yaml12TagResolver;
         let cases = [
-            "null", "Null", "NULL", "~", "",
-            "true", "True", "TRUE", "false", "False", "FALSE",
-            "42", "-17", "+99", "0o17", "0xFF",
-            "1.0", "-0.5", "1e10", ".inf", "-.inf", ".nan",
+            "null", "Null", "NULL", "~", "", "true", "True", "TRUE", "false", "False", "FALSE",
+            "42", "-17", "+99", "0o17", "0xFF", "1.0", "-0.5", "1e10", ".inf", "-.inf", ".nan",
             "hello", "yes", "no", "on", "off",
         ];
         for s in cases {
