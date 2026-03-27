@@ -1,25 +1,25 @@
 // Single source of truth for benchmark definitions.
 
 preamble {
-    code r#"
-use yamalgam_core::config::{Config, ConfigLoader};
-"#
+    code #"""
+        use yamalgam_core::config::{Config, ConfigLoader};
+        """#
 }
 
 benchmark name="load_defaults" module="config" return="Config" {
-    body r#"
-black_box(
-    ConfigLoader::new()
-        .with_user_config(false)
-        .without_boundary_marker()
-        .load()
-        .unwrap(),
-)
-"#
+    body #"""
+        black_box(
+            ConfigLoader::new()
+                .with_user_config(false)
+                .without_boundary_marker()
+                .load()
+                .unwrap(),
+        )
+        """#
 }
 
 benchmark name="construct_loader" module="config" return="ConfigLoader" {
-    body r#"
-black_box(ConfigLoader::new())
-"#
+    body #"""
+        black_box(ConfigLoader::new())
+        """#
 }
