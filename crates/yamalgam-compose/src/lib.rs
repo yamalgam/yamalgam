@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use yamalgam_core::tag::Yaml12TagResolver;
 use yamalgam_core::tag_resolution::TagResolver;
 use yamalgam_core::{Mapping, ResourceLimits, Value};
-use yamalgam_parser::{Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver};
+use yamalgam_parser::{
+    Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
+};
 use yamalgam_scanner::ScalarStyle;
 
 /// Errors that can occur during composition (event-to-Value conversion).

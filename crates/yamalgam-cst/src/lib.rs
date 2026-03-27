@@ -20,8 +20,8 @@ use std::fmt;
 
 use yamalgam_core::Span;
 
-use yamalgam_parser::ParseError;
 use yamalgam_parser::Event;
+use yamalgam_parser::ParseError;
 use yamalgam_parser::Parser;
 
 // ---------------------------------------------------------------------------

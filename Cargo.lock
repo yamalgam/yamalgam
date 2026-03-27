@@ -1927,6 +1927,17 @@ dependencies = [
  "serde_json",
  "thiserror",
  "yamalgam-core",
+ "yamalgam-cst",
+ "yamalgam-parser",
+ "yamalgam-scanner",
+]
+
+[[package]]
+name = "yamalgam-compose"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "yamalgam-core",
  "yamalgam-parser",
  "yamalgam-scanner",
 ]
@@ -1947,6 +1958,15 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "yamalgam-cst"
+version = "0.1.0"
+dependencies = [
+ "yamalgam-core",
+ "yamalgam-parser",
+ "yamalgam-scanner",
 ]
 
 [[package]]
