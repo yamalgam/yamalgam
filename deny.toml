@@ -77,36 +77,6 @@ deny = []
 # Skip duplicate version checks for commonly duplicated crates and
 # transitive dependencies we can't control
 skip = [
-    # Macro/derive crates with version splits across ecosystems
-    { crate = "darling", reason = "rmcp-macros vs tokenizers use different versions" },
-    { crate = "darling_core", reason = "follows darling" },
-    { crate = "darling_macro", reason = "follows darling" },
-
-    # Encoding/serialization
-    { crate = "base64", reason = "tokenizers (0.13) vs modern ecosystem (0.22)" },
-
-    # Collections with frequent major version bumps
-    { crate = "hashbrown", reason = "indexmap version differences" },
-    { crate = "indexmap", reason = "transitive dep version spread" },
-    { crate = "itertools", reason = "candle vs other deps" },
-
-    # Numeric/regex crates
-    { crate = "num-traits", reason = "candle uses older version" },
-    { crate = "regex-automata", reason = "tokenizers vs modern regex" },
-    { crate = "regex-syntax", reason = "follows regex-automata" },
-
-    # ICU/Unicode crates (candle vs icu4x ecosystem)
-    { crate = "yoke", reason = "candle vs icu4x" },
-    { crate = "yoke-derive", reason = "follows yoke" },
-    { crate = "zerocopy", reason = "candle vs modern zerocopy" },
-    { crate = "zerocopy-derive", reason = "follows zerocopy" },
-    { crate = "zerovec", reason = "candle vs icu4x" },
-    { crate = "zerovec-derive", reason = "follows zerovec" },
-
-    # Windows platform crates (version churn)
-    { crate = "windows-core", reason = "windows ecosystem version spread" },
-    { crate = "windows-sys", reason = "windows ecosystem version spread" },
-    { crate = "windows-targets", reason = "windows ecosystem version spread" },
 ]
 
 # ==============================================================================

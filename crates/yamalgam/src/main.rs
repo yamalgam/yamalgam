@@ -2,14 +2,16 @@
 #![deny(unsafe_code)]
 
 use anyhow::Context;
-use clap::Parser;
+use clap::FromArgMatches;
 use tracing::debug;
 use yamalgam::{Cli, Commands, commands};
 use yamalgam_core::config::ConfigLoader;
 use yamalgam_core::observability;
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::from_arg_matches(&yamalgam::command().get_matches())
+        .expect("clap mismatch between Cli derive and command()");
+
     cli.color.apply();
 
     if cli.version_only {

@@ -1,7 +1,7 @@
 set shell := ["bash", "-c"]
 set dotenv-load := true
 toolchain := `taplo get -f rust-toolchain.toml toolchain.channel | tr -d '"'`
-msrv := "1.88.0"
+msrv := "1.89.0"
 
 default:
   @just --list
@@ -60,8 +60,8 @@ bootstrap:
     # Build
     echo "🔨 Building project..."
     cargo build --workspace
-    echo ""
 
+    echo ""
     # Generate completions and man pages
     echo "📝 Generating shell completions..."
     cargo xtask completions
@@ -69,13 +69,10 @@ bootstrap:
     echo "📖 Generating man pages..."
     cargo xtask man
     echo ""
-
-
     # Install site dependencies
-    echo "📦 Installing site dependencies (npm)..."
-    (cd site && npm install)
+    echo "📦 Installing site dependencies (pnpm)..."
+    (cd site && pnpm install)
     echo ""
-
 
     # Configure repository settings via gh-coda
     if command -v gh &>/dev/null && gh extension list 2>/dev/null | grep -q coda; then
@@ -123,6 +120,7 @@ doc-test:
 
 cov:
   @cargo llvm-cov clean --workspace
+
   cargo llvm-cov nextest --no-report
   @cargo llvm-cov report --html
   @cargo llvm-cov report --summary-only --json --output-path target/llvm-cov/summary.json
@@ -144,9 +142,6 @@ watch *args='':
 # Watch and run clippy on changes
 watch-clippy:
   cargo watch -x 'clippy --all-targets --all-features -- -D warnings'
-
-
-
 
 # Lint markdown files
 mdlint *files='':
@@ -171,8 +166,6 @@ mdfix *files='':
         echo "Install rumdl (cargo bininstall rumdl) or markdownlint (npm i -g markdownlint-cli)"
         exit 1
     fi
-
-
 
 # Run all benchmarks
 bench:
@@ -228,23 +221,24 @@ fuzz-seed:
 
 # Install site dependencies
 site-install:
-  cd site && npm install
+  cd site && pnpm install
 
 # Start site dev server
 site-dev:
-  cd site && npm run dev
+  cd site && pnpm run dev
 
 # Build site for production
 site-build:
-  cd site && npm run build
+  cd site && pnpm run build
 
 # Preview production build
 site-preview:
-  cd site && npm run preview
+  cd site && pnpm run preview
 
 # Add a new crate to the workspace
 add-crate *ARGS:
     scripts/add-crate {{ARGS}}
+
 
 # Pre-release validation
 release-check:
@@ -282,7 +276,7 @@ release-check:
     echo ""
     echo "✅ All pre-release checks passed!"
 
-# Build release binary
+# Build release
 build-release:
   cargo build -p yamalgam --release
 
@@ -314,11 +308,13 @@ check-updates:
 # Full refresh: update, test, clippy
 refresh: update
     cargo test --workspace
+
     cargo clippy --workspace -- -D warnings
 
 # Monthly maintenance: upgrade, test everything
 monthly: upgrade
     cargo test --workspace
+
     cargo clippy --workspace -- -D warnings
     cargo build --workspace --release
 
@@ -352,6 +348,7 @@ bump *args='':
     next=$(git cliff --bumped-version {{args}})
     echo "Next version: $next"
     # Update Cargo.toml versions
+
     cargo set-version --workspace "${next#v}"
     # Generate changelog
     git cliff --tag "$next" --output CHANGELOG.md

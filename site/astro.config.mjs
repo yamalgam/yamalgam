@@ -10,8 +10,7 @@ import { beasties } from "vite-plugin-beasties";
 // https://astro.build/config
 export default defineConfig({
 
-  site: "https://claylo.github.io",
-  base: "/yamalgam",
+  site: "https://yamalgam.pages.dev",
 
   prefetch: {
     prefetchAll: true,

@@ -22,7 +22,12 @@ npm run preview
 
 ## Deployment
 
-This site deploys to **GitHub Pages** automatically via the `deploy-site.yml` workflow on push to `main`.
+This site deploys to **Cloudflare Pages** via git integration.
 
-The site is available at: `https://claylo.github.io/yamalgam/`
+Connect this repository in the [Cloudflare dashboard](https://dash.cloudflare.com/):
+
+1. Go to **Workers & Pages** > **Create** > **Pages**
+2. Connect your GitHub repository
+3. Set build command: `cd site && npm run build`
+4. Set build output directory: `site/dist`
 

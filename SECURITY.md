@@ -44,7 +44,6 @@ information or guidance.
 ## Scope
 
 This security policy applies to:
-
 - The yamalgam CLI tool
 - The yamalgam-core library
 - Official distribution channels (crates.io, GitHub releases)

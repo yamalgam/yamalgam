@@ -3,7 +3,7 @@
 [![CI](https://github.com/claylo/yamalgam/actions/workflows/ci.yml/badge.svg)](https://github.com/claylo/yamalgam/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/yamalgam.svg)](https://crates.io/crates/yamalgam)
 [![docs.rs](https://docs.rs/yamalgam/badge.svg)](https://docs.rs/yamalgam)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88.0-blue.svg)](https://github.com/claylo/yamalgam)
+[![MSRV](https://img.shields.io/badge/MSRV-1.89.0-blue.svg)](https://github.com/claylo/yamalgam)
 
 A modern, production-ready Rust CLI application.
 
@@ -166,7 +166,7 @@ crates/
 
 ### Prerequisites
 
-- Rust 1.88.0+ (2024 edition)
+- Rust 1.89.0+ (2024 edition)
 - [just](https://github.com/casey/just) (task runner)
 - [cargo-nextest](https://nexte.st/) (test runner)
 
@@ -215,9 +215,7 @@ cargo xtask completions --shell zsh
 
 ## Architecture
 
-
 ### Crate Organization
-
 
 - **yamalgam** - The CLI binary. Handles argument parsing, command dispatch, and user interaction.
 - **yamalgam-core** - The core library. Contains configuration loading, error types, and shared functionality.

@@ -1,0 +1,6 @@
+// Cloudflare Pages configuration
+// https://developers.cloudflare.com/pages/configuration/wrangler-configuration/
+{
+  "name": "yamalgam-docs",
+  "pages_build_output_dir": "./dist"
+}

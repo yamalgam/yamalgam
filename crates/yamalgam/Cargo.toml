@@ -44,18 +44,17 @@ pkg-fmt = "zip"
 [dependencies]
 yamalgam-core = { version = "0.1", path = "../yamalgam-core" }
 yamalgam-serde = { path = "../yamalgam-serde" }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 owo-colors = { version = "4.3", features = ["supports-colors"] }
 camino = { version = "1.2", features = ["serde1"] }
-directories = "6.0"
 
 [dev-dependencies]
-assert_cmd = "2.1"
+assert_cmd = "2.2"
 predicates = "3.1"
-tempfile = "3.26"
+tempfile = "3.27"
 [lints]
 workspace = true

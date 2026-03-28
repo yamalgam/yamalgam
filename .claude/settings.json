@@ -1,34 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo:*)",
-      "Bash(chmod:*)",
-      "Bash(find:*)",
-      "Bash(gh:*)",
-      "Bash(git:*)",
-      "Bash(grep:*)",
-      "Bash(just:*)",
-      "Bash(jq:*)",
-      "Bash(ls:*)",
-      "Bash(make:*)",
-      "Bash(mkdir:*)",
-      "Bash(printf:*)",
-      "Bash(python3:*)",
-      "Bash(scripts/:*)",
-      "Bash(sed:*)",
-      "Bash(shellspec:*)",
-      "Bash(sort:*)",
-      "Bash(tools/:*)",
-      "Bash(tree:*)",
-      "Bash(uv run:*)",
-      "Bash(wc:*)",
-      "Bash(yj:*)",
-      "Bash(yq:*)",
+      "Bash(*)",
       "Edit",
       "Write",
+      "Read",
       "Glob",
       "Grep",
-      "Read",
       "Skill",
       "Task(Explore)",
       "Task(Plan)",
@@ -36,20 +14,29 @@
       "TaskGet",
       "TaskList",
       "TaskUpdate",
+      "WebFetch(domain:*.readthedocs.io)",
       "WebFetch(domain:api.anthropic.com)",
+      "WebFetch(domain:code.claude.com)",
       "WebFetch(domain:crates.io)",
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:github.io)",
       "WebFetch(domain:lib.rs)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:readthedocs.io)",
       "WebFetch(domain:registry.npmjs.org)",
-      "WebSearch"
+      "WebSearch",
+      "Write(commit.txt)",
+      "Write(*/commit.txt)"
+    ],
+    "deny": [
+      "Bash(git add -f:*)",
+      "Bash(git push --force:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(rm -rf:*)",
+      "Read(**/.env*)",
+      "Read(**/secrets/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)"
     ]
-  },
-  "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "github"
-  ]
+  }
 }

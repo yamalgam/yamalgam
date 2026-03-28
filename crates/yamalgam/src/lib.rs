@@ -51,16 +51,18 @@ impl ColorChoice {
 
 const ENV_HELP: &str = "\
 ENVIRONMENT VARIABLES:
-    RUST_LOG                Log filter (e.g., debug, yamalgam=trace)
-    YAMALGAM_LOG_PATH     Log file path (rotated daily)
-    YAMALGAM_LOG_DIR      Log directory
+    RUST_LOG             Log filter (e.g., debug, yamalgam=trace)
+    YAMALGAM_LOG_PATH    Log file path (rotated daily)
+    YAMALGAM_LOG_DIR     Log directory
 ";
+
 /// Command-line interface definition for yamalgam.
 #[derive(Parser)]
 #[command(name = "yamalgam")]
 #[command(about = "A modern, production-ready Rust CLI application.", long_about = None)]
 #[command(version, arg_required_else_help = true)]
-#[command(after_long_help = ENV_HELP)]
+#[command(after_help = ENV_HELP)]
+#[command(disable_help_flag = true)]
 pub struct Cli {
     /// The subcommand to execute.
     #[command(subcommand)]
@@ -104,7 +106,19 @@ pub enum Commands {
     Info(commands::info::InfoArgs),
 }
 
-/// Returns the clap command for documentation generation
+/// Returns the clap command for documentation generation.
+///
+/// Adds a custom `-h`/`--help` flag using `HelpShort` so both render
+/// the compact single-line format. This is done at the Command level
+/// (not as a struct field) because clap's derive treats `HelpShort`
+/// as a value-less exit action that conflicts with struct population.
 pub fn command() -> clap::Command {
-    Cli::command()
+    Cli::command().arg(
+        clap::Arg::new("help")
+            .short('h')
+            .long("help")
+            .help("Print help")
+            .global(true)
+            .action(clap::ArgAction::HelpShort),
+    )
 }

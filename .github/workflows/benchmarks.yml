@@ -12,6 +12,13 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -21,18 +28,23 @@ jobs:
   divan:
     name: Divan (wall-clock)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
 
       - name: Generate benchmark harnesses
         run: cargo xtask gen-benchmarks
+
 
       - name: Run Divan benchmarks
         run: |
@@ -40,7 +52,7 @@ jobs:
           cargo bench --bench divan_benchmarks 2>&1 | tee bench-reports/divan-ci.txt
 
       - name: Upload Divan results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: divan-results
           path: bench-reports/divan-ci.txt
@@ -50,13 +62,16 @@ jobs:
   gungraun:
     name: Gungraun (instruction count)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ !inputs.skip_gungraun }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
 
       - name: Install Valgrind
         run: |
@@ -64,15 +79,17 @@ jobs:
           sudo apt-get install -y valgrind
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install gungraun-runner
         uses: ./.github/actions/setup-cargo-tools
         with:
           binstall-tools: gungraun-runner
 
+
       - name: Generate benchmark harnesses
         run: cargo xtask gen-benchmarks
+
 
       - name: Run Gungraun benchmarks
         run: |
@@ -80,7 +97,7 @@ jobs:
           cargo bench --bench gungraun_benchmarks 2>&1 | tee bench-reports/gungraun-ci.txt
 
       - name: Upload Gungraun results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: gungraun-results
           path: bench-reports/gungraun-ci.txt
@@ -108,7 +125,7 @@ jobs:
           cargo bench -p yamalgam-bench 2>&1 | tee bench-reports/comparative-ci.txt
 
       - name: Upload comparative results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: comparative-results
           path: bench-reports/comparative-ci.txt
@@ -138,7 +155,7 @@ jobs:
           cargo bench -p yamalgam-parser 2>&1 | tee bench-reports/parser-ci.txt
 
       - name: Upload self-benchmark results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: self-benchmark-results
           path: bench-reports/
@@ -148,20 +165,23 @@ jobs:
   cli:
     name: CLI (hyperfine)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install hyperfine
-        run: |
-          wget -q https://github.com/sharkdp/hyperfine/releases/download/v1.18.0/hyperfine_1.18.0_amd64.deb
-          sudo dpkg -i hyperfine_1.18.0_amd64.deb
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install hyperfine
+        uses: ./.github/actions/setup-cargo-tools
+        with:
+          binstall-tools: hyperfine
 
       - name: Run CLI benchmarks
         run: |
@@ -169,22 +189,26 @@ jobs:
           ./scripts/bench-cli.sh --quick
 
       - name: Upload CLI benchmark results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: cli-benchmark-results
           path: bench-reports/
           retention-days: 30
 
+
   # Summary job that collects all results
   summary:
     name: Benchmark Summary
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
     needs: [divan, gungraun, comparative, self-benchmarks, cli]
+
     if: always()
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: all-results
 
