@@ -52,7 +52,7 @@ jobs:
           cargo bench --bench divan_benchmarks 2>&1 | tee bench-reports/divan-ci.txt
 
       - name: Upload Divan results
-        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v7.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: divan-results
           path: bench-reports/divan-ci.txt
@@ -97,7 +97,7 @@ jobs:
           cargo bench --bench gungraun_benchmarks 2>&1 | tee bench-reports/gungraun-ci.txt
 
       - name: Upload Gungraun results
-        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v7.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: gungraun-results
           path: bench-reports/gungraun-ci.txt
@@ -125,7 +125,7 @@ jobs:
           cargo bench -p yamalgam-bench 2>&1 | tee bench-reports/comparative-ci.txt
 
       - name: Upload comparative results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: comparative-results
           path: bench-reports/comparative-ci.txt
@@ -155,7 +155,7 @@ jobs:
           cargo bench -p yamalgam-parser 2>&1 | tee bench-reports/parser-ci.txt
 
       - name: Upload self-benchmark results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: self-benchmark-results
           path: bench-reports/
@@ -189,7 +189,7 @@ jobs:
           ./scripts/bench-cli.sh --quick
 
       - name: Upload CLI benchmark results
-        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v7.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: cli-benchmark-results
           path: bench-reports/
