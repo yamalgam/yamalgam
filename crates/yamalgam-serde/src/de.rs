@@ -6,7 +6,7 @@ use std::iter::Peekable;
 
 use serde::de::{self, DeserializeSeed, Visitor};
 use yamalgam_core::value::Value;
-use yamalgam_core::{LoaderConfig, ResourceLimits, TagResolver, Yaml12TagResolver};
+use yamalgam_core::{LoaderConfig, ResourceLimits, Span, TagResolver, Yaml12TagResolver};
 use yamalgam_parser::{Event, ParseError, Parser, ScalarStyle};
 
 use crate::error::Error;
@@ -50,23 +50,6 @@ impl<'input> Deserializer<'input> {
             events: (Box::new(parser) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
             tag_resolver: Box::new(Yaml12TagResolver),
             limits: ResourceLimits::none(),
-            finished: false,
-            at_document_start: false,
-            anchors: HashMap::new(),
-            anchor_count: 0,
-            alias_expansions: 0,
-            replay_buffer: VecDeque::new(),
-        }
-    }
-
-    /// Create a `Deserializer` with explicit resource limits.
-    #[must_use]
-    pub fn from_str_with_limits(input: &'input str, limits: ResourceLimits) -> Self {
-        let parser = Parser::new(input);
-        Self {
-            events: (Box::new(parser) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
-            tag_resolver: Box::new(Yaml12TagResolver),
-            limits,
             finished: false,
             at_document_start: false,
             anchors: HashMap::new(),
@@ -334,14 +317,16 @@ impl<'input> Deserializer<'input> {
         }
     }
 
-    /// Consume a scalar event and return (value, style).
-    fn expect_scalar(&mut self) -> Result<(Cow<'input, str>, ScalarStyle), Error> {
+    /// Consume a scalar event and return (value, style, span).
+    fn expect_scalar(&mut self) -> Result<(Cow<'input, str>, ScalarStyle, Span), Error> {
         match self.next_event()? {
-            Event::Scalar { value, style, .. } => Ok((value, style)),
+            Event::Scalar {
+                value, style, span, ..
+            } => Ok((value, style, span)),
             other => Err(Error::Unexpected {
                 expected: "scalar",
                 found: format!("{other:?}"),
-                span: None,
+                span: other.span(),
             }),
         }
     }
@@ -422,20 +407,20 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             other => Err(Error::Unexpected {
                 expected: "scalar, sequence, or mapping",
                 found: format!("{other:?}"),
-                span: None,
+                span: other.span(),
             }),
         }
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let (value, style) = self.expect_scalar()?;
+        let (value, style, span) = self.expect_scalar()?;
         if style == ScalarStyle::Plain {
             match self.tag_resolver.resolve_scalar(&value) {
                 Value::Bool(b) => visitor.visit_bool(b),
                 _ => Err(Error::Unexpected {
                     expected: "boolean",
                     found: value.to_string(),
-                    span: None,
+                    span: Some(span),
                 }),
             }
         } else {
@@ -443,7 +428,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             let b = value.parse::<bool>().map_err(|_| Error::Unexpected {
                 expected: "boolean",
                 found: value.to_string(),
-                span: None,
+                span: Some(span),
             })?;
             visitor.visit_bool(b)
         }
@@ -500,40 +485,40 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let (value, _style) = self.expect_scalar()?;
+        let (value, _style, span) = self.expect_scalar()?;
         let mut chars = value.chars();
-        let c = chars.next().ok_or_else(|| Error::Unexpected {
+        let c = chars.next().ok_or(Error::Unexpected {
             expected: "single character",
-            found: "empty string".to_string(),
-            span: None,
+            found: String::new(),
+            span: Some(span),
         })?;
         if chars.next().is_some() {
             return Err(Error::Unexpected {
                 expected: "single character",
                 found: format!("string of length > 1: {value:?}"),
-                span: None,
+                span: Some(span),
             });
         }
         visitor.visit_char(c)
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let (value, _style) = self.expect_scalar()?;
+        let (value, _style, _span) = self.expect_scalar()?;
         visit_cow_str(visitor, value)
     }
 
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let (value, _style) = self.expect_scalar()?;
+        let (value, _style, _span) = self.expect_scalar()?;
         visitor.visit_string(value.into_owned())
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let (value, _style) = self.expect_scalar()?;
+        let (value, _style, _span) = self.expect_scalar()?;
         visitor.visit_bytes(value.as_bytes())
     }
 
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let (value, _style) = self.expect_scalar()?;
+        let (value, _style, _span) = self.expect_scalar()?;
         visitor.visit_byte_buf(value.into_owned().into_bytes())
     }
 
@@ -556,14 +541,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                 visitor.visit_unit()
             }
             Event::Scalar { .. } => {
-                let (value, style) = self.expect_scalar()?;
+                let (value, style, span) = self.expect_scalar()?;
                 if style == ScalarStyle::Plain {
                     match self.tag_resolver.resolve_scalar(&value) {
                         Value::Null => visitor.visit_unit(),
                         _ => Err(Error::Unexpected {
                             expected: "null",
                             found: value.to_string(),
-                            span: None,
+                            span: Some(span),
                         }),
                     }
                 } else if value.is_empty() {
@@ -573,14 +558,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                     Err(Error::Unexpected {
                         expected: "null",
                         found: value.to_string(),
-                        span: None,
+                        span: Some(span),
                     })
                 }
             }
             other => Err(Error::Unexpected {
                 expected: "null",
                 found: format!("{other:?}"),
-                span: None,
+                span: other.span(),
             }),
         }
     }
@@ -620,7 +605,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             other => Err(Error::Unexpected {
                 expected: "sequence",
                 found: format!("{other:?}"),
-                span: None,
+                span: other.span(),
             }),
         }
     }
@@ -660,7 +645,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             other => Err(Error::Unexpected {
                 expected: "mapping",
                 found: format!("{other:?}"),
-                span: None,
+                span: other.span(),
             }),
         }
     }
@@ -694,7 +679,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             // Newtype/tuple/struct variant: single-key mapping like `Circle: 5.0`
             Event::MappingStart { .. } => {
                 let _ = self.next_event()?; // consume MappingStart
-                let (variant_name, _style) = self.expect_scalar()?;
+                let (variant_name, _style, _span) = self.expect_scalar()?;
                 visitor.visit_enum(EnumAccess {
                     de: self,
                     variant: variant_name,
@@ -704,7 +689,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
             other => Err(Error::Unexpected {
                 expected: "string or mapping (for enum)",
                 found: format!("{other:?}"),
-                span: None,
+                span: other.span(),
             }),
         }
     }
@@ -727,14 +712,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
 impl Deserializer<'_> {
     /// Parse the next scalar event as an integer via tag resolution.
     fn parse_integer(&mut self) -> Result<i64, Error> {
-        let (value, style) = self.expect_scalar()?;
+        let (value, style, span) = self.expect_scalar()?;
         if style == ScalarStyle::Plain {
             match self.tag_resolver.resolve_scalar(&value) {
                 Value::Integer(i) => Ok(i),
                 _ => Err(Error::Unexpected {
                     expected: "integer",
                     found: value.to_string(),
-                    span: None,
+                    span: Some(span),
                 }),
             }
         } else {
@@ -742,7 +727,7 @@ impl Deserializer<'_> {
             value.parse::<i64>().map_err(|_| Error::Unexpected {
                 expected: "integer",
                 found: value.to_string(),
-                span: None,
+                span: Some(span),
             })
         }
     }
@@ -763,7 +748,7 @@ impl Deserializer<'_> {
                     depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
                         expected: "a value to skip",
                         found: "unmatched container end event".to_string(),
-                        span: None,
+                        span: event.span(),
                     })?;
                 }
                 _ => {}
@@ -776,7 +761,7 @@ impl Deserializer<'_> {
 
     /// Parse the next scalar event as a float via tag resolution.
     fn parse_float(&mut self) -> Result<f64, Error> {
-        let (value, style) = self.expect_scalar()?;
+        let (value, style, span) = self.expect_scalar()?;
         if style == ScalarStyle::Plain {
             match self.tag_resolver.resolve_scalar(&value) {
                 Value::Float(f) => Ok(f),
@@ -784,7 +769,7 @@ impl Deserializer<'_> {
                 _ => Err(Error::Unexpected {
                     expected: "float",
                     found: value.to_string(),
-                    span: None,
+                    span: Some(span),
                 }),
             }
         } else {
@@ -792,7 +777,7 @@ impl Deserializer<'_> {
             value.parse::<f64>().map_err(|_| Error::Unexpected {
                 expected: "float",
                 found: value.to_string(),
-                span: None,
+                span: Some(span),
             })
         }
     }
@@ -909,7 +894,7 @@ impl SeqAccess<'_, '_> {
                     depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
                         expected: "balanced events while draining sequence",
                         found: "unmatched container end event".to_string(),
-                        span: None,
+                        span: event.span(),
                     })?;
                 }
                 _ => {}
@@ -962,7 +947,7 @@ impl MapAccess<'_, '_> {
                     depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
                         expected: "balanced events while draining mapping",
                         found: "unmatched container end event".to_string(),
-                        span: None,
+                        span: event.span(),
                     })?;
                 }
                 _ => {}
@@ -1033,7 +1018,7 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
                 other => Err(Error::Unexpected {
                     expected: "mapping end",
                     found: format!("{other:?}"),
-                    span: None,
+                    span: other.span(),
                 }),
             }
         } else {
@@ -1050,7 +1035,7 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
                     return Err(Error::Unexpected {
                         expected: "mapping end",
                         found: format!("{other:?}"),
-                        span: None,
+                        span: other.span(),
                     });
                 }
             }
@@ -1067,7 +1052,7 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
                     return Err(Error::Unexpected {
                         expected: "mapping end",
                         found: format!("{other:?}"),
-                        span: None,
+                        span: other.span(),
                     });
                 }
             }
@@ -1088,7 +1073,7 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
                     return Err(Error::Unexpected {
                         expected: "mapping end",
                         found: format!("{other:?}"),
-                        span: None,
+                        span: other.span(),
                     });
                 }
             }

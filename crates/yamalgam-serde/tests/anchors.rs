@@ -3,8 +3,15 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use yamalgam_core::ResourceLimits;
-use yamalgam_serde::{from_str, from_str_with_limits};
+use yamalgam_core::{LoaderConfig, ResourceLimits};
+use yamalgam_serde::{from_str, from_str_with_config};
+
+/// Build a config carrying only the given limits.
+const fn config_with(limits: ResourceLimits) -> LoaderConfig {
+    let mut config = LoaderConfig::trusted();
+    config.limits = limits;
+    config
+}
 
 // ---------------------------------------------------------------------------
 // Scalar anchors and aliases
@@ -100,7 +107,7 @@ fn anchor_count_limit_enforced() {
     };
     // Two anchors should exceed limit of 1.
     let input = "a: &x hello\nb: &y world";
-    let result = from_str_with_limits::<HashMap<String, String>>(input, limits);
+    let result = from_str_with_config::<HashMap<String, String>>(input, &config_with(limits));
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("limit exceeded"), "got: {err}");
@@ -114,7 +121,7 @@ fn alias_expansion_limit_enforced() {
     };
     // Two alias expansions should exceed limit of 1.
     let input = "base: &b hello\nx: *b\ny: *b";
-    let result = from_str_with_limits::<HashMap<String, String>>(input, limits);
+    let result = from_str_with_config::<HashMap<String, String>>(input, &config_with(limits));
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("limit exceeded"), "got: {err}");

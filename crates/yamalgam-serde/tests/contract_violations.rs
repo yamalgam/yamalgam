@@ -50,3 +50,26 @@ fn extra_value_request_errors_instead_of_panicking() {
         "expected error for unbalanced skip, got {result:?}"
     );
 }
+
+#[test]
+fn type_mismatch_error_carries_span() {
+    // Direct (non-erased) path: the error is structured and carries a span.
+    let mut de = yamalgam_serde::Deserializer::from_str("key: value\n");
+    let err = <bool as Deserialize>::deserialize(&mut de).expect_err("bool from mapping must fail");
+    let yamalgam_serde::Error::Unexpected { span, .. } = err else {
+        panic!("expected Error::Unexpected, got {err:?}");
+    };
+    let span = span.expect("error should carry the offending span");
+    assert_eq!(span.start.line, 0, "mapping starts on line 0");
+}
+
+#[test]
+fn type_mismatch_position_survives_erased_path() {
+    // from_str goes through erased-serde, which flattens errors to strings;
+    // the rendered position must survive in the message.
+    let err = from_str::<bool>("key: value\n").expect_err("bool from mapping must fail");
+    assert!(
+        err.to_string().contains("(line 1, column 1)"),
+        "stringified error should carry position: {err}"
+    );
+}
