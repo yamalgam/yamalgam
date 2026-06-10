@@ -52,12 +52,8 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 
 # Ignore specific advisories (use with caution in enterprise)
 ignore = [
-    # bincode 1.3.3 - via gungraun (dev-dep benchmark harness)
-    # Upstream recommends bincode 2.x but gungraun hasn't migrated
-    "RUSTSEC-2025-0141",
-
-    # dlopen_derive 0.1.4 - via yamlstar (benchmark peer)
-    # Unmaintained, but we only use yamlstar for comparative benchmarks
+    # dlopen_derive 0.1.4 - via yamlstar (optional benchmark peer)
+    # Unmaintained, but yamlstar is only used for comparative benchmarks
     "RUSTSEC-2023-0051",
 ]
 
