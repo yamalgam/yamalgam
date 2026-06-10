@@ -12,6 +12,16 @@ pub enum ConfigError {
     /// Configuration file not found after searching all locations.
     #[error("no configuration file found")]
     NotFound,
+
+    /// Configuration file has an unsupported format.
+    ///
+    /// YAML config support returns once yamalgam reads config through its
+    /// own parser instead of figment's serde_yaml-backed provider.
+    #[error("unsupported config file format `{path}`: use TOML or JSON")]
+    UnsupportedFormat {
+        /// Path of the rejected config file.
+        path: String,
+    },
 }
 
 /// Result type alias using [`ConfigError`].

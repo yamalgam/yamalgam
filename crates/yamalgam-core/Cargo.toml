@@ -34,7 +34,7 @@ exclude = [
 [dependencies]
 anyhow = "1.0"
 camino = { version = "1.2", features = ["serde1"] }
-figment = { version = "0.10", features = ["toml", "yaml", "json"] }
+figment = { version = "0.10", features = ["toml", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 directories = "6.0"
 serde_json = "1.0"

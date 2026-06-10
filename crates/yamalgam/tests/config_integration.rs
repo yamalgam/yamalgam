@@ -128,22 +128,36 @@ fn parses_toml_config() {
     assert_eq!(json["config"]["log_level"], "warn");
 }
 
+// YAML config is intentionally unsupported until yamalgam parses its own
+// config — figment's yaml feature would pull deprecated serde_yaml into
+// the dependency tree. Discovery skips YAML files entirely.
+
 #[test]
-fn parses_yaml_config() {
+fn yaml_project_config_is_ignored() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join(".yamalgam.yaml"), "log_level: warn\n").unwrap();
 
     let json = info_json(tmp.path());
-    assert_eq!(json["config"]["log_level"], "warn");
+    assert_eq!(
+        json["config"]["log_level"], "info",
+        "YAML config should be ignored during discovery"
+    );
+    assert!(
+        json["config"]["config_file"].is_null(),
+        "no config file should be reported"
+    );
 }
 
 #[test]
-fn parses_yml_config() {
+fn yml_project_config_is_ignored() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join(".yamalgam.yml"), "log_level: debug\n").unwrap();
 
     let json = info_json(tmp.path());
-    assert_eq!(json["config"]["log_level"], "debug");
+    assert_eq!(
+        json["config"]["log_level"], "info",
+        "YAML config should be ignored during discovery"
+    );
 }
 
 #[test]
@@ -182,17 +196,17 @@ fn closer_config_takes_precedence() {
 }
 
 #[test]
-fn toml_preferred_over_yaml_in_same_directory() {
+fn toml_discovered_when_yaml_also_present() {
     let tmp = TempDir::new().unwrap();
 
-    // TOML is first in extension preference order
+    // YAML is not in the discovery extension list; TOML is found normally.
     fs::write(tmp.path().join(".yamalgam.toml"), r#"log_level = "debug""#).unwrap();
     fs::write(tmp.path().join(".yamalgam.yaml"), "log_level: error\n").unwrap();
 
     let json = info_json(tmp.path());
     assert_eq!(
         json["config"]["log_level"], "debug",
-        "TOML should be preferred over YAML"
+        "TOML config should be used; YAML ignored"
     );
 }
 
@@ -253,18 +267,22 @@ fn invalid_toml_config_shows_error() {
 }
 
 #[test]
-fn invalid_yaml_config_shows_error() {
+fn explicit_yaml_config_is_rejected() {
     let tmp = TempDir::new().unwrap();
-    fs::write(
-        tmp.path().join(".yamalgam.yaml"),
-        "invalid:\n  yaml\n content:\n[broken",
-    )
-    .unwrap();
+    let config = tmp.path().join("config.yaml");
+    fs::write(&config, "log_level: warn\n").unwrap();
 
     cmd()
-        .args(["-C", tmp.path().to_str().unwrap(), "info"])
+        .args([
+            "-C",
+            tmp.path().to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+            "info",
+        ])
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicate::str::contains("unsupported config file format"));
 }
 
 #[test]

@@ -78,20 +78,31 @@ Pluggable tag resolution for plain scalar typing via `TagResolver` trait. Four b
 Prerequisite for yg CLI's `--schema` flag and `resolve_as()` filter.
 
 ## Milestone 8 — CST (Concrete Syntax Tree)
-**Status:** Not started
+**Status:** Complete (PRs #80-#81)
 
-Lossless tree preserving comments, whitespace, quoting style. Error nodes for LSP error recovery. Unlocks round-trip editing, `yg -i`, linter, pretty emitter.
+Lossless tree preserving comments, whitespace, quoting style. Full-fidelity
+event stream (Comment + structural indicator events emitted inline), Box
+allocation, whitespace recovered from span gaps, error recovery nodes.
+Round-trip fidelity `cst.to_text() == input`: 339/351 YAML Test Suite
+(12 flow close-token cases allowlisted). Unlocks round-trip editing,
+`yg -i`, linter, pretty emitter.
 
-Key design questions:
-- Arena vs Box allocation
-- Trivia (comments/whitespace) representation
-- Error nodes for partial parses
-- Incremental reparsing
+- Design: `2026-03-09-cst-design.md`, `2026-03-09-full-fidelity-event-stream-design.md`
 
 ## Milestone 9 — Streaming serde Deserializer
-**Status:** Not started
+**Status:** Core complete (PRs #82-#83) — integration tests remaining
 
-`yamalgam::from_str::<T>()` for library consumers. Erased-serde pattern internally — parser never monomorphizes. Zero materialization for large files.
+`yamalgam::from_str::<T>()` drop-in for serde_yaml, plus
+`Deserializer::documents::<T>()` for multi-doc streaming. Erased-serde
+pattern internally — parser event-walking never monomorphizes. Anchor
+buffering via event replay. Config-aware (`from_str_with_config`).
+Consumer crates extracted along the way: `yamalgam-compose`, `yamalgam-cst`.
+
+Remaining: real-world fixture corpus, serde_yaml behavioral parity tests,
+serde round-trip in the compliance harness (needs `Deserialize for Value`).
+
+- Design: `2026-03-09-streaming-serde-deserializer-design.md`
+- Plan: `2026-03-09-m9-serde-implementation-plan.md`
 
 ## Milestone 10 — yg CLI + Query Engine
 **Status:** Not started
