@@ -20,14 +20,13 @@ use yamalgam_cst::parse_to_cst;
 /// - Edge cases with complex flow nesting or empty values
 const ROUND_TRIP_ALLOWLIST: &[&str] = &[
     // --- Flow collection close token duplication ---
-    "4FJ6", // nested flow sequences — extra `]`
+    // (Single-pair flow-SEQUENCE mappings were fixed by zero-width
+    // MappingStart/End spans; the remaining cases involve flow-MAPPING
+    // synthetic ends.)
     "57H4", // nested flow — extra `]`
     "6PBE", // flow mapping — extra `}`
     "7ZZ5", // flow mapping — extra `}`
-    "9MMW", // flow in block — extra `]`
     "AZ63", // flow mapping — extra `}`
-    "CT4Q", // flow mapping — extra `}`
-    "QF4Y", // flow mapping key — extra `}`
     "RLU9", // flow mapping — extra `}`
     "S3PD", // flow mapping — extra `}`
     "S9E8", // flow mapping — extra `}`

@@ -1035,28 +1035,50 @@ where
             Some(TokenKind::Key) => {
                 // Implicit mapping inside flow sequence: `[a: b]`.
                 let t = self.consume_peeked()?;
-                // Push FlowSequenceEntryMappingValue as the return state for BlockNode.
-                // FlowSequenceEntryMappingValue will handle pushing FlowSequenceEntryMappingEnd.
-                self.push_state(ParserState::FlowSequenceEntryMappingValue)?;
-                self.state = ParserState::BlockNode;
                 self.event_queue
                     .push_back(Event::KeyIndicator { span: t.atom.span });
+                // An empty key (`[: v]`, `[ : ]`) puts Value/`,`/`]` right
+                // after the Key token — there is no key node for BlockNode
+                // to parse, so emit the empty scalar here.
+                // y[impl flow.c-ns-flow-map-empty-key-entry+2]
+                let next_kind = self.peek_token()?.map(|t| t.kind);
+                match next_kind {
+                    Some(TokenKind::Value | TokenKind::FlowEntry | TokenKind::FlowSequenceEnd) => {
+                        let span = self.peeked_token()?.atom.span;
+                        self.state = ParserState::FlowSequenceEntryMappingValue;
+                        self.event_queue.push_back(Self::emit_empty_scalar(span));
+                    }
+                    _ => {
+                        // Push FlowSequenceEntryMappingValue as the return
+                        // state for BlockNode; it then pushes
+                        // FlowSequenceEntryMappingEnd.
+                        self.push_state(ParserState::FlowSequenceEntryMappingValue)?;
+                        self.state = ParserState::BlockNode;
+                    }
+                }
+                // Zero-width span: the single-pair mapping is synthetic —
+                // any visible `?` belongs to the KeyIndicator event.
                 Ok(Some(Event::MappingStart {
                     anchor: None,
                     tag: None,
                     style: CollectionStyle::Flow,
-                    span: t.atom.span,
+                    span: Span {
+                        start: t.atom.span.start,
+                        end: t.atom.span.start,
+                    },
                 }))
             }
             Some(TokenKind::Value) => {
-                // Implicit mapping with empty key: `[: value]`.
-                let span = self.peeked_token()?.atom.span;
-                self.state = ParserState::FlowSequenceEntryMappingValue;
+                // Implicit mapping with empty key and no Key token:
+                // FlowSequenceEntryMappingKey emits the empty key scalar,
+                // then FlowSequenceEntryMappingValue takes over.
+                let start = self.peeked_token()?.atom.span.start;
+                self.state = ParserState::FlowSequenceEntryMappingKey;
                 Ok(Some(Event::MappingStart {
                     anchor: None,
                     tag: None,
                     style: CollectionStyle::Flow,
-                    span,
+                    span: Span { start, end: start },
                 }))
             }
             _ => {
@@ -1137,6 +1159,10 @@ where
 
     /// Handle `FlowSequenceEntryMappingEnd`: emit `MappingEnd` and return to
     /// `FlowSequenceEntry`.
+    ///
+    /// The single-pair mapping has no close token of its own — the span is
+    /// zero-width at the next token's start so consumers that render source
+    /// text (CST) emit nothing for it.
     // cref: fy-parse.c:6823-6826
     fn parse_flow_sequence_entry_mapping_end(
         &mut self,
@@ -1145,7 +1171,10 @@ where
             .peek_token()
             .ok()
             .flatten()
-            .map_or_else(Span::default, |t| t.atom.span);
+            .map_or_else(Span::default, |t| Span {
+                start: t.atom.span.start,
+                end: t.atom.span.start,
+            });
         self.state = ParserState::FlowSequenceEntry;
         Ok(Some(Event::MappingEnd { span }))
     }

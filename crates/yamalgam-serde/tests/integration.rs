@@ -17,15 +17,7 @@ use yamalgam_serde::Deserializer;
 /// STALENESS: if a file in this list deserializes, the test panics — remove
 /// the entry.
 const KNOWN_FAILING: &[&str] = &[
-    // Single-pair implicit mapping entries in flow sequences (`[a: b]`) are
-    // valid YAML 1.2 (spec example 7.21) but unsupported by the parser.
-    "prettier/flow-sequence/array-value.yml",
-    "prettier/flow-sequence/empty-item-colon.yml",
-    "prettier/flow-sequence/long-value.yml",
-    "prettier/flow-sequence/short-value.yml",
-    "prettier/spec/spec-example-7-21-single-pair-implicit-entries.yml",
-    // Explicit `? key` entries without values plus `!!omap [ one: 1 ]`
-    // single-pair flow entries (CFD4 family in the compliance allowlist).
+    // Explicit `? key` entries without values in block mappings.
     "prettier/root/example.yml",
     // Scanner tab-indentation strictness — same family as the event
     // compliance allowlist entries (6BCT, 6CA3, 6HB6, 7A4E, DC7X, J3BT).

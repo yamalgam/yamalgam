@@ -83,8 +83,8 @@ Prerequisite for yg CLI's `--schema` flag and `resolve_as()` filter.
 Lossless tree preserving comments, whitespace, quoting style. Full-fidelity
 event stream (Comment + structural indicator events emitted inline), Box
 allocation, whitespace recovered from span gaps, error recovery nodes.
-Round-trip fidelity `cst.to_text() == input`: 339/351 YAML Test Suite
-(12 flow close-token cases allowlisted). Unlocks round-trip editing,
+Round-trip fidelity `cst.to_text() == input`: 343/351 YAML Test Suite
+(8 flow-mapping close-token cases allowlisted). Unlocks round-trip editing,
 `yg -i`, linter, pretty emitter.
 
 - Design: `2026-03-09-cst-design.md`, `2026-03-09-full-fidelity-event-stream-design.md`
@@ -106,9 +106,9 @@ an empty allowlist. 408-file real-world fixture corpus (yq, yamlfmt,
 prettier, hand-written k8s/compose/CI/ansible/helm), serde_yaml parity
 tests with documented divergences. 1699 tests.
 
-Known parser gap surfaced by fixtures (tracked in `KNOWN_FAILING`,
-`yamalgam-serde/tests/integration.rs`): single-pair implicit mapping
-entries in flow sequences (`[a: b]`, spec example 7.21).
+Single-pair flow-sequence entries (`[a: b]`, `[ : ]`, spec example 7.21)
+parse and CST-round-trip as of the post-M9 fixes; the remaining
+`KNOWN_FAILING` fixture gap is explicit `? key` entries without values.
 
 - Design: `2026-03-09-streaming-serde-deserializer-design.md`
 - Plan: `2026-03-09-m9-serde-implementation-plan.md`
@@ -178,7 +178,7 @@ YAML serialization with configurable style preferences. Round-trip editing via C
 
 | Concern | Status | Notes |
 |---------|--------|-------|
-| YAML Test Suite compliance | 349/351 events | 2 EXPECTED remaining (CFD4, DK95) |
+| YAML Test Suite compliance | 350/351 events | 1 EXPECTED remaining (DK95) |
 | Fuzzing | 6 targets, CI integrated | OSS-Fuzz submission after public launch |
 | Benchmarks | 8 peers (yamlstar feature-gated) | yamalgam fastest on small/medium |
 | WASM build | Not started | `wasm32-wasip2` target, wit-bindgen |
