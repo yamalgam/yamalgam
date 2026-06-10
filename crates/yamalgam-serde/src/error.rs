@@ -37,6 +37,36 @@ pub enum Error {
     Custom(String),
 }
 
+impl Error {
+    /// Clone the structured form of this error.
+    ///
+    /// `Resolve` is the only variant that cannot be cloned (`ResolveError`
+    /// can hold an `io::Error`); it degrades to `Custom` with the rendered
+    /// text. Every other variant round-trips losslessly.
+    pub(crate) fn clone_structured(&self) -> Self {
+        match self {
+            Self::Parse(e) => Self::Parse(e.clone()),
+            Self::Resolve(e) => Self::Custom(e.to_string()),
+            Self::Unexpected {
+                expected,
+                found,
+                span,
+            } => Self::Unexpected {
+                expected,
+                found: found.clone(),
+                span: *span,
+            },
+            Self::UndefinedAlias { name, span } => Self::UndefinedAlias {
+                name: name.clone(),
+                span: *span,
+            },
+            Self::LimitExceeded(msg) => Self::LimitExceeded(msg.clone()),
+            Self::MoreThanOneDocument => Self::MoreThanOneDocument,
+            Self::Custom(msg) => Self::Custom(msg.clone()),
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

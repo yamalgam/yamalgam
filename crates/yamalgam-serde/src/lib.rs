@@ -24,14 +24,24 @@ pub use error::Error;
 /// # Errors
 ///
 /// Returns [`Error`] on parse failure, type mismatch, or multiple documents.
+/// Errors keep their structured form — variants and [`Span`]s survive the
+/// erased-serde boundary.
+///
+/// [`Span`]: yamalgam_core::Span
 pub fn from_str<'de, T: serde::Deserialize<'de>>(input: &'de str) -> Result<T, Error> {
     let mut de = Deserializer::from_str(input);
-    let value = {
+    let result = {
         let mut erased = <dyn erased_serde::Deserializer>::erase(&mut de);
-        erased_serde::deserialize::<T>(&mut erased)?
+        erased_serde::deserialize::<T>(&mut erased)
     };
-    de.check_end()?;
-    Ok(value)
+    match result {
+        Ok(value) => {
+            de.clear_stashed();
+            de.check_end()?;
+            Ok(value)
+        }
+        Err(e) => Err(de.restore_stashed(Error::from(e))),
+    }
 }
 
 /// Deserialize a single YAML document with a full [`LoaderConfig`].
@@ -48,12 +58,18 @@ pub fn from_str_with_config<'de, T: serde::Deserialize<'de>>(
     config: &yamalgam_core::LoaderConfig,
 ) -> Result<T, Error> {
     let mut de = Deserializer::from_str_with_config(input, config);
-    let value = {
+    let result = {
         let mut erased = <dyn erased_serde::Deserializer>::erase(&mut de);
-        erased_serde::deserialize::<T>(&mut erased)?
+        erased_serde::deserialize::<T>(&mut erased)
     };
-    de.check_end()?;
-    Ok(value)
+    match result {
+        Ok(value) => {
+            de.clear_stashed();
+            de.check_end()?;
+            Ok(value)
+        }
+        Err(e) => Err(de.restore_stashed(Error::from(e))),
+    }
 }
 
 /// Deserialize from a reader.
