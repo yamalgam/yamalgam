@@ -229,6 +229,98 @@ impl From<f64> for Value {
 }
 
 // ---------------------------------------------------------------------------
+// serde Deserialize
+// ---------------------------------------------------------------------------
+
+impl<'de> serde::Deserialize<'de> for Value {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ValueVisitor)
+    }
+}
+
+struct ValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any YAML value")
+    }
+
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        serde::Deserialize::deserialize(deserializer)
+    }
+
+    fn visit_bool<E>(self, b: bool) -> Result<Value, E> {
+        Ok(Value::Bool(b))
+    }
+
+    fn visit_i64<E>(self, i: i64) -> Result<Value, E> {
+        Ok(Value::Integer(i))
+    }
+
+    fn visit_u64<E>(self, u: u64) -> Result<Value, E>
+    where
+        E: serde::de::Error,
+    {
+        // Value::Integer is i64; refuse to wrap or silently lose precision.
+        i64::try_from(u)
+            .map(Value::Integer)
+            .map_err(|_| E::custom(format!("integer {u} out of range for i64")))
+    }
+
+    fn visit_f64<E>(self, f: f64) -> Result<Value, E> {
+        Ok(Value::Float(f))
+    }
+
+    fn visit_str<E>(self, s: &str) -> Result<Value, E> {
+        Ok(Value::String(s.to_owned()))
+    }
+
+    fn visit_string<E>(self, s: String) -> Result<Value, E> {
+        Ok(Value::String(s))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(item) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(Value::Sequence(items))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        // Mapping::insert replaces duplicates — same semantics as the
+        // Composer, so both paths agree on duplicate-key documents.
+        let mut mapping = Mapping::new();
+        while let Some((key, value)) = map.next_entry()? {
+            mapping.insert(key, value);
+        }
+        Ok(Value::Mapping(mapping))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
@@ -315,5 +407,58 @@ mod tests {
 
         let keys: Vec<&Value> = m.keys().collect();
         assert_eq!(keys, vec![&Value::from("z"), &Value::from("a")]);
+    }
+
+    // -- serde Deserialize ---------------------------------------------------
+    //
+    // Driven through serde_json: it exercises visitor paths the yamalgam
+    // deserializer never hits (visit_u64 for positive integers).
+
+    #[test]
+    fn deserialize_value_via_serde_json() {
+        let v: Value = serde_json::from_str(
+            r#"{"name":"test","count":3,"ratio":0.5,"ok":true,"nothing":null,"items":[1,2]}"#,
+        )
+        .unwrap();
+        assert_eq!(v.get("name"), Some(&Value::from("test")));
+        assert_eq!(v.get("count"), Some(&Value::Integer(3)));
+        assert_eq!(v.get("ratio"), Some(&Value::Float(0.5)));
+        assert_eq!(v.get("ok"), Some(&Value::Bool(true)));
+        assert_eq!(v.get("nothing"), Some(&Value::Null));
+        assert_eq!(
+            v.get("items"),
+            Some(&Value::Sequence(vec![Value::Integer(1), Value::Integer(2)]))
+        );
+    }
+
+    #[test]
+    fn deserialize_value_negative_integer() {
+        let v: Value = serde_json::from_str("-7").unwrap();
+        assert_eq!(v, Value::Integer(-7));
+    }
+
+    #[test]
+    fn deserialize_value_u64_in_i64_range() {
+        // serde_json visits positive integers as u64.
+        let v: Value = serde_json::from_str("42").unwrap();
+        assert_eq!(v, Value::Integer(42));
+    }
+
+    #[test]
+    fn deserialize_value_u64_overflow_errors() {
+        // u64::MAX does not fit Value::Integer (i64) — must error, not wrap.
+        let result: Result<Value, _> = serde_json::from_str("18446744073709551615");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deserialize_value_duplicate_keys_last_wins() {
+        // Mapping::insert replaces — consistent with the Composer.
+        let v: Value = serde_json::from_str(r#"{"k":1,"k":2}"#).unwrap();
+        let Value::Mapping(m) = &v else {
+            panic!("expected mapping");
+        };
+        assert_eq!(m.len(), 1);
+        assert_eq!(v.get("k"), Some(&Value::Integer(2)));
     }
 }

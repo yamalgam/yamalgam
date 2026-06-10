@@ -1,0 +1,85 @@
+# GitLab CI exercising extends, anchors, merge keys, rules, and YAML
+# multiline scripts.
+stages:
+  - build
+  - test
+  - deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+default:
+  image: rust:1.89-slim
+  interruptible: true
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+
+.cache-template: &cargo-cache
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo/registry/cache
+      - target/
+    policy: pull-push
+
+.base-job:
+  <<: *cargo-cache
+  before_script:
+    - export CARGO_HOME="$CI_PROJECT_DIR/.cargo"
+    - rustc --version && cargo --version
+
+build:
+  extends: .base-job
+  stage: build
+  script:
+    - cargo build --workspace --locked
+  artifacts:
+    paths:
+      - target/debug/
+    expire_in: 1 hour
+
+test:unit:
+  extends: .base-job
+  stage: test
+  needs: ["build"]
+  script:
+    - |
+      cargo nextest run --workspace --profile ci
+      cargo test --doc --workspace
+  coverage: '/^\d+\.\d+% coverage/'
+  artifacts:
+    reports:
+      junit: target/nextest/ci/junit.xml
+
+test:lint:
+  extends: .base-job
+  stage: test
+  needs: []
+  script:
+    - cargo fmt --all --check
+    - cargo clippy --workspace -- -D warnings
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+      changes:
+        - "**/*.rs"
+        - Cargo.toml
+    - when: manual
+      allow_failure: true
+
+deploy:crates:
+  stage: deploy
+  needs: ["test:unit", "test:lint"]
+  environment:
+    name: crates-io
+    url: https://crates.io
+  script:
+    - cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/

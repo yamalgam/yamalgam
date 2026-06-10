@@ -1927,9 +1927,12 @@ version = "0.1.0"
 dependencies = [
  "datatest-stable",
  "serde",
+ "yamalgam-compose",
+ "yamalgam-core",
  "yamalgam-cst",
  "yamalgam-parser",
  "yamalgam-scanner",
+ "yamalgam-serde",
 ]
 
 [[package]]
@@ -1999,6 +2002,7 @@ dependencies = [
  "erased-serde",
  "serde",
  "serde_json",
+ "yamalgam-compose",
  "yamalgam-core",
  "yamalgam-parser",
 ]

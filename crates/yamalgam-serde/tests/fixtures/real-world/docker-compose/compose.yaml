@@ -1,0 +1,90 @@
+# Compose file exercising anchors, aliases, and merge keys the way
+# production compose files actually do.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 10s
+
+x-app-base: &app-base
+  restart: unless-stopped
+  logging: *default-logging
+  networks:
+    - backend
+  environment: &base-env
+    TZ: America/New_York
+    LOG_FORMAT: json
+
+services:
+  api:
+    <<: *app-base
+    image: ghcr.io/example/api:1.8.2
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      args:
+        RUST_VERSION: "1.89"
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:9090:9090"
+    environment:
+      <<: *base-env
+      DATABASE_URL: postgres://app:secret@db:5432/app
+      REDIS_URL: redis://cache:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+
+  worker:
+    <<: *app-base
+    image: ghcr.io/example/api:1.8.2
+    command: ["worker", "--queues", "default,mail", "--concurrency", "4"]
+    environment:
+      <<: *base-env
+      DATABASE_URL: postgres://app:secret@db:5432/app
+
+  db:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+    networks:
+      - backend
+
+  cache:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - backend
+
+volumes:
+  db-data:
+    driver: local
+
+networks:
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

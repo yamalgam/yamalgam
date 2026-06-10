@@ -1,0 +1,131 @@
+openapi: 3.1.0
+info:
+  title: Inventory API
+  version: 1.4.0
+  description: |
+    Manage warehouse inventory.
+
+    Supports cursor pagination and conditional requests via `ETag`.
+  contact:
+    email: api@example.com
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+
+servers:
+  - url: https://api.example.com/v1
+  - url: https://{region}.api.example.com/v1
+    variables:
+      region:
+        default: us-east-1
+        enum: [us-east-1, eu-west-1, ap-southeast-2]
+
+paths:
+  /items:
+    get:
+      operationId: listItems
+      summary: List inventory items
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: A page of items.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Item"
+                  next_cursor:
+                    type: [string, "null"]
+    post:
+      operationId: createItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewItem"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /items/{sku}:
+    parameters:
+      - name: sku
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^[A-Z]{2,4}-[0-9]{4,8}$"
+    delete:
+      operationId: deleteItem
+      responses:
+        "204":
+          description: Deleted.
+
+components:
+  schemas:
+    Item:
+      allOf:
+        - $ref: "#/components/schemas/NewItem"
+        - type: object
+          required: [created_at]
+          properties:
+            created_at:
+              type: string
+              format: date-time
+    NewItem:
+      type: object
+      required: [sku, name, quantity]
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+          maxLength: 255
+        quantity:
+          type: integer
+          minimum: 0
+        unit_price:
+          type: number
+          exclusiveMinimum: 0
+        tags:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+  responses:
+    Conflict:
+      description: SKU already exists.
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            properties:
+              detail:
+                type: string
+
+security:
+  - bearerAuth: []

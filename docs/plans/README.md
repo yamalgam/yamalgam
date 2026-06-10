@@ -90,16 +90,25 @@ Round-trip fidelity `cst.to_text() == input`: 339/351 YAML Test Suite
 - Design: `2026-03-09-cst-design.md`, `2026-03-09-full-fidelity-event-stream-design.md`
 
 ## Milestone 9 — Streaming serde Deserializer
-**Status:** Core complete (PRs #82-#83) — integration tests remaining
+**Status:** Complete
 
 `yamalgam::from_str::<T>()` drop-in for serde_yaml, plus
 `Deserializer::documents::<T>()` for multi-doc streaming. Erased-serde
 pattern internally — parser event-walking never monomorphizes. Anchor
-buffering via event replay. Config-aware (`from_str_with_config`).
-Consumer crates extracted along the way: `yamalgam-compose`, `yamalgam-cst`.
+buffering via event replay (aliases expand at buffer time — compose-time
+semantics, immune to redefinition cycles). Config-aware
+(`from_str_with_config`). Consumer crates extracted along the way:
+`yamalgam-compose`, `yamalgam-cst`.
 
-Remaining: real-world fixture corpus, serde_yaml behavioral parity tests,
-serde round-trip in the compliance harness (needs `Deserialize for Value`).
+Integration: `Deserialize for Value`, serde round-trip in the compliance
+harness — Composer and serde agree on all 351 YAML Test Suite files with
+an empty allowlist. 408-file real-world fixture corpus (yq, yamlfmt,
+prettier, hand-written k8s/compose/CI/ansible/helm), serde_yaml parity
+tests with documented divergences. 1699 tests.
+
+Known parser gap surfaced by fixtures (tracked in `KNOWN_FAILING`,
+`yamalgam-serde/tests/integration.rs`): single-pair implicit mapping
+entries in flow sequences (`[a: b]`, spec example 7.21).
 
 - Design: `2026-03-09-streaming-serde-deserializer-design.md`
 - Plan: `2026-03-09-m9-serde-implementation-plan.md`

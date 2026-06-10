@@ -15,6 +15,9 @@ yamalgam-scanner = { path = "../yamalgam-scanner" }
 
 [dev-dependencies]
 datatest-stable = "0.3"
+yamalgam-compose = { path = "../yamalgam-compose" }
+yamalgam-core = { path = "../yamalgam-core" }
+yamalgam-serde = { path = "../yamalgam-serde" }
 
 [[test]]
 name = "compliance"
@@ -22,6 +25,10 @@ harness = false
 
 [[test]]
 name = "cst_round_trip"
+harness = false
+
+[[test]]
+name = "serde_round_trip"
 harness = false
 
 [lints]
