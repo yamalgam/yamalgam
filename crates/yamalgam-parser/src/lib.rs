@@ -25,5 +25,5 @@ pub mod resolve;
 pub use error::ParseError;
 pub use event::{CollectionStyle, Event};
 pub use parser::Parser;
-pub use resolve::{NoopResolver, ResolveError, ResolvedEvents, Resolver};
+pub use resolve::{NoopResolver, ResolveError, ResolvedEventBuf, ResolvedEvents, Resolver};
 pub use yamalgam_scanner::ScalarStyle;
