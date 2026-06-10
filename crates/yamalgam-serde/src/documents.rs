@@ -47,7 +47,7 @@ where
                 Ok(ev) => ev,
                 Err(e) => {
                     self.done = true;
-                    return Some(Err(e));
+                    return Some(Err(self.de.restore_stashed(e)));
                 }
             };
 
@@ -60,7 +60,7 @@ where
                     // Consume the DocumentEnd and loop to check for next doc.
                     if let Err(e) = self.de.next_raw_event() {
                         self.done = true;
-                        return Some(Err(e));
+                        return Some(Err(self.de.restore_stashed(e)));
                     }
                     continue;
                 }
@@ -68,12 +68,17 @@ where
             }
         }
 
-        // Deserialize one T from the current document's content.
+        // Deserialize one T from the current document's content. Errors
+        // may be origin-stashed placeholders (see `Deserializer::stash`) —
+        // restore the structured form before handing them to the caller.
         match T::deserialize(&mut self.de) {
-            Ok(value) => Some(Ok(value)),
+            Ok(value) => {
+                self.de.clear_stashed();
+                Some(Ok(value))
+            }
             Err(e) => {
                 self.done = true;
-                Some(Err(e))
+                Some(Err(self.de.restore_stashed(e)))
             }
         }
     }

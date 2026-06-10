@@ -38,6 +38,11 @@ pub struct Deserializer<'input> {
     alias_expansions: usize,
     /// Replay buffer: drained before the main event iterator.
     replay_buffer: VecDeque<Event<'input>>,
+    /// Structured error stashed at its point of origin so it can be
+    /// restored after serde machinery flattens it to text. See [`stash`].
+    ///
+    /// [`stash`]: Deserializer::stash
+    stashed_error: Option<Error>,
 }
 
 impl<'input> Deserializer<'input> {
@@ -56,6 +61,7 @@ impl<'input> Deserializer<'input> {
             anchor_count: 0,
             alias_expansions: 0,
             replay_buffer: VecDeque::new(),
+            stashed_error: None,
         }
     }
 
@@ -74,6 +80,7 @@ impl<'input> Deserializer<'input> {
             anchor_count: 0,
             alias_expansions: 0,
             replay_buffer: VecDeque::new(),
+            stashed_error: None,
         }
     }
 
@@ -111,12 +118,14 @@ impl<'input> Deserializer<'input> {
             } else {
                 self.events
                     .next()
-                    .ok_or_else(|| Error::Unexpected {
-                        expected: "event",
-                        found: "end of stream".to_string(),
-                        span: None,
+                    .ok_or_else(|| {
+                        self.stash(Error::Unexpected {
+                            expected: "event",
+                            found: "end of stream".to_string(),
+                            span: None,
+                        })
                     })?
-                    .map_err(Error::Parse)?
+                    .map_err(|e| self.stash(Error::Parse(e)))?
             };
 
             // Skip structural events that serde consumers ignore.
@@ -232,15 +241,16 @@ impl<'input> Deserializer<'input> {
                             // so the splice cannot recurse.
                             let target =
                                 self.anchors.get(name.as_ref()).cloned().ok_or_else(|| {
-                                    Error::UndefinedAlias {
+                                    let e = Error::UndefinedAlias {
                                         name: name.as_ref().to_owned(),
                                         span: Some(*span),
-                                    }
+                                    };
+                                    self.stash(e)
                                 })?;
                             self.alias_expansions += 1;
                             self.limits
                                 .check_alias_expansions(self.alias_expansions)
-                                .map_err(Error::LimitExceeded)?;
+                                .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
                             buffer.extend(target);
                         }
                         _ => buffer.push(sub),
@@ -258,19 +268,18 @@ impl<'input> Deserializer<'input> {
             Event::Alias { ref name, ref span } => {
                 let anchor_name = name.as_ref();
                 let span_copy = *span;
-                let buffered = self
-                    .anchors
-                    .get(anchor_name)
-                    .ok_or_else(|| Error::UndefinedAlias {
+                let buffered = self.anchors.get(anchor_name).cloned().ok_or_else(|| {
+                    let e = Error::UndefinedAlias {
                         name: anchor_name.to_owned(),
                         span: Some(span_copy),
-                    })?
-                    .clone();
+                    };
+                    self.stash(e)
+                })?;
 
                 self.alias_expansions += 1;
                 self.limits
                     .check_alias_expansions(self.alias_expansions)
-                    .map_err(Error::LimitExceeded)?;
+                    .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
 
                 // Splice buffered events at the FRONT of the replay buffer.
                 // The alias may itself have come from a replayed buffer; its
@@ -290,9 +299,43 @@ impl<'input> Deserializer<'input> {
         self.anchor_count += 1;
         self.limits
             .check_anchor_count(self.anchor_count)
-            .map_err(Error::LimitExceeded)?;
+            .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
         self.anchors.insert(name, events);
         Ok(())
+    }
+
+    /// Record a structured clone of an error at its point of origin, then
+    /// return the error itself.
+    ///
+    /// Direct callers receive the structured error unchanged. When the
+    /// error instead crosses erased-serde (or any serde bridging that
+    /// flattens foreign errors to `Display` text), the entry points
+    /// (`from_str*`, `Documents::next`) call
+    /// [`restore_stashed`](Deserializer::restore_stashed) to swap the
+    /// stashed structured clone back in. Last error wins.
+    pub(crate) fn stash(&mut self, e: Error) -> Error {
+        self.stashed_error = Some(e.clone_structured());
+        e
+    }
+
+    /// Restore the stashed structured error if `outer` carries its message.
+    ///
+    /// If the rendered text matches, the original error propagated through
+    /// serde unchanged and the structured form is returned. Otherwise serde
+    /// synthesized a different error along the way (e.g. an untagged-enum
+    /// mismatch) — `outer` stands and the stale stash is dropped.
+    pub(crate) fn restore_stashed(&mut self, outer: Error) -> Error {
+        match self.stashed_error.take() {
+            Some(stashed) if stashed.to_string() == outer.to_string() => stashed,
+            _ => outer,
+        }
+    }
+
+    /// Drop any stashed error left behind by recovered deserialization
+    /// attempts (e.g. untagged enum variants that failed before one
+    /// succeeded).
+    pub(crate) fn clear_stashed(&mut self) {
+        self.stashed_error = None;
     }
 
     /// Peek the next raw event without consuming it.
@@ -380,11 +423,15 @@ impl<'input> Deserializer<'input> {
             Event::Scalar {
                 value, style, span, ..
             } => Ok((value, style, span)),
-            other => Err(Error::Unexpected {
-                expected: "scalar",
-                found: format!("{other:?}"),
-                span: other.span(),
-            }),
+            other => {
+                let found = format!("{other:?}");
+                let span = other.span();
+                Err(self.stash(Error::Unexpected {
+                    expected: "scalar",
+                    found,
+                    span,
+                }))
+            }
         }
     }
 
@@ -419,11 +466,11 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         match self.peek_event()? {
             Event::Scalar { .. } => {
                 let Event::Scalar { value, style, .. } = self.next_event()? else {
-                    return Err(Error::Unexpected {
+                    return Err(self.stash(Error::Unexpected {
                         expected: "scalar event after scalar peek",
                         found: "event stream changed between peek and next".to_string(),
                         span: None,
-                    });
+                    }));
                 };
 
                 match style {
@@ -461,11 +508,15 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                 let _ = self.next_event()?;
                 visitor.visit_unit()
             }
-            other => Err(Error::Unexpected {
-                expected: "scalar, sequence, or mapping",
-                found: format!("{other:?}"),
-                span: other.span(),
-            }),
+            other => {
+                let found = format!("{other:?}");
+                let span = other.span();
+                Err(self.stash(Error::Unexpected {
+                    expected: "scalar, sequence, or mapping",
+                    found,
+                    span,
+                }))
+            }
         }
     }
 
@@ -474,18 +525,20 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         if style == ScalarStyle::Plain {
             match self.tag_resolver.resolve_scalar(&value) {
                 Value::Bool(b) => visitor.visit_bool(b),
-                _ => Err(Error::Unexpected {
+                _ => Err(self.stash(Error::Unexpected {
                     expected: "boolean",
                     found: value.to_string(),
                     span: Some(span),
-                }),
+                })),
             }
         } else {
             // Quoted scalars: try direct parse (only "true"/"false").
-            let b = value.parse::<bool>().map_err(|_| Error::Unexpected {
-                expected: "boolean",
-                found: value.to_string(),
-                span: Some(span),
+            let b = value.parse::<bool>().map_err(|_| {
+                self.stash(Error::Unexpected {
+                    expected: "boolean",
+                    found: value.to_string(),
+                    span: Some(span),
+                })
             })?;
             visitor.visit_bool(b)
         }
@@ -544,17 +597,19 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let (value, _style, span) = self.expect_scalar()?;
         let mut chars = value.chars();
-        let c = chars.next().ok_or(Error::Unexpected {
-            expected: "single character",
-            found: String::new(),
-            span: Some(span),
-        })?;
+        let Some(c) = chars.next() else {
+            return Err(self.stash(Error::Unexpected {
+                expected: "single character",
+                found: String::new(),
+                span: Some(span),
+            }));
+        };
         if chars.next().is_some() {
-            return Err(Error::Unexpected {
+            return Err(self.stash(Error::Unexpected {
                 expected: "single character",
                 found: format!("string of length > 1: {value:?}"),
                 span: Some(span),
-            });
+            }));
         }
         visitor.visit_char(c)
     }
@@ -602,28 +657,32 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                 if style == ScalarStyle::Plain {
                     match self.tag_resolver.resolve_scalar(&value) {
                         Value::Null => visitor.visit_unit(),
-                        _ => Err(Error::Unexpected {
+                        _ => Err(self.stash(Error::Unexpected {
                             expected: "null",
                             found: value.to_string(),
                             span: Some(span),
-                        }),
+                        })),
                     }
                 } else if value.is_empty() {
                     // An empty quoted string can also represent unit.
                     visitor.visit_unit()
                 } else {
-                    Err(Error::Unexpected {
+                    Err(self.stash(Error::Unexpected {
                         expected: "null",
                         found: value.to_string(),
                         span: Some(span),
-                    })
+                    }))
                 }
             }
-            other => Err(Error::Unexpected {
-                expected: "null",
-                found: format!("{other:?}"),
-                span: other.span(),
-            }),
+            other => {
+                let found = format!("{other:?}");
+                let span = other.span();
+                Err(self.stash(Error::Unexpected {
+                    expected: "null",
+                    found,
+                    span,
+                }))
+            }
         }
     }
 
@@ -659,11 +718,15 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                 }
                 Ok(value)
             }
-            other => Err(Error::Unexpected {
-                expected: "sequence",
-                found: format!("{other:?}"),
-                span: other.span(),
-            }),
+            other => {
+                let found = format!("{other:?}");
+                let span = other.span();
+                Err(self.stash(Error::Unexpected {
+                    expected: "sequence",
+                    found,
+                    span,
+                }))
+            }
         }
     }
 
@@ -699,11 +762,15 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                 }
                 Ok(value)
             }
-            other => Err(Error::Unexpected {
-                expected: "mapping",
-                found: format!("{other:?}"),
-                span: other.span(),
-            }),
+            other => {
+                let found = format!("{other:?}");
+                let span = other.span();
+                Err(self.stash(Error::Unexpected {
+                    expected: "mapping",
+                    found,
+                    span,
+                }))
+            }
         }
     }
 
@@ -743,11 +810,15 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                     in_mapping: true,
                 })
             }
-            other => Err(Error::Unexpected {
-                expected: "string or mapping (for enum)",
-                found: format!("{other:?}"),
-                span: other.span(),
-            }),
+            other => {
+                let found = format!("{other:?}");
+                let span = other.span();
+                Err(self.stash(Error::Unexpected {
+                    expected: "string or mapping (for enum)",
+                    found,
+                    span,
+                }))
+            }
         }
     }
 
@@ -773,18 +844,20 @@ impl Deserializer<'_> {
         if style == ScalarStyle::Plain {
             match self.tag_resolver.resolve_scalar(&value) {
                 Value::Integer(i) => Ok(i),
-                _ => Err(Error::Unexpected {
+                _ => Err(self.stash(Error::Unexpected {
                     expected: "integer",
                     found: value.to_string(),
                     span: Some(span),
-                }),
+                })),
             }
         } else {
             // Quoted scalars: try direct parse.
-            value.parse::<i64>().map_err(|_| Error::Unexpected {
-                expected: "integer",
-                found: value.to_string(),
-                span: Some(span),
+            value.parse::<i64>().map_err(|_| {
+                self.stash(Error::Unexpected {
+                    expected: "integer",
+                    found: value.to_string(),
+                    span: Some(span),
+                })
             })
         }
     }
@@ -802,10 +875,12 @@ impl Deserializer<'_> {
                     depth += 1;
                 }
                 Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
-                    depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
-                        expected: "a value to skip",
-                        found: "unmatched container end event".to_string(),
-                        span: event.span(),
+                    depth = depth.checked_sub(1).ok_or_else(|| {
+                        self.stash(Error::Unexpected {
+                            expected: "a value to skip",
+                            found: "unmatched container end event".to_string(),
+                            span: event.span(),
+                        })
                     })?;
                 }
                 _ => {}
@@ -823,18 +898,20 @@ impl Deserializer<'_> {
             match self.tag_resolver.resolve_scalar(&value) {
                 Value::Float(f) => Ok(f),
                 Value::Integer(i) => Ok(i as f64),
-                _ => Err(Error::Unexpected {
+                _ => Err(self.stash(Error::Unexpected {
                     expected: "float",
                     found: value.to_string(),
                     span: Some(span),
-                }),
+                })),
             }
         } else {
             // Quoted scalars: try direct parse.
-            value.parse::<f64>().map_err(|_| Error::Unexpected {
-                expected: "float",
-                found: value.to_string(),
-                span: Some(span),
+            value.parse::<f64>().map_err(|_| {
+                self.stash(Error::Unexpected {
+                    expected: "float",
+                    found: value.to_string(),
+                    span: Some(span),
+                })
             })
         }
     }
@@ -948,10 +1025,12 @@ impl SeqAccess<'_, '_> {
                     return Ok(());
                 }
                 Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
-                    depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
-                        expected: "balanced events while draining sequence",
-                        found: "unmatched container end event".to_string(),
-                        span: event.span(),
+                    depth = depth.checked_sub(1).ok_or_else(|| {
+                        self.de.stash(Error::Unexpected {
+                            expected: "balanced events while draining sequence",
+                            found: "unmatched container end event".to_string(),
+                            span: event.span(),
+                        })
                     })?;
                 }
                 _ => {}
@@ -1001,10 +1080,12 @@ impl MapAccess<'_, '_> {
                     return Ok(());
                 }
                 Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
-                    depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
-                        expected: "balanced events while draining mapping",
-                        found: "unmatched container end event".to_string(),
-                        span: event.span(),
+                    depth = depth.checked_sub(1).ok_or_else(|| {
+                        self.de.stash(Error::Unexpected {
+                            expected: "balanced events while draining mapping",
+                            found: "unmatched container end event".to_string(),
+                            span: event.span(),
+                        })
                     })?;
                 }
                 _ => {}
@@ -1072,11 +1153,15 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
             self.de.skip_value()?;
             match self.de.next_event()? {
                 Event::MappingEnd { .. } => Ok(()),
-                other => Err(Error::Unexpected {
-                    expected: "mapping end",
-                    found: format!("{other:?}"),
-                    span: other.span(),
-                }),
+                other => {
+                    let found = format!("{other:?}");
+                    let span = other.span();
+                    Err(self.de.stash(Error::Unexpected {
+                        expected: "mapping end",
+                        found,
+                        span,
+                    }))
+                }
             }
         } else {
             Ok(())
@@ -1089,11 +1174,13 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
             match self.de.next_event()? {
                 Event::MappingEnd { .. } => {}
                 other => {
-                    return Err(Error::Unexpected {
+                    let found = format!("{other:?}");
+                    let span = other.span();
+                    return Err(self.de.stash(Error::Unexpected {
                         expected: "mapping end",
-                        found: format!("{other:?}"),
-                        span: other.span(),
-                    });
+                        found,
+                        span,
+                    }));
                 }
             }
         }
@@ -1106,11 +1193,13 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
             match self.de.next_event()? {
                 Event::MappingEnd { .. } => {}
                 other => {
-                    return Err(Error::Unexpected {
+                    let found = format!("{other:?}");
+                    let span = other.span();
+                    return Err(self.de.stash(Error::Unexpected {
                         expected: "mapping end",
-                        found: format!("{other:?}"),
-                        span: other.span(),
-                    });
+                        found,
+                        span,
+                    }));
                 }
             }
         }
@@ -1127,11 +1216,13 @@ impl<'de> de::VariantAccess<'de> for EnumAccess<'_, 'de> {
             match self.de.next_event()? {
                 Event::MappingEnd { .. } => {}
                 other => {
-                    return Err(Error::Unexpected {
+                    let found = format!("{other:?}");
+                    let span = other.span();
+                    return Err(self.de.stash(Error::Unexpected {
                         expected: "mapping end",
-                        found: format!("{other:?}"),
-                        span: other.span(),
-                    });
+                        found,
+                        span,
+                    }));
                 }
             }
         }
