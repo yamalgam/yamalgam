@@ -9,15 +9,19 @@
 //!
 //! The following configuration file formats are supported:
 //! - TOML (`.toml`)
-//! - YAML (`.yaml`, `.yml`)
 //! - JSON (`.json`)
+//!
+//! YAML config is intentionally unsupported for now: figment's `yaml`
+//! feature pulls the deprecated `serde_yaml` (and `unsafe-libyaml`) into
+//! the dependency tree. It returns once config flows through yamalgam's
+//! own parser.
 //!
 //! # Config file locations (in order of precedence, highest first):
 //! - `.yamalgam.<ext>` in current directory or any parent
 //! - `yamalgam.<ext>` in current directory or any parent
 //! - `~/.config/yamalgam/config.<ext>` (user config)
 //!
-//! Where `<ext>` is one of: `toml`, `yaml`, `yml`, `json`
+//! Where `<ext>` is one of: `toml`, `json`
 //!
 //! # Example
 //! ```no_run
@@ -34,7 +38,7 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 use figment::Figment;
-use figment::providers::{Format, Json, Serialized, Toml, Yaml};
+use figment::providers::{Format, Json, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, ConfigResult};
@@ -42,7 +46,7 @@ use crate::error::{ConfigError, ConfigResult};
 /// The configuration for yamalgam.
 ///
 /// Add your configuration fields here. This struct is deserialized from
-/// config files found during discovery (TOML, YAML, or JSON).
+/// config files found during discovery (TOML or JSON).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Config {
@@ -110,7 +114,7 @@ impl ConfigSources {
 }
 
 /// Supported configuration file extensions (in order of preference).
-const CONFIG_EXTENSIONS: &[&str] = &["toml", "yaml", "yml", "json"];
+const CONFIG_EXTENSIONS: &[&str] = &["toml", "json"];
 
 /// Application name for XDG directory lookup and config file names.
 const APP_NAME: &str = "yamalgam";
@@ -198,7 +202,7 @@ impl ConfigLoader {
         if self.include_user_config
             && let Some(user_config) = self.find_user_config()
         {
-            figment = Self::merge_file(figment, &user_config);
+            figment = Self::merge_file(figment, &user_config)?;
             sources.user_file = Some(user_config);
         }
 
@@ -206,13 +210,13 @@ impl ConfigLoader {
         if let Some(ref root) = self.project_search_root
             && let Some(project_config) = self.find_project_config(root)
         {
-            figment = Self::merge_file(figment, &project_config);
+            figment = Self::merge_file(figment, &project_config)?;
             sources.project_file = Some(project_config);
         }
 
         // Add explicit files (highest precedence)
         for file in &self.explicit_files {
-            figment = Self::merge_file(figment, file);
+            figment = Self::merge_file(figment, file)?;
         }
         sources.explicit_files = self.explicit_files;
 
@@ -295,12 +299,16 @@ impl ConfigLoader {
     }
 
     /// Merge a config file into the figment, detecting format from extension.
-    fn merge_file(figment: Figment, path: &Utf8Path) -> Figment {
+    ///
+    /// YAML files are rejected — see the module docs for why.
+    fn merge_file(figment: Figment, path: &Utf8Path) -> ConfigResult<Figment> {
         match path.extension() {
-            Some("toml") => figment.merge(Toml::file_exact(path.as_str())),
-            Some("yaml" | "yml") => figment.merge(Yaml::file_exact(path.as_str())),
-            Some("json") => figment.merge(Json::file_exact(path.as_str())),
-            _ => figment.merge(Toml::file_exact(path.as_str())),
+            Some("toml") => Ok(figment.merge(Toml::file_exact(path.as_str()))),
+            Some("yaml" | "yml") => Err(ConfigError::UnsupportedFormat {
+                path: path.to_string(),
+            }),
+            Some("json") => Ok(figment.merge(Json::file_exact(path.as_str()))),
+            _ => Ok(figment.merge(Toml::file_exact(path.as_str()))),
         }
     }
 }
@@ -424,6 +432,39 @@ log_dir = "/tmp/yamalgam"
 
         // Later file wins
         assert_eq!(config.log_level, LogLevel::Error);
+    }
+
+    #[test]
+    fn test_explicit_yaml_config_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        fs::write(&config_path, "log_level: debug\n").unwrap();
+        let config_path = Utf8PathBuf::try_from(config_path).unwrap();
+
+        let result = ConfigLoader::new()
+            .with_user_config(false)
+            .with_file(&config_path)
+            .load();
+
+        assert!(matches!(result, Err(ConfigError::UnsupportedFormat { .. })));
+    }
+
+    #[test]
+    fn test_yaml_project_config_not_discovered() {
+        let tmp = TempDir::new().unwrap();
+        let project_dir = tmp.path().join("project");
+        fs::create_dir_all(project_dir.join(".git")).unwrap();
+        fs::write(project_dir.join(".yamalgam.yaml"), "log_level: debug\n").unwrap();
+        let project_dir = Utf8PathBuf::try_from(project_dir).unwrap();
+
+        let (config, sources) = ConfigLoader::new()
+            .with_user_config(false)
+            .with_project_search(&project_dir)
+            .load()
+            .unwrap();
+
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert!(sources.project_file.is_none());
     }
 
     #[test]

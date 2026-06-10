@@ -754,7 +754,11 @@ impl Deserializer<'_> {
                     depth += 1;
                 }
                 Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
-                    depth -= 1;
+                    depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
+                        expected: "a value to skip",
+                        found: "unmatched container end event".to_string(),
+                        span: None,
+                    })?;
                 }
                 _ => {}
             }
@@ -895,7 +899,13 @@ impl SeqAccess<'_, '_> {
                     self.finished = true;
                     return Ok(());
                 }
-                Event::SequenceEnd { .. } | Event::MappingEnd { .. } => depth -= 1,
+                Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
+                    depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
+                        expected: "balanced events while draining sequence",
+                        found: "unmatched container end event".to_string(),
+                        span: None,
+                    })?;
+                }
                 _ => {}
             }
         }
@@ -942,7 +952,13 @@ impl MapAccess<'_, '_> {
                     self.finished = true;
                     return Ok(());
                 }
-                Event::SequenceEnd { .. } | Event::MappingEnd { .. } => depth -= 1,
+                Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
+                    depth = depth.checked_sub(1).ok_or_else(|| Error::Unexpected {
+                        expected: "balanced events while draining mapping",
+                        found: "unmatched container end event".to_string(),
+                        span: None,
+                    })?;
+                }
                 _ => {}
             }
         }

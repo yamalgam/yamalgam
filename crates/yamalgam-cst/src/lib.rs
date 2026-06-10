@@ -487,7 +487,10 @@ impl<'input> CstBuilder<'input> {
         }
         if span.start.offset > self.last_offset {
             let ws_start = self.last_offset;
-            let ws_end = span.start.offset;
+            let ws_end = span.start.offset.min(self.source.len());
+            if ws_start >= ws_end {
+                return;
+            }
             let ws_text = &self.source[ws_start..ws_end];
             if !ws_text.is_empty() {
                 let ws_span = Span {
