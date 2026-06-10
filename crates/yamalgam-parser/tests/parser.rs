@@ -38,11 +38,12 @@ fn iterator_returns_none_after_stream_end() {
 fn iterator_stops_on_error() {
     // Feed a broken token stream: scanner error should propagate.
     use yamalgam_scanner::Token;
-    use yamalgam_scanner::scanner::ScanError;
+    use yamalgam_scanner::scanner::{ScanError, ScanErrorKind};
 
-    let tokens: Vec<Result<Token<'_>, ScanError>> = vec![Err(ScanError {
-        message: "boom".to_string(),
-    })];
+    let tokens: Vec<Result<Token<'_>, ScanError>> = vec![Err(ScanError::new(
+        ScanErrorKind::UnexpectedCharacter,
+        "boom",
+    ))];
     let mut parser = Parser::from_tokens(tokens.into_iter());
     let result = parser.next();
     assert!(result.is_some());
