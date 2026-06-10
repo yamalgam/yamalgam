@@ -67,9 +67,16 @@ pub(crate) enum ParserState {
 /// Implements `Iterator<Item = Result<Event, ParseError>>` for
 /// idiomatic consumption. Wraps a [`Scanner`] by default, but can
 /// accept any token iterator via [`Parser::from_tokens`].
-pub struct Parser<'input> {
+///
+/// The token source is a type parameter (defaulting to [`Scanner`]) rather
+/// than a boxed trait object, so token production inlines into the parse
+/// loop — no virtual dispatch per token.
+pub struct Parser<'input, I = Scanner<'input>>
+where
+    I: Iterator<Item = Result<Token<'input>, ScanError>>,
+{
     /// Token source.
-    tokens: Box<dyn Iterator<Item = Result<Token<'input>, ScanError>> + 'input>,
+    tokens: I,
     /// Current parser state.
     state: ParserState,
     /// Stack of saved states for nested structures.
@@ -93,7 +100,7 @@ impl<'input> Parser<'input> {
     ///
     /// This constructs a [`Scanner`] internally.
     #[must_use]
-    pub fn new(input: &'input str) -> Self {
+    pub const fn new(input: &'input str) -> Self {
         Self::from_tokens(Scanner::new(input))
     }
 
@@ -106,15 +113,18 @@ impl<'input> Parser<'input> {
     pub fn with_config(input: &'input str, config: &LoaderConfig) -> Self {
         Self::from_tokens_with_config(Scanner::with_config(input, config), config)
     }
+}
 
+impl<'input, I> Parser<'input, I>
+where
+    I: Iterator<Item = Result<Token<'input>, ScanError>>,
+{
     /// Create a parser from an arbitrary token iterator.
     ///
     /// Useful for testing or for feeding tokens from a non-standard source.
-    pub fn from_tokens(
-        tokens: impl Iterator<Item = Result<Token<'input>, ScanError>> + 'input,
-    ) -> Self {
+    pub const fn from_tokens(tokens: I) -> Self {
         Self {
-            tokens: Box::new(tokens),
+            tokens,
             state: ParserState::StreamStart,
             state_stack: Vec::new(),
             peeked: None,
@@ -128,12 +138,9 @@ impl<'input> Parser<'input> {
     /// Create a parser from an arbitrary token iterator with a [`LoaderConfig`].
     ///
     /// The config's resource limits are enforced during parsing.
-    pub fn from_tokens_with_config(
-        tokens: impl Iterator<Item = Result<Token<'input>, ScanError>> + 'input,
-        config: &LoaderConfig,
-    ) -> Self {
+    pub fn from_tokens_with_config(tokens: I, config: &LoaderConfig) -> Self {
         Self {
-            tokens: Box::new(tokens),
+            tokens,
             state: ParserState::StreamStart,
             state_stack: Vec::new(),
             peeked: None,
@@ -1308,7 +1315,10 @@ impl<'input> Parser<'input> {
     }
 }
 
-impl<'input> Iterator for Parser<'input> {
+impl<'input, I> Iterator for Parser<'input, I>
+where
+    I: Iterator<Item = Result<Token<'input>, ScanError>>,
+{
     type Item = Result<Event<'input>, ParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -43,16 +43,34 @@ impl fmt::Display for Error {
             Self::Parse(e) => write!(f, "{e}"),
             Self::Resolve(e) => write!(f, "{e}"),
             Self::Unexpected {
-                expected, found, ..
+                expected,
+                found,
+                span,
             } => {
-                write!(f, "expected {expected}, found {found}")
+                write!(f, "expected {expected}, found {found}")?;
+                write_position(f, *span)
             }
-            Self::UndefinedAlias { name, .. } => write!(f, "undefined alias: *{name}"),
+            Self::UndefinedAlias { name, span } => {
+                write!(f, "undefined alias: *{name}")?;
+                write_position(f, *span)
+            }
             Self::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
             Self::MoreThanOneDocument => write!(f, "more than one document in input"),
             Self::Custom(msg) => write!(f, "{msg}"),
         }
     }
+}
+
+/// Append ` (line L, column C)` when a span is available (one-indexed).
+fn write_position(f: &mut fmt::Formatter<'_>, span: Option<Span>) -> fmt::Result {
+    span.map_or(Ok(()), |span| {
+        write!(
+            f,
+            " (line {}, column {})",
+            span.start.line + 1,
+            span.start.column + 1
+        )
+    })
 }
 
 impl std::error::Error for Error {

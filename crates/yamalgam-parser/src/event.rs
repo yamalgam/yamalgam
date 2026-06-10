@@ -143,6 +143,30 @@ pub enum Event<'input> {
 }
 
 impl Event<'_> {
+    /// Source span of this event.
+    ///
+    /// `StreamStart` and `StreamEnd` are synthetic and carry no span.
+    #[must_use]
+    pub const fn span(&self) -> Option<Span> {
+        match self {
+            Self::StreamStart | Self::StreamEnd => None,
+            Self::VersionDirective { span, .. }
+            | Self::TagDirective { span, .. }
+            | Self::DocumentStart { span, .. }
+            | Self::DocumentEnd { span, .. }
+            | Self::SequenceStart { span, .. }
+            | Self::SequenceEnd { span }
+            | Self::MappingStart { span, .. }
+            | Self::MappingEnd { span }
+            | Self::Scalar { span, .. }
+            | Self::Alias { span, .. }
+            | Self::Comment { span, .. }
+            | Self::BlockEntry { span }
+            | Self::KeyIndicator { span }
+            | Self::ValueIndicator { span } => Some(*span),
+        }
+    }
+
     /// Returns `true` for yamalgam-specific structural events that semantic
     /// consumers (Value, serde) should skip.
     #[must_use]
