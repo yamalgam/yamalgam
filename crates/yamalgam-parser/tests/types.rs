@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use pretty_assertions::assert_eq;
 use yamalgam_core::Span;
 use yamalgam_parser::{CollectionStyle, Event, ParseError, ScalarStyle};
-use yamalgam_scanner::scanner::ScanError;
+use yamalgam_scanner::scanner::{ScanError, ScanErrorKind};
 
 #[test]
 fn event_stream_start_constructable() {
@@ -149,9 +149,7 @@ fn collection_style_variants() {
 
 #[test]
 fn parse_error_from_scan_error() {
-    let scan_err = ScanError {
-        message: "test scan error".to_string(),
-    };
+    let scan_err = ScanError::new(ScanErrorKind::UnexpectedCharacter, "test scan error");
     let parse_err: ParseError = scan_err.into();
     assert!(matches!(parse_err, ParseError::Scan(_)));
     assert!(parse_err.to_string().contains("test scan error"));

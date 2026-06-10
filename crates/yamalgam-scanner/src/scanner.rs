@@ -34,8 +34,55 @@ enum State {
 /// Error type for scanner failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanError {
+    /// Machine-matchable error classification.
+    pub kind: ScanErrorKind,
     /// Human-readable error message.
     pub message: String,
+}
+
+impl ScanError {
+    /// Create a scan error from a kind and message.
+    #[must_use]
+    pub fn new(kind: ScanErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+/// Classification of scanner failures for typed error handling.
+///
+/// Carried alongside [`ScanError::message`]: the kind is for `match` arms,
+/// the message stays the human-readable detail. Non-exhaustive so new
+/// families can be added without breaking downstream matches.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScanErrorKind {
+    /// A quoted scalar or its escape sequence ran past the end of input.
+    UnterminatedScalar,
+    /// An invalid escape sequence in a double-quoted scalar.
+    InvalidEscape,
+    /// A tab character appeared where YAML requires spaces.
+    InvalidTab,
+    /// A `---` or `...` document marker appeared inside a quoted scalar.
+    DocumentMarkerInScalar,
+    /// A directive was malformed, duplicated, or misplaced.
+    InvalidDirective,
+    /// A tag or tag handle was malformed or undeclared.
+    InvalidTag,
+    /// Content violated the structural indentation rules.
+    InvalidIndentation,
+    /// A simple (implicit) key violated the single-line rule.
+    InvalidSimpleKey,
+    /// A block scalar header was malformed.
+    InvalidBlockScalarHeader,
+    /// A character appeared where the grammar does not allow it.
+    UnexpectedCharacter,
+    /// Content appeared where the document structure does not allow it.
+    UnexpectedContent,
+    /// A configured resource limit was exceeded.
+    LimitExceeded,
 }
 
 impl std::fmt::Display for ScanError {
@@ -322,6 +369,7 @@ impl<'input> Scanner<'input> {
                     // y[impl struct.indent.tab-forbidden]
                     if at_line_start && self.flow_level == 0 && self.indent >= 0 {
                         self.error = Some(ScanError {
+                            kind: ScanErrorKind::InvalidTab,
                             message: "tab character used for indentation".to_string(),
                         });
                         return;
@@ -341,6 +389,7 @@ impl<'input> Scanner<'input> {
             // blank lines (Y79Y#2) are fine (next char is newline/EOF).
             if tab_at_flow_line_start && !matches!(self.reader.peek(), Some('\n' | '\r') | None) {
                 self.error = Some(ScanError {
+                    kind: ScanErrorKind::InvalidTab,
                     message: "tab character used for indentation in flow context".to_string(),
                 });
                 return;
@@ -363,6 +412,7 @@ impl<'input> Scanner<'input> {
                 && (self.reader.mark().column as i32) <= self.flow_indent
             {
                 self.error = Some(ScanError {
+                    kind: ScanErrorKind::InvalidIndentation,
                     message: "flow content indented at or below block indent".to_string(),
                 });
                 return;
@@ -432,6 +482,7 @@ impl<'input> Scanner<'input> {
         let mark = self.reader.mark();
         if self.document_start_line == Some(mark.line) {
             self.error = Some(ScanError {
+                kind: ScanErrorKind::UnexpectedContent,
                 message: "block collection cannot start on the document start line".to_string(),
             });
             return;
@@ -447,7 +498,10 @@ impl<'input> Scanner<'input> {
             .config
             .check_depth(self.indent_stack.len() + self.flow_level as usize)
         {
-            self.error = Some(ScanError { message: msg });
+            self.error = Some(ScanError {
+                kind: ScanErrorKind::LimitExceeded,
+                message: msg,
+            });
             return;
         }
         self.indent = column;
@@ -575,6 +629,7 @@ impl<'input> Scanner<'input> {
                         "tag"
                     };
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::InvalidIndentation,
                         message: format!("invalid {kind_name} indent"),
                     });
                     return;
@@ -721,6 +776,7 @@ impl<'input> Scanner<'input> {
             // cref: fy_fetch_directive — libfyaml skips unknown directives with a warning
             self.skip_to_next_line();
             Err(ScanError {
+                kind: ScanErrorKind::InvalidDirective,
                 message: "unknown directive".to_string(),
             })
         }
@@ -738,6 +794,7 @@ impl<'input> Scanner<'input> {
         // SF5V: duplicate %YAML directive in the same prologue.
         if self.seen_yaml_directive {
             return Err(ScanError {
+                kind: ScanErrorKind::InvalidDirective,
                 message: "duplicate %YAML directive".to_string(),
             });
         }
@@ -756,6 +813,7 @@ impl<'input> Scanner<'input> {
         let ver_end = self.reader.mark();
         if ver_start.offset == ver_end.offset {
             return Err(ScanError {
+                kind: ScanErrorKind::InvalidDirective,
                 message: "expected version after %YAML".to_string(),
             });
         }
@@ -776,6 +834,7 @@ impl<'input> Scanner<'input> {
                 || !parts[1].chars().all(|c| c.is_ascii_digit())
             {
                 return Err(ScanError {
+                    kind: ScanErrorKind::InvalidDirective,
                     message: format!("unsupported version number '{version_str}'"),
                 });
             }
@@ -795,6 +854,7 @@ impl<'input> Scanner<'input> {
                 Some('#') if lookahead > 0 => {}
                 Some(c) => {
                     return Err(ScanError {
+                        kind: ScanErrorKind::InvalidDirective,
                         message: format!("invalid character '{c}' after YAML version"),
                     });
                 }
@@ -830,6 +890,7 @@ impl<'input> Scanner<'input> {
         let data_start = self.reader.mark();
         if self.reader.peek() != Some('!') {
             return Err(ScanError {
+                kind: ScanErrorKind::InvalidTag,
                 message: "expected '!' at start of tag handle".to_string(),
             });
         }
@@ -903,7 +964,10 @@ impl<'input> Scanner<'input> {
             .config
             .check_depth(self.indent_stack.len() + self.flow_level as usize)
         {
-            self.error = Some(ScanError { message: msg });
+            self.error = Some(ScanError {
+                kind: ScanErrorKind::LimitExceeded,
+                message: msg,
+            });
             return;
         }
         self.flow_is_mapping.push(c == '{');
@@ -919,6 +983,7 @@ impl<'input> Scanner<'input> {
         if self.flow_level == 0 {
             self.reader.advance();
             self.error = Some(ScanError {
+                kind: ScanErrorKind::UnexpectedCharacter,
                 message: format!("unexpected '{c}' outside of flow collection"),
             });
             return;
@@ -977,6 +1042,7 @@ impl<'input> Scanner<'input> {
                 }
                 Some(c) => {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::UnexpectedCharacter,
                         message: format!("invalid character '{c}' after flow collection close"),
                     });
                 }
@@ -1009,6 +1075,7 @@ impl<'input> Scanner<'input> {
         // are indentation — reject them.
         if self.tab_in_preceding_whitespace {
             self.error = Some(ScanError {
+                kind: ScanErrorKind::InvalidTab,
                 message: "tab character used for indentation of block entry".to_string(),
             });
             return;
@@ -1020,6 +1087,7 @@ impl<'input> Scanner<'input> {
         let col = mark.column as i32;
         if col > self.indent && self.last_block_token_line.is_some_and(|vl| vl == mark.line) {
             self.error = Some(ScanError {
+                kind: ScanErrorKind::UnexpectedContent,
                 message: "block sequence entries not allowed in this context".to_string(),
             });
             return;
@@ -1050,6 +1118,7 @@ impl<'input> Scanner<'input> {
         // Y79Y#8: tab immediately after `?` is indentation for the key content.
         if self.reader.peek() == Some('\t') {
             self.error = Some(ScanError {
+                kind: ScanErrorKind::InvalidTab,
                 message: "tab character used for indentation".to_string(),
             });
         }
@@ -1136,6 +1205,7 @@ impl<'input> Scanner<'input> {
                 };
                 if reject {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::InvalidSimpleKey,
                         message: "multiline simple key is not allowed".to_string(),
                     });
                     return;
@@ -1146,7 +1216,10 @@ impl<'input> Scanner<'input> {
                 if let Some(pos) = self.queue_position(sk.token_id) {
                     // Enforce max_key_bytes limit on the key's scalar data.
                     if let Err(msg) = self.config.check_key_size(self.queue[pos].atom.data.len()) {
-                        self.error = Some(ScanError { message: msg });
+                        self.error = Some(ScanError {
+                            kind: ScanErrorKind::LimitExceeded,
+                            message: msg,
+                        });
                         return;
                     }
 
@@ -1155,6 +1228,7 @@ impl<'input> Scanner<'input> {
                         // 9KBC, CXX2: block collections cannot start on the `---` line.
                         if self.document_start_line == Some(sk.mark.line) {
                             self.error = Some(ScanError {
+                                kind: ScanErrorKind::UnexpectedContent,
                                 message: "block collection cannot start on the document start line"
                                     .to_string(),
                             });
@@ -1174,7 +1248,10 @@ impl<'input> Scanner<'input> {
                             .config
                             .check_depth(self.indent_stack.len() + self.flow_level as usize)
                         {
-                            self.error = Some(ScanError { message: msg });
+                            self.error = Some(ScanError {
+                                kind: ScanErrorKind::LimitExceeded,
+                                message: msg,
+                            });
                             return;
                         }
                         self.indent = sk.mark.column as i32;
@@ -1211,6 +1288,7 @@ impl<'input> Scanner<'input> {
         // Y79Y#9: tab immediately after `:` is indentation for the value content.
         if self.flow_level == 0 && self.reader.peek() == Some('\t') {
             self.error = Some(ScanError {
+                kind: ScanErrorKind::InvalidTab,
                 message: "tab character used for indentation".to_string(),
             });
         }
@@ -1459,6 +1537,7 @@ impl<'input> Scanner<'input> {
             let c = self.reader.peek().unwrap_or('\0');
             self.reader.advance();
             self.error = Some(ScanError {
+                kind: ScanErrorKind::UnexpectedCharacter,
                 message: format!("unexpected character '{c}' in this context"),
             });
             return;
@@ -1481,6 +1560,7 @@ impl<'input> Scanner<'input> {
                 && is_blank_or_end(self.reader.peek_at(lookahead + 1))
             {
                 self.error = Some(ScanError {
+                    kind: ScanErrorKind::InvalidSimpleKey,
                     message: "invalid multiline plain key".to_string(),
                 });
                 return;
@@ -1489,7 +1569,10 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(msg) = self.config.check_scalar_size(text.len()) {
-            self.error = Some(ScanError { message: msg });
+            self.error = Some(ScanError {
+                kind: ScanErrorKind::LimitExceeded,
+                message: msg,
+            });
             return;
         }
 
@@ -1581,6 +1664,7 @@ impl<'input> Scanner<'input> {
             Some(',' | '[' | ']' | '{' | '}') if self.flow_level > 0 => {}
             Some(c) => {
                 self.error = Some(ScanError {
+                    kind: ScanErrorKind::InvalidTag,
                     message: format!("invalid character '{c}' after tag"),
                 });
                 return;
@@ -1599,6 +1683,7 @@ impl<'input> Scanner<'input> {
                 let handle = &tag_raw[..second_bang + 2]; // includes both `!`
                 if handle != "!!" && !self.tag_handles.iter().any(|h| h == handle) {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::InvalidTag,
                         message: format!("undeclared tag handle '{handle}'"),
                     });
                     return;
@@ -1754,6 +1839,7 @@ impl<'input> Scanner<'input> {
                 Some('#') if lookahead > 0 => {}
                 Some(c) => {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::InvalidBlockScalarHeader,
                         message: format!("invalid character '{c}' in block scalar header"),
                     });
                     return;
@@ -1781,6 +1867,7 @@ impl<'input> Scanner<'input> {
                 // detected indent level.
                 if max_empty_spaces > indent {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::InvalidIndentation,
                         message: "block scalar with wrong indented line after spaces only"
                             .to_string(),
                     });
@@ -1888,7 +1975,10 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(msg) = self.config.check_scalar_size(content.len()) {
-            self.error = Some(ScanError { message: msg });
+            self.error = Some(ScanError {
+                kind: ScanErrorKind::LimitExceeded,
+                message: msg,
+            });
             return;
         }
 
@@ -1974,6 +2064,7 @@ impl<'input> Scanner<'input> {
             match self.reader.peek() {
                 None => {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::UnterminatedScalar,
                         message: "unterminated single-quoted scalar".to_string(),
                     });
                     return;
@@ -2012,6 +2103,7 @@ impl<'input> Scanner<'input> {
                             && (self.is_document_start() || self.is_document_end())
                         {
                             self.error = Some(ScanError {
+                                kind: ScanErrorKind::DocumentMarkerInScalar,
                                 message: "document marker inside single-quoted scalar".to_string(),
                             });
                             return;
@@ -2037,6 +2129,7 @@ impl<'input> Scanner<'input> {
                             && !matches!(self.reader.peek(), Some('\''))
                         {
                             self.error = Some(ScanError {
+                                kind: ScanErrorKind::InvalidIndentation,
                                 message: "single-quoted scalar continuation below block indent"
                                     .to_string(),
                             });
@@ -2074,7 +2167,10 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(msg) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError { message: msg });
+            self.error = Some(ScanError {
+                kind: ScanErrorKind::LimitExceeded,
+                message: msg,
+            });
             return;
         }
 
@@ -2135,6 +2231,7 @@ impl<'input> Scanner<'input> {
             match self.reader.peek() {
                 None => {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::UnterminatedScalar,
                         message: "unterminated double-quoted scalar".to_string(),
                     });
                     return;
@@ -2247,6 +2344,7 @@ impl<'input> Scanner<'input> {
                             // Invalid escape sequence — error per YAML §5.7.
                             self.reader.advance();
                             self.error = Some(ScanError {
+                                kind: ScanErrorKind::InvalidEscape,
                                 message: format!(
                                     "invalid escape character '\\{c}' in double-quoted scalar"
                                 ),
@@ -2255,6 +2353,7 @@ impl<'input> Scanner<'input> {
                         }
                         None => {
                             self.error = Some(ScanError {
+                                kind: ScanErrorKind::UnterminatedScalar,
                                 message: "unterminated escape in double-quoted scalar".to_string(),
                             });
                             return;
@@ -2291,6 +2390,7 @@ impl<'input> Scanner<'input> {
                             && (self.is_document_start() || self.is_document_end())
                         {
                             self.error = Some(ScanError {
+                                kind: ScanErrorKind::DocumentMarkerInScalar,
                                 message: "document marker inside double-quoted scalar".to_string(),
                             });
                             return;
@@ -2301,6 +2401,7 @@ impl<'input> Scanner<'input> {
                     // (DK95#2: `\n  \tbaz`) are fine.
                     if self.reader.peek() == Some('\t') && self.reader.mark().column == 0 {
                         self.error = Some(ScanError {
+                            kind: ScanErrorKind::InvalidTab,
                             message: "invalid tab used as indentation".to_string(),
                         });
                         return;
@@ -2327,6 +2428,7 @@ impl<'input> Scanner<'input> {
                             && !matches!(self.reader.peek(), Some('"'))
                         {
                             self.error = Some(ScanError {
+                                kind: ScanErrorKind::InvalidIndentation,
                                 message: "double-quoted scalar continuation below block indent"
                                     .to_string(),
                             });
@@ -2364,7 +2466,10 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(msg) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError { message: msg });
+            self.error = Some(ScanError {
+                kind: ScanErrorKind::LimitExceeded,
+                message: msg,
+            });
             return;
         }
 
@@ -2419,6 +2524,7 @@ impl<'input> Scanner<'input> {
                 Some('#') if lookahead > 0 => {}
                 Some(c) => {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::UnexpectedCharacter,
                         message: format!("invalid trailing content '{c}' after quoted scalar"),
                     });
                 }
@@ -2470,6 +2576,7 @@ impl<'input> Scanner<'input> {
             Some('#') if lookahead > 0 => {}
             Some(c) => {
                 self.error = Some(ScanError {
+                    kind: ScanErrorKind::UnexpectedCharacter,
                     message: format!("invalid character '{c}' after {context}"),
                 });
             }
@@ -2544,6 +2651,7 @@ impl<'input> Scanner<'input> {
                     && self.tokens_consumed <= 1
                 {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::InvalidTab,
                         message: "tab character cannot be used as content".to_string(),
                     });
                     continue;
@@ -2551,6 +2659,7 @@ impl<'input> Scanner<'input> {
                 // 9MMA: directive-only stream — directives without a following document.
                 if self.seen_directive && self.in_directive_prologue {
                     self.error = Some(ScanError {
+                        kind: ScanErrorKind::InvalidDirective,
                         message: "directives without a document".to_string(),
                     });
                     continue;
@@ -2601,6 +2710,7 @@ impl<'input> Scanner<'input> {
                     // document is open (explicit via `---` or implicit content).
                     if !self.in_directive_prologue {
                         self.error = Some(ScanError {
+                            kind: ScanErrorKind::InvalidDirective,
                             message: "directive without document end marker '...'".to_string(),
                         });
                         continue;
@@ -2640,6 +2750,7 @@ impl<'input> Scanner<'input> {
             // flow collection, reject further content.
             if self.root_token_emitted && self.indent == -1 && self.flow_level == 0 {
                 self.error = Some(ScanError {
+                    kind: ScanErrorKind::UnexpectedContent,
                     message: "extra content after document root node".to_string(),
                 });
                 continue;
