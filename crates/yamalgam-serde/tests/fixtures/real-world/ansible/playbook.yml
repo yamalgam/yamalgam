@@ -1,0 +1,108 @@
+---
+# Provision and deploy an API server behind nginx.
+- name: Provision API hosts
+  hosts: api_servers
+  become: true
+  gather_facts: true
+  vars:
+    app_user: api
+    app_root: /opt/api-server
+    app_version: "2.14.3"
+    listen_port: 8080
+    ulimits:
+      nofile_soft: 65536
+      nofile_hard: 65536
+  vars_files:
+    - vars/secrets.yml
+
+  pre_tasks:
+    - name: Verify supported distribution
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_major_version | int >= 22
+        fail_msg: >-
+          Unsupported distribution
+          {{ ansible_distribution }} {{ ansible_distribution_version }}
+
+  tasks:
+    - name: Create application user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        home: "{{ app_root }}"
+        create_home: false
+
+    - name: Install runtime packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - nginx
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create release directory
+      ansible.builtin.file:
+        path: "{{ app_root }}/releases/{{ app_version }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Download release artifact
+      ansible.builtin.get_url:
+        url: "https://releases.example.com/api-server/{{ app_version }}/api-server-linux-amd64"
+        dest: "{{ app_root }}/releases/{{ app_version }}/api-server"
+        checksum: "sha256:{{ release_checksums[app_version] }}"
+        mode: "0755"
+      notify: Restart api-server
+
+    - name: Render environment file
+      ansible.builtin.template:
+        src: templates/api-server.env.j2
+        dest: /etc/default/api-server
+        owner: root
+        group: "{{ app_user }}"
+        mode: "0640"
+      notify: Restart api-server
+
+    - name: Activate release
+      ansible.builtin.file:
+        src: "{{ app_root }}/releases/{{ app_version }}"
+        dest: "{{ app_root }}/current"
+        state: link
+      notify: Restart api-server
+
+    - name: Prune old releases
+      ansible.builtin.shell: |
+        set -o pipefail
+        ls -1dt {{ app_root }}/releases/* | tail -n +6 | xargs -r rm -rf
+      args:
+        executable: /bin/bash
+      register: prune_result
+      changed_when: prune_result.stdout != ""
+
+  handlers:
+    - name: Restart api-server
+      ansible.builtin.systemd:
+        name: api-server
+        state: restarted
+        daemon_reload: true
+
+- name: Smoke test through the load balancer
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Probe health endpoint
+      ansible.builtin.uri:
+        url: "https://api.example.com/healthz"
+        status_code: 200
+        timeout: 10
+      retries: 5
+      delay: 3
+      register: health
+      until: health.status == 200

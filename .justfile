@@ -22,7 +22,7 @@ deny:
   cargo deny --all-features check --config .config/deny.toml
 
 test:
-  cargo nextest run --workspace --all-features
+  cargo nextest run --workspace --all-features --cargo-quiet
 
 test-ci:
   cargo nextest run --workspace --all-features --profile ci

@@ -126,6 +126,8 @@ impl<'input> Deserializer<'input> {
 
             match &event {
                 Event::StreamStart => continue,
+                // Directives carry no deserialization semantics.
+                Event::VersionDirective { .. } | Event::TagDirective { .. } => continue,
                 Event::DocumentStart { .. } => {
                     self.at_document_start = true;
                     continue;
@@ -178,22 +180,70 @@ impl<'input> Deserializer<'input> {
             } => {
                 let anchor_name = name.as_ref().to_owned();
                 // Buffer the entire collection (start through matching end).
+                // Anchors on nested nodes are registered as they stream by —
+                // an alias may reference them from inside this collection,
+                // from a later sibling, or from a replay of this buffer.
+                // The buffered copies are anchor-stripped so replays don't
+                // re-register. Aliases are expanded INTO the buffer here
+                // (compose-time semantics): buffers never contain Alias
+                // events, so replays are pure data — immune to anchor
+                // redefinition cycles and self-reference loops.
                 let mut buffer = vec![strip_anchor(event)];
-                let mut depth: u32 = 1;
+                // Open nested collections: (anchor if any, start index).
+                let mut open: Vec<(Option<String>, usize)> = Vec::new();
                 loop {
                     let sub = self.next_raw_event()?;
                     match &sub {
-                        Event::SequenceStart { .. } | Event::MappingStart { .. } => {
-                            depth += 1;
+                        Event::SequenceStart { anchor, .. }
+                        | Event::MappingStart { anchor, .. } => {
+                            open.push((
+                                anchor.as_ref().map(|a| a.as_ref().to_owned()),
+                                buffer.len(),
+                            ));
+                            buffer.push(strip_anchor(sub));
                         }
                         Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
-                            depth -= 1;
+                            buffer.push(sub);
+                            match open.pop() {
+                                Some((Some(inner_name), start)) => {
+                                    // Nested anchored collection complete —
+                                    // register its event slice.
+                                    self.register_anchor(inner_name, buffer[start..].to_vec())?;
+                                }
+                                Some((None, _)) => {}
+                                // Matched the outer collection's end.
+                                None => break,
+                            }
                         }
-                        _ => {}
-                    }
-                    buffer.push(strip_anchor(sub));
-                    if depth == 0 {
-                        break;
+                        Event::Scalar {
+                            anchor: Some(inner),
+                            ..
+                        } => {
+                            let inner_name = inner.as_ref().to_owned();
+                            let stripped = strip_anchor(sub);
+                            self.register_anchor(inner_name, vec![stripped.clone()])?;
+                            buffer.push(stripped);
+                        }
+                        Event::Alias { name, span } => {
+                            // The target must already be registered — this
+                            // rejects self references (`&a [*a]`) and forward
+                            // references, exactly like compose-time
+                            // resolution. Registered buffers are alias-free,
+                            // so the splice cannot recurse.
+                            let target =
+                                self.anchors.get(name.as_ref()).cloned().ok_or_else(|| {
+                                    Error::UndefinedAlias {
+                                        name: name.as_ref().to_owned(),
+                                        span: Some(*span),
+                                    }
+                                })?;
+                            self.alias_expansions += 1;
+                            self.limits
+                                .check_alias_expansions(self.alias_expansions)
+                                .map_err(Error::LimitExceeded)?;
+                            buffer.extend(target);
+                        }
+                        _ => buffer.push(sub),
                     }
                 }
                 self.register_anchor(anchor_name, buffer.clone())?;
@@ -222,9 +272,11 @@ impl<'input> Deserializer<'input> {
                     .check_alias_expansions(self.alias_expansions)
                     .map_err(Error::LimitExceeded)?;
 
-                // Push buffered events into replay.
-                for ev in buffered {
-                    self.replay_buffer.push_back(ev);
+                // Splice buffered events at the FRONT of the replay buffer.
+                // The alias may itself have come from a replayed buffer; its
+                // expansion must run before whatever was queued behind it.
+                for ev in buffered.into_iter().rev() {
+                    self.replay_buffer.push_front(ev);
                 }
                 // Return the first replayed event.
                 self.next_raw_event()
@@ -270,10 +322,15 @@ impl<'input> Deserializer<'input> {
     /// `next_raw_event()` / `next_event()` call returns it.
     fn peek_event(&mut self) -> Result<&Event<'input>, Error> {
         // If replay_buffer already has a non-structural, non-framing event
-        // at the front (from a previous peek), just return it.
+        // at the front (from a previous peek), just return it. Alias events
+        // must NOT short-circuit here — they need expansion via next_event()
+        // before the caller sees them.
         if let Some(front) = self.replay_buffer.front()
             && !front.is_structural()
-            && !matches!(front, Event::StreamStart | Event::DocumentStart { .. })
+            && !matches!(
+                front,
+                Event::StreamStart | Event::DocumentStart { .. } | Event::Alias { .. }
+            )
         {
             return Ok(self.replay_buffer.front().unwrap());
         }

@@ -89,3 +89,57 @@ fn documents_stops_on_error() {
     assert!(results.len() >= 2);
     assert!(results[1].is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Explicit empty documents
+// ---------------------------------------------------------------------------
+
+#[test]
+fn documents_explicit_empty_docs_yield_null() {
+    use yamalgam_core::Value;
+    let docs: Vec<Value> = Deserializer::from_str("---\n---\n")
+        .documents::<Value>()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(docs, vec![Value::Null, Value::Null]);
+}
+
+#[test]
+fn documents_single_explicit_empty_doc() {
+    use yamalgam_core::Value;
+    let docs: Vec<Value> = Deserializer::from_str("---\n")
+        .documents::<Value>()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(docs, vec![Value::Null]);
+}
+
+#[test]
+fn documents_content_then_empty_doc() {
+    use yamalgam_core::Value;
+    let docs: Vec<Value> = Deserializer::from_str("---\nfoo\n---\n")
+        .documents::<Value>()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(docs, vec![Value::String("foo".into()), Value::Null]);
+}
+
+#[test]
+fn documents_empty_then_content_doc() {
+    use yamalgam_core::Value;
+    let docs: Vec<Value> = Deserializer::from_str("---\n---\nfoo")
+        .documents::<Value>()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(docs, vec![Value::Null, Value::String("foo".into())]);
+}
+
+#[test]
+fn documents_empty_doc_with_explicit_end_marker() {
+    use yamalgam_core::Value;
+    let docs: Vec<Value> = Deserializer::from_str("---\n...\n---\n42")
+        .documents::<Value>()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(docs, vec![Value::Null, Value::Integer(42)]);
+}

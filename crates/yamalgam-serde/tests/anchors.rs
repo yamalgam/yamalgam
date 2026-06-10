@@ -139,3 +139,62 @@ fn anchor_redefinition_uses_latest() {
     assert_eq!(v["b"], "second");
     assert_eq!(v["c"], "second");
 }
+
+// ---------------------------------------------------------------------------
+// Anchors defined inside anchored collections
+// ---------------------------------------------------------------------------
+
+#[test]
+fn alias_to_scalar_anchor_inside_anchored_collection() {
+    // `&inner` lives inside the `&outer` collection. Both the in-collection
+    // alias (`c`) and the post-collection alias (`d`) must resolve.
+    use yamalgam_core::Value;
+    let input = "a: &outer\n  b: &inner 1\n  c: *inner\nd: *inner";
+    let v: Value = from_str(input).unwrap();
+    assert_eq!(
+        v.get("a").and_then(|a| a.get("b")),
+        Some(&Value::Integer(1))
+    );
+    assert_eq!(
+        v.get("a").and_then(|a| a.get("c")),
+        Some(&Value::Integer(1))
+    );
+    assert_eq!(v.get("d"), Some(&Value::Integer(1)));
+}
+
+#[test]
+fn alias_to_outer_collection_containing_inner_anchor() {
+    use yamalgam_core::Value;
+    let input = "a: &outer\n  b: &inner 1\n  c: *inner\ne: *outer";
+    let v: Value = from_str(input).unwrap();
+    assert_eq!(v.get("e"), v.get("a"));
+    assert!(v.get("e").is_some());
+}
+
+#[test]
+fn alias_to_collection_anchor_inside_anchored_collection() {
+    use yamalgam_core::Value;
+    let input = "a: &outer\n  b: &inner\n    c: 1\n  d: *inner\ne: *inner";
+    let v: Value = from_str(input).unwrap();
+    let expected = v.get("a").and_then(|a| a.get("b")).cloned();
+    assert!(expected.is_some());
+    assert_eq!(v.get("a").and_then(|a| a.get("d")), expected.as_ref());
+    assert_eq!(v.get("e"), expected.as_ref());
+}
+
+#[test]
+fn self_referential_alias_errors() {
+    // `*a` appears before `&a`'s collection is complete — must error like
+    // the Composer does, not expand forever.
+    use yamalgam_core::Value;
+    let result = from_str::<Value>("&a [*a]");
+    assert!(result.is_err(), "self-referential alias must be rejected");
+}
+
+#[test]
+fn forward_alias_inside_anchored_collection_errors() {
+    // Alias referencing an anchor that appears later — invalid YAML usage.
+    use yamalgam_core::Value;
+    let result = from_str::<Value>("a: &outer\n  b: *later\nlater: &later 1");
+    assert!(result.is_err(), "forward alias must be rejected");
+}
