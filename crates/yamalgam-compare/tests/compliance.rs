@@ -46,8 +46,6 @@ const EVENT_MISMATCH_ALLOWLIST: &[&str] = &[
     // --- ERROR: multiline simple key strictness ---
     "4MUZ#2", // multiline simple key not allowed
     "VJP3#1", // multiline simple key not allowed
-    // --- ERROR: parser rejects empty value after explicit key ---
-    "CFD4", // unexpected Value token (empty value after ? key)
     // --- ERROR: tab handling in various contexts ---
     "DK95#4", // unexpected character after %YAML directive with tabs
     "DK95#5", // unexpected character — tab in double-quoted scalar context

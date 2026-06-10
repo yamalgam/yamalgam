@@ -604,6 +604,102 @@ fn flow_sequence_with_implicit_mapping() {
     );
 }
 
+#[test]
+fn flow_sequence_empty_key_pair() {
+    // `[: v]` — single-pair mapping with an empty key (spec example 7.21).
+    let events: Vec<_> = Parser::new("[: v]").collect::<Result<Vec<_>, _>>().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::MappingStart { .. }))
+    );
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["", "v"]);
+}
+
+#[test]
+fn flow_sequence_empty_key_empty_value_pair() {
+    // `[ : ]` — both key and value empty: [{null: null}].
+    let events: Vec<_> = Parser::new("[ : ]").collect::<Result<Vec<_>, _>>().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::MappingStart { .. }))
+    );
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["", ""]);
+}
+
+#[test]
+fn flow_sequence_multiple_empty_key_pairs() {
+    // Each `: x` entry is its own single-pair mapping.
+    let events: Vec<_> = Parser::new("[: a, : b]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let map_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::MappingStart { .. }))
+        .count();
+    assert_eq!(map_starts, 2);
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["", "a", "", "b"]);
+}
+
+#[test]
+fn flow_sequence_adjacent_value_after_json_key() {
+    // Spec example 7.21 line 3: `[ {JSON: like}:adjacent ]` — the pair's
+    // key is itself a flow mapping, with the value adjacent after `}`.
+    let events: Vec<_> = Parser::new("[ {JSON: like}:adjacent ]")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let map_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::MappingStart { .. }))
+        .count();
+    assert_eq!(
+        map_starts, 2,
+        "single-pair mapping wrapping a flow-mapping key"
+    );
+    let scalars: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Scalar { value, .. } = e {
+                Some(value.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(scalars, vec!["JSON", "like", "adjacent"]);
+}
+
 // === Flow mapping tests ===
 
 #[test]
