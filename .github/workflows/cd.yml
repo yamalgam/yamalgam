@@ -526,18 +526,18 @@ jobs:
             [[ -d "$pkg_dir" ]] || continue
             platform=$(basename "$pkg_dir" | sed "s/${PROJECT_NAME}-//")
             cat > "${pkg_dir}README.md" <<EOF
-# @claylo/${PROJECT_NAME}-${platform}
+          # @claylo/${PROJECT_NAME}-${platform}
 
-This is the **${platform}** binary for [\`@claylo/${PROJECT_NAME}\`](https://www.npmjs.com/package/@claylo/${PROJECT_NAME}).
+          This is the **${platform}** binary for [\`@claylo/${PROJECT_NAME}\`](https://www.npmjs.com/package/@claylo/${PROJECT_NAME}).
 
-Install the main package instead:
+          Install the main package instead:
 
-\`\`\`sh
-npm install @claylo/${PROJECT_NAME}
-\`\`\`
+          \`\`\`sh
+          npm install @claylo/${PROJECT_NAME}
+          \`\`\`
 
-The correct platform binary will be selected automatically.
-EOF
+          The correct platform binary will be selected automatically.
+          EOF
           done
 
       - name: Publish platform packages
