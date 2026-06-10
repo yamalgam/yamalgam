@@ -1,0 +1,990 @@
+---
+audit_date: 2026-04-08
+scope: Full workspace — all 9 Rust crates plus xtask
+commit: 61160528c570bd5845d15703e3f502136ea48e7d
+assessment: >-
+  yamalgam is a well-structured, zero-unsafe YAML parser with disciplined
+  workspace organization and clean clippy output. The primary concerns are
+  arithmetic edge cases in the serde deserializer that can panic on
+  malformed event streams, stringly-typed errors that erase diagnostic
+  information at each pipeline stage, and cross-crate performance costs
+  from dynamic dispatch and missing inlining that benchmarks undercount
+  due to LTO asymmetry between bench and release profiles.
+
+narratives:
+  # ── Narrative 1: Untrusted Input ────────────────────────────────────
+  - slug: untrusted-input-surface
+    title: The Untrusted Input Surface
+    thesis: >-
+      The parser's defense-in-depth is compromised by unsigned arithmetic
+      edge cases in the serde layer, where depth counters can underflow on
+      malformed event streams — debug panics, release infinite loops.
+    verdict: >-
+      Two depth-underflow paths in the serde deserializer (skip_value and
+      drain) are the most actionable findings in this audit. Both are
+      small fixes with clear remediation. The CST indexing and column cast
+      are lower-risk but follow the same pattern: trusting upstream
+      invariants with arithmetic rather than with Result.
+
+    flow:
+      - id: input
+        label: YAML bytes
+        type: start
+      - id: scanner
+        label: Scanner
+        type: process
+      - id: parser
+        label: Parser
+        type: process
+      - id: consumer
+        label: Consumer dispatch
+        type: decision
+        no: serde
+      - id: compose
+        label: Composer
+        type: process
+        spine: false
+      - id: cst
+        label: CST builder
+        type: process
+        spine: false
+        findings:
+          - slug: cst-source-indexing-unclamped
+            label: unclamped index
+      - id: serde
+        label: serde Deserializer
+        type: process
+        findings:
+          - slug: serde-skip-value-depth-underflow
+            label: depth underflow
+          - slug: serde-drain-depth-underflow
+            label: drain underflow
+      - id: output
+        label: T / Value / CstNode
+        type: end
+
+    findings:
+      - slug: serde-skip-value-depth-underflow
+        title: "skip_value depth counter underflows on leading end-events"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-serde/src/de.rs
+            start_line: 748
+            end_line: 765
+        evidence: |
+          fn skip_value(&mut self) -> Result<(), Error> {
+              let mut depth: u32 = 0;
+              loop {
+                  let event = self.next_event()?;
+                  match &event {
+                      Event::SequenceEnd { .. } | Event::MappingEnd { .. } => {
+                          depth -= 1;    // underflows if first event is an end
+                      }
+                      // ...
+                  }
+                  if depth == 0 { return Ok(()); }
+              }
+          }
+        mechanism: >-
+          If the first event consumed is a SequenceEnd or MappingEnd (possible
+          via from_tokens with a custom iterator, or a parser bug), depth
+          decrements from 0. Debug builds panic; release builds wrap to
+          u32::MAX and loop until the stream is exhausted — an infinite loop
+          DoS. The pattern repeats in SeqAccess::drain and MapAccess::drain.
+        remediation: >-
+          Use depth.checked_sub(1) and return Error::Unexpected on underflow.
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 2
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        chains:
+          related: [serde-drain-depth-underflow]
+        effort: trivial
+        effort_notes: "Three checked_sub calls + error returns."
+
+      - slug: serde-drain-depth-underflow
+        title: "SeqAccess::drain and MapAccess::drain miss cross-type end-event guard"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-serde/src/de.rs
+            start_line: 888
+            end_line: 902
+          - path: crates/yamalgam-serde/src/de.rs
+            start_line: 934
+            end_line: 949
+        evidence: |
+          // SeqAccess::drain guards SequenceEnd at depth 0 but not MappingEnd:
+          Event::SequenceEnd { .. } | Event::MappingEnd { .. } => depth -= 1,
+
+          // MapAccess::drain guards MappingEnd at depth 0 but not SequenceEnd:
+          Event::SequenceEnd { .. } | Event::MappingEnd { .. } => depth -= 1,
+        mechanism: >-
+          SeqAccess::drain has a depth==0 guard for SequenceEnd but lets
+          MappingEnd fall through to the decrement. MapAccess::drain has the
+          mirror bug. A stray cross-type end event underflows the counter.
+        remediation: >-
+          Guard both end-event types at depth==0, or use checked_sub.
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 2
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        chains:
+          related: [serde-skip-value-depth-underflow]
+        effort: trivial
+        effort_notes: "Add one guard per drain function."
+
+      - slug: cst-source-indexing-unclamped
+        title: "CST insert_whitespace_before indexes source without clamping span offset"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-cst/src/lib.rs
+            start_line: 488
+            end_line: 491
+        evidence: |
+          if span.start.offset > self.last_offset {
+              let ws_start = self.last_offset;
+              let ws_end = span.start.offset;
+              let ws_text = &self.source[ws_start..ws_end];  // no clamp
+        mechanism: >-
+          Unlike source_text() which clamps with .min(self.source.len()),
+          this path uses span.start.offset directly. If a parser event
+          carries an out-of-bounds offset, the slice panics. In normal
+          operation parser offsets are valid, but defensive library code
+          should not panic on invariant violations it cannot control.
+        remediation: >-
+          Clamp ws_end with .min(self.source.len()), matching source_text().
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        chains: {}
+        effort: trivial
+        effort_notes: "One .min() call."
+
+      - slug: column-as-i32-cast
+        title: "Scanner casts u32 column to i32 without overflow check"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-scanner/src/scanner.rs
+            start_line: 1020
+            end_line: 1020
+        evidence: |
+          let col = mark.column as i32;
+        mechanism: >-
+          Mark.column is u32; the indent stack uses i32 with -1 as sentinel.
+          Lines exceeding 2^31 characters wrap to negative, corrupting indent
+          comparisons. With ResourceLimits::none() (the default constructor),
+          input size is unbounded, making this theoretically reachable.
+        remediation: >-
+          Use i32::try_from(column).unwrap_or(i32::MAX), or enforce
+          max_input_bytes in the default ResourceLimits.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-08
+          commit_count: 10
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10]
+        chains: {}
+        effort: trivial
+        effort_notes: "One try_from or saturating cast."
+
+  # ── Narrative 2: Error Architecture ─────────────────────────────────
+  - slug: error-architecture-surface
+    title: The Error Architecture Surface
+    thesis: >-
+      Error types lose precision at each pipeline stage — scanner errors
+      are stringly-typed, compose errors lack spans, and serde errors
+      discard position information that users need for debugging.
+    verdict: >-
+      The layered error types (ScanError, ParseError, ComposeError,
+      serde::Error) have the right shape but the wrong payload. ParseError
+      is well-designed with typed variants. ScanError, at the foundation
+      of the pipeline, is a bare String — forcing every downstream consumer
+      to either forward an opaque message or lose information. The serde
+      layer has span fields but populates them with None at most call sites.
+      Fixing ScanError is the highest-leverage error architecture change.
+
+    findings:
+      - slug: scanner-error-stringly-typed
+        title: "ScanError is a stringly-typed bag with no variants"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-scanner/src/scanner.rs
+            start_line: 34
+            end_line: 47
+        evidence: |
+          pub struct ScanError {
+              /// Human-readable error message.
+              pub message: String,
+          }
+        mechanism: >-
+          ScanError has a single String field. 51 error sites construct it
+          with ad-hoc literals. Callers cannot programmatically distinguish
+          error kinds without string matching. ParseError wraps ScanError,
+          so the opacity propagates through the entire pipeline.
+        remediation: >-
+          Add a ScanErrorKind enum alongside the message. Keep the message
+          for Display but give callers variants for match arms.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-08
+          commit_count: 35
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35]
+        chains:
+          enables: [compose-error-stringly-typed, serde-error-no-span]
+        effort: medium
+        effort_notes: "51 error sites need variant classification."
+
+      - slug: diagnostic-missing-display-error
+        title: "Diagnostic lacks Display and std::error::Error impls"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-core/src/diagnostic.rs
+            start_line: 49
+            end_line: 62
+          - path: crates/yamalgam-scanner/src/input.rs
+            start_line: 130
+            end_line: 130
+        evidence: |
+          #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+          pub struct Diagnostic {
+              pub severity: Severity,
+              pub code: String,
+              pub message: String,
+              pub span: Option<Span>,
+              pub labels: Vec<Label>,
+          }
+          // Used as E in Result:
+          pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Diagnostic> {
+        mechanism: >-
+          Diagnostic is used as the E type in six public Result signatures
+          across Input's API, but implements neither Display nor
+          std::error::Error. Callers cannot use ? to propagate through
+          anyhow::Error or Box<dyn Error>, and cannot format the error
+          without manual field access.
+        remediation: >-
+          Implement Display (formatting code + message) and Error for
+          Diagnostic. Non-breaking addition.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-06
+          commit_count: 7
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]
+        chains: {}
+        effort: trivial
+        effort_notes: "Two trait impls."
+
+      - slug: compose-error-stringly-typed
+        title: "ComposeError variants carry only String, no structured data"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-compose/src/lib.rs
+            start_line: 19
+            end_line: 30
+        evidence: |
+          pub enum ComposeError {
+              Resolve(ResolveError),
+              UndefinedAlias(String),
+              UnexpectedEvent(String),
+              LimitExceeded(String),
+          }
+        mechanism: >-
+          UnexpectedEvent and LimitExceeded use format!("{event:?}") strings.
+          Callers cannot distinguish error sub-kinds without parsing the
+          message. UndefinedAlias carries the name but no Span.
+        remediation: >-
+          Add span fields and structured sub-data to variants.
+        temporal:
+          introduced: 2026-03-09
+          last_modified: 2026-03-27
+          commit_count: 5
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]
+        chains:
+          enabled_by: [scanner-error-stringly-typed]
+        effort: small
+        effort_notes: "Add fields to existing variants."
+
+      - slug: serde-error-no-span
+        title: "Serde Error::Unexpected passes None span at 15+ call sites"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-serde/src/error.rs
+            start_line: 17
+            end_line: 38
+        evidence: |
+          Unexpected {
+              expected: &'static str,
+              found: String,
+              span: Option<Span>,    // has the field...
+          },
+          Custom(String),            // ...but Custom never does
+        mechanism: >-
+          The Unexpected variant has an Option<Span> field but it is
+          populated with None at 15+ call sites in de.rs. Custom(String)
+          from serde::de::Error::custom never carries position info. Users
+          debugging type mismatches get no indication of where in the YAML
+          the error occurred.
+        remediation: >-
+          Thread the most recently consumed event's span through to error
+          construction sites. The Event already carries a span.
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 2
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        chains:
+          enabled_by: [scanner-error-stringly-typed]
+        effort: medium
+        effort_notes: "15+ call sites need span threading."
+
+      - slug: cst-discards-parse-error
+        title: "CST handle_error discards ParseError content"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-cst/src/lib.rs
+            start_line: 545
+            end_line: 545
+        evidence: |
+          let _ = error; // consumed
+        mechanism: >-
+          The ParseError is received as a function argument but dropped
+          without being stored in CstNode::Error. Callers can see where
+          an error occurred but not what went wrong.
+        remediation: >-
+          Store the ParseError or its Display string in the error node.
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        chains: {}
+        effort: trivial
+        effort_notes: "Add a field to CstNode or CstToken."
+
+  # ── Narrative 3: Panic Discipline ───────────────────────────────────
+  - slug: panic-discipline-surface
+    title: The Panic Discipline Surface
+    thesis: >-
+      Library code relies on implicit invariants backed by expect/unwrap
+      rather than Result, creating 40+ panic sites on paths reachable
+      from the token stream.
+    verdict: >-
+      The invariants behind each unwrap are correct in the current code.
+      The concern is not that they are wrong today but that they are
+      fragile — each depends on a guarantee from another method with no
+      compile-time enforcement. A consume_peeked() abstraction in the
+      parser would eliminate the largest cluster. The serde replay buffer
+      unwraps are structurally safe but could be made obviously safe.
+
+    findings:
+      - slug: parser-expect-peeked-pattern
+        title: "Parser uses .expect(\"peeked\") after peek_token — 40+ sites"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-parser/src/parser.rs
+            start_line: 292
+            end_line: 292
+        evidence: |
+          let t = self.next_token()?.expect("peeked");
+        mechanism: >-
+          Over 40 locations follow: peek_token() confirms Some, then
+          next_token().expect("peeked") consumes it. The invariant is
+          correct but depends on no interleaving calls between peek and
+          next. Any future refactor that inserts a call between them
+          causes a panic on user input.
+        remediation: >-
+          Add a consume_peeked() helper returning Result that
+          encapsulates peek-then-take. Eliminates 40+ panic sites.
+        temporal:
+          introduced: 2026-03-07
+          last_modified: 2026-03-27
+          commit_count: 10
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10]
+        chains: {}
+        effort: small
+        effort_notes: "One helper + 40 call site updates (mechanical)."
+
+      - slug: serde-replay-buffer-unwrap
+        title: "Deserializer peek methods unwrap replay_buffer.front()"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-serde/src/de.rs
+            start_line: 268
+            end_line: 301
+        evidence: |
+          let event = self.next_raw_event()?;
+          self.replay_buffer.push_front(event);
+          Ok(self.replay_buffer.front().unwrap())
+        mechanism: >-
+          Four unwraps on replay_buffer.front() — each structurally safe
+          (post push_front or confirmed via if-let) but the invariant is
+          not local. A refactor removing the push_front turns these into
+          panics.
+        remediation: >-
+          Return the pushed reference directly, or use expect with
+          descriptive message.
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 2
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        chains: {}
+        effort: trivial
+        effort_notes: "Restructure return to avoid re-borrow."
+
+      - slug: compose-peek-double-unwrap
+        title: "Composer::peek_event double-unwraps via action-integer pattern"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-compose/src/lib.rs
+            start_line: 384
+            end_line: 384
+        evidence: |
+          let err = self.events.next().unwrap().unwrap_err();
+        mechanism: >-
+          Both unwrap() and unwrap_err() on one line. Structurally
+          guaranteed by the preceding peek() match but the action-integer
+          encoding obscures the invariant.
+        remediation: >-
+          Restructure to avoid the action-integer pattern. Use explicit
+          match on self.events.next() directly.
+        temporal:
+          introduced: 2026-03-09
+          last_modified: 2026-03-27
+          commit_count: 5
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]
+        chains: {}
+        effort: small
+        effort_notes: "Restructure match."
+
+  # ── Narrative 4: The Hot Path ───────────────────────────────────────
+  - slug: hot-path-surface
+    title: The Hot Path Surface
+    thesis: >-
+      The multi-crate parsing pipeline pays vtable dispatch, missing
+      inlining, and per-event allocation costs that benchmarks undercount
+      because bench profiles enable LTO but release profiles do not.
+    verdict: >-
+      The three significant findings — dyn dispatch in the parser, missing
+      inline annotations, and release-without-LTO — compound. Fix any one
+      and the others matter less; fix all three and the entire cross-crate
+      call chain becomes inlineable. The per-event Vec allocation in
+      Resolver::on_event and the serde clone-on-peek pattern are
+      independent costs that accumulate linearly with document size.
+      These performance gaps explain why yamalgam may underperform on
+      large inputs in release builds despite winning benchmarks.
+
+    findings:
+      - slug: parser-dyn-iterator-dispatch
+        title: "Parser uses Box<dyn Iterator> for token source"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-parser/src/parser.rs
+            start_line: 72
+            end_line: 72
+        evidence: |
+          pub struct Parser<'input> {
+              tokens: Box<dyn Iterator<Item = Result<Token<'input>, ScanError>> + 'input>,
+        mechanism: >-
+          Every call to self.tokens.next() goes through vtable dispatch.
+          The concrete type is always Scanner in the normal case, but the
+          indirection prevents inlining Scanner::next() into Parser's hot
+          loop. Combined with no LTO in release builds, this is an
+          unrecoverable optimization barrier.
+        remediation: >-
+          Make Parser generic over the token iterator. Provide a type alias
+          for the common Scanner case. The from_tokens() constructor can
+          still accept any iterator — it just makes the Parser type carry
+          the concrete type.
+        temporal:
+          introduced: 2026-03-07
+          last_modified: 2026-03-27
+          commit_count: 10
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10]
+        chains:
+          related: [no-inline-cross-crate, release-no-lto]
+        effort: medium
+        effort_notes: "API change ripples through compose, serde, cst, compare."
+
+      - slug: no-inline-cross-crate
+        title: "Zero #[inline] annotations on hot Reader/Scanner functions"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-scanner/src/reader.rs
+            start_line: 40
+            end_line: 42
+          - path: crates/yamalgam-scanner/src/reader.rs
+            start_line: 49
+            end_line: 51
+        evidence: |
+          // reader.rs — called on every character, no #[inline]
+          pub fn peek(&self) -> Option<char> { ... }
+          pub fn peek_at(&self, n: usize) -> Option<char> { ... }
+          pub fn advance(&mut self) -> Option<char> { ... }
+          pub const fn mark(&self) -> Mark { ... }
+          pub const fn is_eof(&self) -> bool { ... }
+        mechanism: >-
+          Without #[inline], cross-crate calls rely on LTO. The release
+          profile has no LTO, meaning release builds get no inlining of
+          these per-character functions. The bench profile uses lto="thin",
+          hiding this cost from benchmarks.
+        remediation: >-
+          Add #[inline] to peek(), peek_at(), advance(), mark(), is_eof(),
+          slice(). These are tiny functions called thousands of times.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-08
+          commit_count: 5
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]
+        chains:
+          related: [parser-dyn-iterator-dispatch, release-no-lto]
+        effort: trivial
+        effort_notes: "Add annotations to ~10 functions."
+
+      - slug: reader-peek-at-linear-scan
+        title: "Reader::peek_at() is O(n) per call via chars().nth(n)"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-scanner/src/reader.rs
+            start_line: 49
+            end_line: 51
+        evidence: |
+          pub fn peek_at(&self, n: usize) -> Option<char> {
+              self.input[self.offset..].chars().nth(n)
+          }
+        mechanism: >-
+          chars().nth(n) iterates from current offset through n characters
+          each call. The scanner calls peek_at() ~46 times, often with
+          sequential small indices — is_document_start() does peek() +
+          peek_at(1) + peek_at(2) + peek_at(3), each rescanning from offset.
+          For ASCII-dominated YAML the constant factors are small, but for
+          CJK/emoji content the rescanning is genuinely wasteful.
+        remediation: >-
+          Cache the current char in Reader (set on advance). For small
+          lookahead, a fixed-size char buffer eliminates rescanning. Or
+          add a peek_byte() for ASCII-range checks that avoids char
+          boundary overhead.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-08
+          commit_count: 5
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]
+        chains: {}
+        effort: small
+        effort_notes: "Add cached char field + peek_byte()."
+
+      - slug: release-no-lto
+        title: "Release profile has no LTO — benchmarks misrepresent release perf"
+        concern: moderate
+        locations:
+          - path: Cargo.toml
+            start_line: 57
+            end_line: 58
+        evidence: |
+          [profile.release]
+          debug = "line-tables-only"
+          # no lto setting — defaults to false
+
+          [profile.bench]
+          inherits = "release"
+          lto = "thin"   # bench gets LTO, release does not
+        mechanism: >-
+          Bench profile adds lto="thin" but release does not. Cross-crate
+          inlining happens in benchmarks but not in cargo install or release
+          builds. Users get measurably worse performance than benchmarks
+          report.
+        remediation: >-
+          Add lto = "thin" to [profile.release].
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-08
+          commit_count: 3
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]
+        chains:
+          enables: [no-inline-cross-crate, parser-dyn-iterator-dispatch]
+        effort: trivial
+        effort_notes: "One line in Cargo.toml."
+
+      - slug: resolver-on-event-returns-vec
+        title: "Resolver::on_event allocates Vec per event on passthrough path"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-parser/src/resolve.rs
+            start_line: 93
+            end_line: 96
+        evidence: |
+          pub trait Resolver<'input> {
+              fn on_event(&mut self, event: Event<'input>)
+                  -> Result<Vec<Event<'input>>, ResolveError>;
+          }
+          // NoopResolver allocates a Vec for every single event:
+          impl<'input> Resolver<'input> for NoopResolver {
+              fn on_event(&mut self, event: Event<'input>)
+                  -> Result<Vec<Event<'input>>, ResolveError> {
+                  Ok(vec![event])
+              }
+          }
+        mechanism: >-
+          The NoopResolver (used in all default paths) allocates a Vec per
+          event. For a 1000-event document, that is 1000 heap allocations
+          producing no value. ADR-0007 originally specified SmallVec<[Event; 1]>
+          for this reason.
+        remediation: >-
+          Adopt SmallVec<[Event; 1]> or a None/One/Many enum that inlines
+          the single-event case.
+        temporal:
+          introduced: 2026-03-09
+          last_modified: 2026-03-27
+          commit_count: 3
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]
+        chains: {}
+        effort: small
+        effort_notes: "Change return type + update impls."
+
+      - slug: serde-peek-clone-event
+        title: "Serde deserializer clones Event on every peek-then-consume"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-serde/src/de.rs
+            start_line: 375
+            end_line: 375
+        evidence: |
+          let event = self.peek_event()?.clone();  // clones Event with Cow<str>
+          match event {
+              Event::Scalar { value, style, .. } => {
+                  let _ = self.next_event()?;  // discards the same event
+        mechanism: >-
+          The pattern peek_event()?.clone() + next_event() appears in
+          deserialize_any (the most common serde dispatch path). Cloning
+          an Event::Scalar with Cow::Owned value triggers a String
+          allocation + memcpy. Every YAML value goes through this path.
+        remediation: >-
+          Extract the discriminant info from the peek (just variant + style),
+          drop the borrow, then call next_event() to get the owned event.
+          Eliminates the clone entirely.
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 2
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        chains: {}
+        effort: small
+        effort_notes: "Add PeekedKind enum, restructure match."
+
+      - slug: scanner-purge-vec-alloc
+        title: "purge_stale_simple_keys() allocates Vec<u64> on every token fetch"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-scanner/src/scanner.rs
+            start_line: 591
+            end_line: 615
+        evidence: |
+          fn purge_stale_simple_keys(&mut self) {
+              let mut purged_root_ids: Vec<u64> = Vec::new();
+              self.simple_keys.retain(|sk| {
+                  if !keep && !sk.required && sk.flow_level == 0 && indent == -1 {
+                      purged_root_ids.push(sk.token_id);
+                  }
+                  keep
+              });
+        mechanism: >-
+          Called from fetch_next_token() on every iteration. Vec::new()
+          starts at zero capacity (no alloc until push), so the cost is
+          zero when no keys are purged — which is the vast majority of
+          calls. The finding is moderate because the allocation path is
+          rare, but the code could avoid it entirely.
+        remediation: >-
+          Use a bool flag during retain to track whether root tokens were
+          purged, then iterate simple_keys again for the queue_position
+          lookup. Or use SmallVec<[u64; 2]>.
+        temporal:
+          introduced: 2026-03-07
+          last_modified: 2026-03-08
+          commit_count: 9
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]
+        chains: {}
+        effort: small
+        effort_notes: "Restructure with flag or SmallVec."
+
+      - slug: serde-anchor-buffer-clone
+        title: "Anchored events cloned twice during anchor buffering"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-serde/src/de.rs
+            start_line: 196
+            end_line: 222
+        evidence: |
+          let mut buffer = vec![strip_anchor(event)];
+          // ... loop buffering sub-events ...
+          self.register_anchor(anchor_name, buffer.clone());
+          for ev in buffer {
+              self.replay_buffer.push_back(ev);
+          }
+        mechanism: >-
+          When an anchored collection is encountered, all sub-events are
+          collected into a Vec, then that Vec is cloned for the anchor
+          registry, and the original is drained into the replay buffer.
+          Every Event is cloned — including scalars with Cow::Owned strings.
+          This doubles memory for every anchored subtree.
+        remediation: >-
+          Move buffer into register_anchor, then replay from the anchors
+          map. Or use Rc<[Event]> to share between anchor map and replay.
+        temporal:
+          introduced: 2026-03-27
+          last_modified: 2026-03-27
+          commit_count: 2
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]
+        chains: {}
+        effort: small
+        effort_notes: "Restructure ownership flow."
+
+  # ── Narrative 5: Supply Chain ───────────────────────────────────────
+  - slug: supply-chain-surface
+    title: The Supply Chain Surface
+    thesis: >-
+      The dependency tree ships the very library this project aims to
+      replace, and carries unused dependencies across multiple crates
+      that inflate compile times without contributing functionality.
+    verdict: >-
+      The figment yaml feature pulling deprecated serde_yaml is the
+      headline finding — a YAML parser project transitively depending
+      on the deprecated serde_yaml undermines the value proposition.
+      Dropping the feature is a one-line fix. The unused dependencies
+      are housekeeping — real but low-risk, mostly leftovers from the
+      C baseline removal in PR #79.
+
+    findings:
+      - slug: figment-pulls-serde-yaml
+        title: "figment yaml feature pulls deprecated serde_yaml into every crate"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-core/Cargo.toml
+            start_line: 37
+            end_line: 37
+        evidence: |
+          figment = { version = "0.10", features = ["toml", "yaml", "json"] }
+          # yaml feature => serde_yaml v0.9.34+deprecated => unsafe-libyaml
+        mechanism: >-
+          figment's yaml feature enables deprecated serde_yaml as a
+          transitive dependency. serde_yaml pulls unsafe-libyaml (C code
+          compiled via cc) and indexmap into every crate that depends on
+          yamalgam-core — which is all of them. A YAML parser project
+          shipping a deprecated YAML parser as a transitive dependency is
+          an irony that also carries real supply chain weight.
+        remediation: >-
+          Drop the yaml feature: figment = { features = ["toml", "json"] }.
+          YAML config support can be restored via yamalgam's own parser.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-06
+          commit_count: 7
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]
+        chains: {}
+        effort: trivial
+        effort_notes: "Remove one feature string."
+
+      - slug: unused-declared-dependencies
+        title: "7 unused dependencies across 4 crates"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-scanner/Cargo.toml
+            start_line: 14
+            end_line: 14
+          - path: crates/yamalgam-compare/Cargo.toml
+            start_line: 12
+            end_line: 14
+          - path: crates/yamalgam-serde/Cargo.toml
+            start_line: 17
+            end_line: 17
+          - path: crates/yamalgam-bench/Cargo.toml
+            start_line: 13
+            end_line: 23
+        evidence: |
+          # scanner: thiserror (ScanError is manually implemented)
+          # compare: thiserror, serde_json, yamalgam-core (all unused)
+          # serde: thiserror (Error is manually implemented)
+          # bench: serde (derive feature unused), yamalgam-core (transitive)
+        mechanism: >-
+          Seven declared dependencies are unused per cargo-machete and
+          source grep. Most are leftovers from the C baseline removal
+          (PR #79) or from initial crate scaffolding. Each adds compile
+          time — thiserror is a proc macro that compiles even if never
+          invoked.
+        remediation: >-
+          Remove the unused entries from each Cargo.toml.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-27
+          commit_count: 5
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]
+        chains: {}
+        effort: trivial
+        effort_notes: "Delete lines from Cargo.toml files."
+
+      - slug: unused-dev-dependencies
+        title: "pretty_assertions unused in 4 crates"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-scanner/Cargo.toml
+            start_line: 18
+            end_line: 18
+          - path: crates/yamalgam-compare/Cargo.toml
+            start_line: 21
+            end_line: 21
+          - path: crates/yamalgam-compose/Cargo.toml
+            start_line: 20
+            end_line: 20
+          - path: crates/yamalgam-serde/Cargo.toml
+            start_line: 22
+            end_line: 22
+        evidence: |
+          pretty_assertions = "1"  # in [dev-dependencies], no imports found
+        mechanism: >-
+          Dev-only — does not affect release builds. Adds compile time
+          during cargo test.
+        remediation: >-
+          Remove from [dev-dependencies] unless planned for future tests.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-03-06
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        chains: {}
+        effort: trivial
+        effort_notes: "Delete lines."
+
+      - slug: stale-deny-advisory
+        title: "deny.toml ignores RUSTSEC-2023-0051 which is no longer matched"
+        concern: advisory
+        locations:
+          - path: deny.toml
+            start_line: 61
+            end_line: 61
+        evidence: |
+          "RUSTSEC-2023-0051",  # dlopen_derive — via yamlstar (optional)
+          # cargo-deny: "advisory was not encountered"
+        mechanism: >-
+          The ignore entry references yamlstar's dlopen_derive advisory,
+          but yamlstar is optional and not compiled by default. The stale
+          entry creates noise in cargo deny output.
+        remediation: >-
+          Remove the stale entry from deny.toml.
+        temporal:
+          introduced: 2026-03-08
+          last_modified: 2026-03-08
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+        chains: {}
+        effort: trivial
+        effort_notes: "Delete one line."
+
+  # ── Narrative 6: API Design ─────────────────────────────────────────
+  - slug: api-design-surface
+    title: The API Design Surface
+    thesis: >-
+      Public types are well-designed with correct lifetime propagation
+      and zero-copy Cow usage, but miss standard trait implementations
+      that idiomatic Rust consumers expect from map-like containers.
+    verdict: >-
+      The API findings are all non-breaking additions. Mapping lacks
+      IntoIterator, Value::get allocates per lookup, and ResourceLimits
+      should derive Copy. These are polish items — the underlying design
+      (streaming Iterator-based parser, Cow<'input, str>, layered
+      crates) is sound. Lifetimes are well-applied throughout.
+
+    findings:
+      - slug: mapping-missing-intoiterator
+        title: "Mapping lacks IntoIterator impls"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-core/src/value.rs
+            start_line: 54
+            end_line: 112
+        evidence: |
+          pub struct Mapping {
+              entries: Vec<(Value, Value)>,
+          }
+          // Has iter(), keys(), values() — no IntoIterator
+        mechanism: >-
+          Callers must write for (k, v) in mapping.iter() instead of
+          for (k, v) in &mapping. Consuming iteration is impossible
+          without accessing the private entries field.
+        remediation: >-
+          Implement IntoIterator for &Mapping, &mut Mapping, and Mapping.
+          Non-breaking additions.
+        temporal:
+          introduced: 2026-03-09
+          last_modified: 2026-03-09
+          commit_count: 3
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]
+        chains: {}
+        effort: trivial
+        effort_notes: "Three trait impls delegating to entries."
+
+      - slug: value-get-allocates
+        title: "Value::get(&str) heap-allocates on every lookup"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-core/src/value.rs
+            start_line: 129
+            end_line: 133
+        evidence: |
+          pub fn get(&self, key: &str) -> Option<&Self> {
+              match self {
+                  Self::Mapping(m) => m.get(&Self::String(key.to_owned())),
+                  _ => None,
+              }
+          }
+        mechanism: >-
+          Every call constructs a Value::String via key.to_owned(),
+          allocating on the heap, solely to linear-scan and compare.
+          The allocation is dropped immediately after the scan.
+        remediation: >-
+          Add Mapping::get_by_str that compares String variants directly
+          against &str without allocating. Have Value::get delegate to it.
+        temporal:
+          introduced: 2026-03-09
+          last_modified: 2026-03-09
+          commit_count: 3
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]
+        chains: {}
+        effort: trivial
+        effort_notes: "One helper method."
+
+      - slug: resource-limits-not-copy
+        title: "ResourceLimits is Clone but not Copy despite qualifying"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-core/src/loader.rs
+            start_line: 1
+            end_line: 1
+        evidence: |
+          // ResourceLimits fields are all Option<usize> — Copy-eligible
+          // from_str_with_limits takes ResourceLimits by value
+          // from_str_with_config takes &LoaderConfig by reference
+        mechanism: >-
+          ResourceLimits has 7 Option<usize> fields — all Copy. The type
+          derives Clone but not Copy. The serde crate's
+          from_str_with_limits takes it by value, requiring callers to
+          .clone() for reuse. Inconsistent with from_str_with_config
+          which takes &LoaderConfig by reference.
+        remediation: >-
+          Derive Copy on ResourceLimits.
+        temporal:
+          introduced: 2026-03-08
+          last_modified: 2026-03-08
+          commit_count: 4
+          monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]
+        chains: {}
+        effort: trivial
+        effort_notes: "Add Copy to derive list."
+
+summary:
+  counts:
+    critical: 0
+    significant: 8
+    moderate: 14
+    advisory: 7
+    note: 0

@@ -1,0 +1,343 @@
+---
+meta:
+  project: yamalgam
+  commit: 61160528c570bd5845d15703e3f502136ea48e7d
+  timestamp: 2026-04-08T01:09:00Z
+  scope: >-
+    Full workspace audit — all 9 crates in crates/ plus xtask.
+    Excludes fuzz/ (out of workspace), vendor/, target/.
+
+structure:
+  root: /Users/clay/source/claylo/yamalgam
+  total_files: 74
+  total_lines: 20193
+  languages:
+    - language: Rust
+      files: 74
+      lines: 20193
+      percentage: 100.0
+
+  modules:
+    - name: yamalgam-scanner
+      path: crates/yamalgam-scanner
+      files: 7
+      lines: 5093
+      entry_points:
+        - name: Scanner::new
+          path: crates/yamalgam-scanner/src/scanner.rs
+          line: 1
+          kind: public_fn
+        - name: Scanner::with_config
+          path: crates/yamalgam-scanner/src/scanner.rs
+          line: 1
+          kind: public_fn
+      dependencies:
+        - target: yamalgam-core
+          weight: 3
+
+    - name: yamalgam-parser
+      path: crates/yamalgam-parser
+      files: 9
+      lines: 3191
+      entry_points:
+        - name: Parser::new
+          path: crates/yamalgam-parser/src/parser.rs
+          line: 1
+          kind: public_fn
+        - name: Parser::from_tokens
+          path: crates/yamalgam-parser/src/parser.rs
+          line: 1
+          kind: public_fn
+      dependencies:
+        - target: yamalgam-core
+          weight: 2
+        - target: yamalgam-scanner
+          weight: 3
+
+    - name: yamalgam-core
+      path: crates/yamalgam-core
+      files: 12
+      lines: 3250
+      entry_points:
+        - name: LoaderConfig
+          path: crates/yamalgam-core/src/loader.rs
+          line: 1
+          kind: exported_symbol
+        - name: Value
+          path: crates/yamalgam-core/src/value.rs
+          line: 1
+          kind: exported_symbol
+        - name: TagResolver trait
+          path: crates/yamalgam-core/src/tag_resolution.rs
+          line: 1
+          kind: exported_symbol
+      dependencies: []
+
+    - name: yamalgam-compose
+      path: crates/yamalgam-compose
+      files: 2
+      lines: 842
+      entry_points:
+        - name: from_str
+          path: crates/yamalgam-compose/src/lib.rs
+          line: 1
+          kind: public_fn
+        - name: Composer::new
+          path: crates/yamalgam-compose/src/lib.rs
+          line: 1
+          kind: public_fn
+      dependencies:
+        - target: yamalgam-core
+          weight: 2
+        - target: yamalgam-parser
+          weight: 1
+        - target: yamalgam-scanner
+          weight: 1
+
+    - name: yamalgam-serde
+      path: crates/yamalgam-serde
+      files: 5
+      lines: 1611
+      entry_points:
+        - name: from_str
+          path: crates/yamalgam-serde/src/lib.rs
+          line: 1
+          kind: public_fn
+        - name: Deserializer::documents
+          path: crates/yamalgam-serde/src/de.rs
+          line: 1
+          kind: public_fn
+      dependencies:
+        - target: yamalgam-core
+          weight: 1
+        - target: yamalgam-parser
+          weight: 2
+
+    - name: yamalgam-cst
+      path: crates/yamalgam-cst
+      files: 2
+      lines: 734
+      entry_points:
+        - name: parse_to_cst
+          path: crates/yamalgam-cst/src/lib.rs
+          line: 1
+          kind: public_fn
+      dependencies:
+        - target: yamalgam-core
+          weight: 1
+        - target: yamalgam-parser
+          weight: 2
+        - target: yamalgam-scanner
+          weight: 1
+
+    - name: yamalgam (CLI)
+      path: crates/yamalgam
+      files: 12
+      lines: 1700
+      entry_points:
+        - name: main
+          path: crates/yamalgam/src/main.rs
+          line: 1
+          kind: main
+      dependencies:
+        - target: yamalgam-core
+          weight: 3
+        - target: yamalgam-serde
+          weight: 1
+
+    - name: yamalgam-compare
+      path: crates/yamalgam-compare
+      files: 8
+      lines: 2500
+      entry_points:
+        - name: compliance tests
+          path: crates/yamalgam-compare/tests/compliance.rs
+          line: 1
+          kind: exported_symbol
+      dependencies:
+        - target: yamalgam-core
+          weight: 1
+        - target: yamalgam-parser
+          weight: 2
+        - target: yamalgam-scanner
+          weight: 2
+        - target: yamalgam-cst
+          weight: 1
+
+    - name: yamalgam-bench
+      path: crates/yamalgam-bench
+      files: 3
+      lines: 600
+      entry_points:
+        - name: comparative benchmarks
+          path: crates/yamalgam-bench/benches/comparative.rs
+          line: 1
+          kind: exported_symbol
+      dependencies:
+        - target: yamalgam-scanner
+          weight: 1
+        - target: yamalgam-parser
+          weight: 1
+        - target: yamalgam-core
+          weight: 1
+
+    - name: xtask
+      path: xtask
+      files: 4
+      lines: 400
+      entry_points:
+        - name: main
+          path: xtask/src/main.rs
+          line: 1
+          kind: main
+      dependencies: []
+
+dependencies:
+  manifest: Cargo.toml (workspace)
+  lock_file_deps: 225
+  items:
+    # yamalgam-core dependencies
+    - name: anyhow
+      version: "1.0.102"
+      kind: direct
+      notes: error handling for CLI/app layer
+    - name: camino
+      version: "1.2"
+      kind: direct
+      notes: UTF-8 path handling
+    - name: figment
+      version: "0.10.19"
+      kind: direct
+      notes: configuration — planned for replacement with own YAML impl
+    - name: serde
+      version: "1.0.228"
+      kind: direct
+      notes: serialization framework
+    - name: directories
+      version: "6.0"
+      kind: direct
+      notes: XDG/platform config directories
+    - name: thiserror
+      version: "2.0.18"
+      kind: direct
+      notes: typed error derives
+    - name: tracing
+      version: "0.1.44"
+      kind: direct
+      notes: structured logging
+    - name: tracing-appender
+      version: "0.2.4"
+      kind: direct
+      notes: log file rotation
+    - name: tracing-subscriber
+      version: "0.3.22"
+      kind: direct
+      notes: log subscriber configuration
+
+    # yamalgam-scanner dependencies
+    - name: bitflags
+      version: "2"
+      kind: direct
+      notes: scanner flag types
+    - name: encoding_rs
+      version: "0.8.35"
+      kind: direct
+      notes: charset detection/conversion
+
+    # yamalgam-serde dependencies
+    - name: erased-serde
+      version: "0.4.10"
+      kind: direct
+      notes: type-erased serde for compile-once parser walking
+
+    # yamalgam CLI dependencies
+    - name: clap
+      version: "4.6"
+      kind: direct
+      notes: CLI argument parsing (derive)
+    - name: owo-colors
+      version: "4.3"
+      kind: direct
+      notes: terminal color output
+
+    # Unmaintained warnings (transitive)
+    - name: bincode
+      version: "1.3.3"
+      kind: transitive
+      notes: "RUSTSEC-2025-0141: unmaintained — via gungraun (bench dep)"
+    - name: dlopen_derive
+      version: "0.1.4"
+      kind: transitive
+      notes: "RUSTSEC-2023-0051: unmaintained — via yamlstar (bench dep, optional)"
+
+churn:
+  period: last 12 months (project is ~5 weeks old)
+  hotspots:
+    - path: crates/yamalgam-scanner/src/scanner.rs
+      commits: 35
+      authors: 1
+      last_touched: 2026-03-27
+      monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35]
+    - path: crates/yamalgam-scanner/tests/scanner.rs
+      commits: 21
+      authors: 1
+      last_touched: 2026-03-27
+      monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21]
+    - path: crates/yamalgam-compare/tests/compliance.rs
+      commits: 11
+      authors: 1
+      last_touched: 2026-03-27
+      monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11]
+    - path: crates/yamalgam-parser/src/parser.rs
+      commits: 10
+      authors: 1
+      last_touched: 2026-03-27
+      monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10]
+    - path: crates/yamalgam-compare/src/harness.rs
+      commits: 9
+      authors: 1
+      last_touched: 2026-03-08
+      monthly_commits: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]
+
+  recent_activity:
+    total_commits: 12
+    active_authors: 1
+    files_changed: 30
+
+boundaries:
+  - name: untrusted_input
+    description: >-
+      All YAML input is untrusted. The scanner, parser, and all consumers
+      (compose, serde, cst) process arbitrary user-supplied YAML documents.
+      This is the primary trust boundary.
+    modules:
+      - yamalgam-scanner
+      - yamalgam-parser
+      - yamalgam-compose
+      - yamalgam-serde
+      - yamalgam-cst
+    notes: >-
+      ResourceLimits (LoaderConfig) protect against Billion Laughs,
+      deep nesting, and oversized scalars. Scanner and parser both
+      accept LoaderConfig via with_config().
+
+  - name: configuration
+    description: >-
+      LoaderConfig controls security limits. Misconfigured limits
+      (e.g., unchecked preset) could expose consumers to DoS.
+    modules:
+      - yamalgam-core
+    notes: >-
+      Four presets: moderate (default), strict, trusted, unchecked.
+      Scanner new() uses ResourceLimits::none() (const fn).
+
+  - name: filesystem
+    description: >-
+      CLI reads YAML files from disk. Config loading reads from
+      XDG directories. Future !include resolver will also read files.
+    modules:
+      - yamalgam
+      - yamalgam-core
+    notes: >-
+      !include not yet implemented (M11). Current filesystem access
+      is limited to CLI input files and config.

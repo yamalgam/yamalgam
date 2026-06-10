@@ -62,3 +62,5 @@ PRIVATE_MEMORY.md
 # for little tests, scripts or notes
 scratch
 scratch/
+.claude/settings.local.json
+.crustoleum
