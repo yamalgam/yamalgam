@@ -36,6 +36,7 @@ impl<'input> Reader<'input> {
     /// Peek at the current character without advancing.
     ///
     /// Returns `None` at EOF.
+    #[inline]
     #[must_use]
     pub fn peek(&self) -> Option<char> {
         self.input[self.offset..].chars().next()
@@ -45,6 +46,7 @@ impl<'input> Reader<'input> {
     ///
     /// `peek_at(0)` is equivalent to `peek()`. Returns `None` if the lookahead
     /// extends past the end of input.
+    #[inline]
     #[must_use]
     pub fn peek_at(&self, n: usize) -> Option<char> {
         self.input[self.offset..].chars().nth(n)
@@ -68,6 +70,7 @@ impl<'input> Reader<'input> {
     /// `\r`. Bare `\r` (not followed by `\n`) is also treated as a newline.
     ///
     /// Returns `None` at EOF.
+    #[inline]
     pub fn advance(&mut self) -> Option<char> {
         let ch = self.peek()?;
         self.offset += ch.len_utf8();
@@ -90,6 +93,7 @@ impl<'input> Reader<'input> {
     }
 
     /// Return the current position as a [`Mark`].
+    #[inline]
     #[must_use]
     pub const fn mark(&self) -> Mark {
         Mark {
@@ -102,6 +106,7 @@ impl<'input> Reader<'input> {
     /// Advance the reader by `n` characters.
     ///
     /// Equivalent to calling [`advance()`](Self::advance) `n` times.
+    #[inline]
     pub fn advance_by(&mut self, n: usize) {
         for _ in 0..n {
             if self.advance().is_none() {
@@ -115,24 +120,28 @@ impl<'input> Reader<'input> {
     /// # Panics
     ///
     /// Panics if the offsets are out of bounds or not on UTF-8 boundaries.
+    #[inline]
     #[must_use]
     pub fn slice(&self, start_offset: usize, end_offset: usize) -> &'input str {
         &self.input[start_offset..end_offset]
     }
 
     /// Returns a reference to the underlying input string.
+    #[inline]
     #[must_use]
     pub const fn input(&self) -> &'input str {
         self.input
     }
 
     /// Returns the total byte length of the underlying input.
+    #[inline]
     #[must_use]
     pub const fn input_len(&self) -> usize {
         self.input.len()
     }
 
     /// Returns `true` if the reader has reached the end of input.
+    #[inline]
     #[must_use]
     pub const fn is_eof(&self) -> bool {
         self.offset >= self.input.len()

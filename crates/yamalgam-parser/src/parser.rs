@@ -163,6 +163,31 @@ impl<'input> Parser<'input> {
         self.collect_comments()
     }
 
+    /// Consume the token that a preceding [`peek_token`](Self::peek_token)
+    /// guaranteed is buffered.
+    ///
+    /// Returns [`ParseError::UnexpectedEof`] instead of panicking if the
+    /// invariant is violated (a code path consumed the buffer between the
+    /// peek and this call).
+    fn consume_peeked(&mut self) -> Result<Token<'input>, ParseError> {
+        self.next_token()?.ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "token buffered by preceding peek",
+            span: Span::default(),
+        })
+    }
+
+    /// Borrow the token that a preceding [`peek_token`](Self::peek_token)
+    /// guaranteed is buffered.
+    ///
+    /// Same invariant as [`consume_peeked`](Self::consume_peeked), borrowing
+    /// instead of consuming.
+    fn peeked_token(&mut self) -> Result<&Token<'input>, ParseError> {
+        self.peek_token()?.ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "token buffered by preceding peek",
+            span: Span::default(),
+        })
+    }
+
     /// Advance past Comment tokens, queuing them as `Event::Comment`.
     ///
     /// Returns the next non-comment token (or `None` at EOF).
@@ -289,7 +314,7 @@ impl<'input> Parser<'input> {
             Some(TokenKind::VersionDirective) => {
                 // Consume the directive token, emit as event, stay in same state.
                 self.seen_directive = true;
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let (major, minor) = Self::parse_version_string(&t.atom.data, t.atom.span)?;
                 Ok(Some(Event::VersionDirective {
                     major,
@@ -300,7 +325,7 @@ impl<'input> Parser<'input> {
             Some(TokenKind::TagDirective) => {
                 // Consume the directive token, emit as event, stay in same state.
                 self.seen_directive = true;
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let (handle, prefix) = Self::parse_tag_directive_data(&t.atom.data);
                 Ok(Some(Event::TagDirective {
                     handle: Cow::Owned(handle.to_string()),
@@ -336,7 +361,7 @@ impl<'input> Parser<'input> {
                 // Content token — this is an implicit document start.
                 // Don't consume the token; let BlockNode handle it.
                 self.seen_directive = false;
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 self.push_state(ParserState::DocumentEnd)?;
                 self.state = ParserState::BlockNode;
                 Ok(Some(Event::DocumentStart {
@@ -425,7 +450,7 @@ impl<'input> Parser<'input> {
         match token {
             Some(t) if t.kind == TokenKind::DocumentEnd => {
                 // Explicit `...` — consume and emit.
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = ParserState::ImplicitDocumentStart;
                 Ok(Some(Event::DocumentEnd {
                     implicit: false,
@@ -478,7 +503,7 @@ impl<'input> Parser<'input> {
         // 1. Check for alias first — aliases never carry anchor/tag.
         let kind = self.peek_token()?.map(|t| t.kind);
         if kind == Some(TokenKind::Alias) {
-            let t = self.next_token()?.expect("peeked");
+            let t = self.consume_peeked()?;
             self.state = self.pop_state();
             return Ok(Some(Event::Alias {
                 name: t.atom.data,
@@ -496,12 +521,12 @@ impl<'input> Parser<'input> {
             let kind = self.peek_token()?.map(|t| t.kind);
             match kind {
                 Some(TokenKind::Anchor) if anchor.is_none() => {
-                    let t = self.next_token()?.expect("peeked");
+                    let t = self.consume_peeked()?;
                     anchor_span = Some(t.atom.span);
                     anchor = Some(t.atom.data);
                 }
                 Some(TokenKind::Tag) if tag.is_none() => {
-                    let t = self.next_token()?.expect("peeked");
+                    let t = self.consume_peeked()?;
                     if anchor_span.is_none() {
                         anchor_span = Some(t.atom.span);
                     }
@@ -516,7 +541,7 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Scalar) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = self.pop_state();
                 Ok(Some(Event::Scalar {
                     anchor,
@@ -528,7 +553,7 @@ impl<'input> Parser<'input> {
             }
 
             Some(TokenKind::BlockSequenceStart) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = ParserState::BlockSequenceFirstEntry;
                 Ok(Some(Event::SequenceStart {
                     anchor,
@@ -539,7 +564,7 @@ impl<'input> Parser<'input> {
             }
 
             Some(TokenKind::BlockMappingStart) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = ParserState::BlockMappingFirstKey;
                 Ok(Some(Event::MappingStart {
                     anchor,
@@ -550,7 +575,7 @@ impl<'input> Parser<'input> {
             }
 
             Some(TokenKind::FlowSequenceStart) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = ParserState::FlowSequenceFirstEntry;
                 Ok(Some(Event::SequenceStart {
                     anchor,
@@ -561,7 +586,7 @@ impl<'input> Parser<'input> {
             }
 
             Some(TokenKind::FlowMappingStart) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = ParserState::FlowMappingFirstKey;
                 Ok(Some(Event::MappingStart {
                     anchor,
@@ -574,7 +599,7 @@ impl<'input> Parser<'input> {
             Some(TokenKind::BlockEntry) => {
                 // Indentless sequence: BlockEntry in mapping value/key context.
                 // cref: fy-parse.c:5781-5812
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 let return_state = self.state_stack.last().copied();
                 let in_mapping_context = matches!(
                     return_state,
@@ -627,7 +652,7 @@ impl<'input> Parser<'input> {
             }
 
             Some(kind) => {
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 Err(ParseError::UnexpectedToken {
                     expected: "node content (scalar, sequence, mapping, alias, or anchor/tag)",
                     got: kind,
@@ -654,14 +679,14 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::BlockEntry) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let entry_span = t.atom.span;
                 // Peek to see if this entry is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::BlockEntry) | Some(TokenKind::BlockEnd) => {
                         // Empty entry — queue empty scalar, return BlockEntry.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.state = ParserState::BlockSequenceEntry;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::BlockEntry { span: entry_span }))
@@ -675,7 +700,7 @@ impl<'input> Parser<'input> {
                 }
             }
             Some(kind) => {
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 Err(ParseError::UnexpectedToken {
                     expected: "BlockEntry (-) in block sequence",
                     got: kind,
@@ -696,14 +721,14 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::BlockEntry) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let entry_span = t.atom.span;
                 // Peek to see if this entry is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::BlockEntry) | Some(TokenKind::BlockEnd) => {
                         // Empty entry — queue empty scalar, return BlockEntry.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
@@ -716,12 +741,12 @@ impl<'input> Parser<'input> {
                 }
             }
             Some(TokenKind::BlockEnd) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = self.pop_state();
                 Ok(Some(Event::SequenceEnd { span: t.atom.span }))
             }
             Some(kind) => {
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 Err(ParseError::UnexpectedToken {
                     expected: "BlockEntry (-) or BlockEnd in block sequence",
                     got: kind,
@@ -801,14 +826,14 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Key) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let key_span = t.atom.span;
                 // Peek at what follows the key indicator.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::Key) | Some(TokenKind::Value) | Some(TokenKind::BlockEnd) => {
                         // Empty key — queue empty scalar, return KeyIndicator.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.state = ParserState::BlockMappingValue;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::KeyIndicator { span: key_span }))
@@ -823,17 +848,17 @@ impl<'input> Parser<'input> {
             }
             Some(TokenKind::Value) => {
                 // Implicit empty key (`: value` without `?`).
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 self.state = ParserState::BlockMappingValue;
                 Ok(Some(Self::emit_empty_scalar(span)))
             }
             Some(TokenKind::BlockEnd) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = self.pop_state();
                 Ok(Some(Event::MappingEnd { span: t.atom.span }))
             }
             Some(kind) => {
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 Err(ParseError::UnexpectedToken {
                     expected: "Key (?), Value (:), or BlockEnd in block mapping",
                     got: kind,
@@ -857,14 +882,14 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Value) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let val_span = t.atom.span;
                 // Peek at what follows the value indicator.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::Key) | Some(TokenKind::Value) | Some(TokenKind::BlockEnd) => {
                         // Empty value — queue empty scalar, return ValueIndicator.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.state = ParserState::BlockMappingKey;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::ValueIndicator { span: val_span }))
@@ -899,7 +924,7 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::BlockEntry) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let entry_span = t.atom.span;
                 // Peek to see if this entry is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
@@ -909,7 +934,7 @@ impl<'input> Parser<'input> {
                     | Some(TokenKind::Value)
                     | Some(TokenKind::BlockEnd) => {
                         // Empty entry — queue empty scalar, return BlockEntry.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::BlockEntry { span: entry_span }))
                     }
@@ -943,7 +968,7 @@ impl<'input> Parser<'input> {
     fn parse_flow_sequence_first_entry(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         if kind == Some(TokenKind::FlowSequenceEnd) {
-            let t = self.next_token()?.expect("peeked");
+            let t = self.consume_peeked()?;
             self.state = self.pop_state();
             return Ok(Some(Event::SequenceEnd { span: t.atom.span }));
         }
@@ -958,25 +983,25 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::FlowEntry) => {
-                let _t = self.next_token()?.expect("peeked");
+                let _t = self.consume_peeked()?;
                 // After comma, check what follows.
                 // cref: trailing comma — YAML allows `[a, b, ]` with no
                 // trailing entry.  Consume `]` directly.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 if next_kind == Some(TokenKind::FlowSequenceEnd) {
-                    let t = self.next_token()?.expect("peeked");
+                    let t = self.consume_peeked()?;
                     self.state = self.pop_state();
                     return Ok(Some(Event::SequenceEnd { span: t.atom.span }));
                 }
                 self.parse_flow_sequence_entry_content()
             }
             Some(TokenKind::FlowSequenceEnd) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = self.pop_state();
                 Ok(Some(Event::SequenceEnd { span: t.atom.span }))
             }
             Some(kind) => {
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 Err(ParseError::UnexpectedToken {
                     expected: "FlowEntry (,) or FlowSequenceEnd (]) in flow sequence",
                     got: kind,
@@ -1002,7 +1027,7 @@ impl<'input> Parser<'input> {
         match kind {
             Some(TokenKind::Key) => {
                 // Implicit mapping inside flow sequence: `[a: b]`.
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 // Push FlowSequenceEntryMappingValue as the return state for BlockNode.
                 // FlowSequenceEntryMappingValue will handle pushing FlowSequenceEntryMappingEnd.
                 self.push_state(ParserState::FlowSequenceEntryMappingValue)?;
@@ -1018,7 +1043,7 @@ impl<'input> Parser<'input> {
             }
             Some(TokenKind::Value) => {
                 // Implicit mapping with empty key: `[: value]`.
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 self.state = ParserState::FlowSequenceEntryMappingValue;
                 Ok(Some(Event::MappingStart {
                     anchor: None,
@@ -1068,7 +1093,7 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Value) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let val_span = t.atom.span;
                 // Peek to see if value is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
@@ -1077,7 +1102,7 @@ impl<'input> Parser<'input> {
                     | Some(TokenKind::FlowSequenceEnd)
                     | Some(TokenKind::FlowMappingEnd) => {
                         // Empty value — queue empty scalar, return ValueIndicator.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.state = ParserState::FlowSequenceEntryMappingEnd;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::ValueIndicator { span: val_span }))
@@ -1127,7 +1152,7 @@ impl<'input> Parser<'input> {
     fn parse_flow_mapping_first_key(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let kind = self.peek_token()?.map(|t| t.kind);
         if kind == Some(TokenKind::FlowMappingEnd) {
-            let t = self.next_token()?.expect("peeked");
+            let t = self.consume_peeked()?;
             self.state = self.pop_state();
             return Ok(Some(Event::MappingEnd { span: t.atom.span }));
         }
@@ -1144,14 +1169,14 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::FlowEntry) => {
-                let _t = self.next_token()?.expect("peeked");
+                let _t = self.consume_peeked()?;
                 // After comma, check what follows.
                 // cref: trailing comma — YAML allows `{a: b, }` with no
                 // trailing entry.  Consume `}` directly.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::FlowMappingEnd) => {
-                        let t = self.next_token()?.expect("peeked");
+                        let t = self.consume_peeked()?;
                         self.state = self.pop_state();
                         Ok(Some(Event::MappingEnd { span: t.atom.span }))
                     }
@@ -1159,12 +1184,12 @@ impl<'input> Parser<'input> {
                 }
             }
             Some(TokenKind::FlowMappingEnd) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 self.state = self.pop_state();
                 Ok(Some(Event::MappingEnd { span: t.atom.span }))
             }
             Some(kind) => {
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 Err(ParseError::UnexpectedToken {
                     expected: "FlowEntry (,) or FlowMappingEnd (}) in flow mapping",
                     got: kind,
@@ -1191,7 +1216,7 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Key) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let key_span = t.atom.span;
                 // Peek at what follows the explicit key.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
@@ -1200,7 +1225,7 @@ impl<'input> Parser<'input> {
                     | Some(TokenKind::FlowEntry)
                     | Some(TokenKind::FlowMappingEnd) => {
                         // Empty key — queue empty scalar, return KeyIndicator.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.state = ParserState::FlowMappingValue;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::KeyIndicator { span: key_span }))
@@ -1215,7 +1240,7 @@ impl<'input> Parser<'input> {
             }
             Some(TokenKind::Value) => {
                 // Implicit empty key (`: value` without `?`).
-                let span = self.peek_token()?.expect("peeked").atom.span;
+                let span = self.peeked_token()?.atom.span;
                 self.state = ParserState::FlowMappingValue;
                 Ok(Some(Self::emit_empty_scalar(span)))
             }
@@ -1235,14 +1260,14 @@ impl<'input> Parser<'input> {
         let kind = self.peek_token()?.map(|t| t.kind);
         match kind {
             Some(TokenKind::Value) => {
-                let t = self.next_token()?.expect("peeked");
+                let t = self.consume_peeked()?;
                 let val_span = t.atom.span;
                 // Peek to see if value is empty.
                 let next_kind = self.peek_token()?.map(|t| t.kind);
                 match next_kind {
                     Some(TokenKind::FlowEntry) | Some(TokenKind::FlowMappingEnd) => {
                         // Empty value — queue empty scalar, return ValueIndicator.
-                        let span = self.peek_token()?.expect("peeked").atom.span;
+                        let span = self.peeked_token()?.atom.span;
                         self.state = ParserState::FlowMappingKey;
                         self.event_queue.push_back(Self::emit_empty_scalar(span));
                         Ok(Some(Event::ValueIndicator { span: val_span }))

@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+smallvec = "1"
 thiserror = "2.0"
 yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-scanner = { path = "../yamalgam-scanner" }

@@ -12,8 +12,16 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::{fmt, io};
 
+pub use smallvec::{SmallVec, smallvec};
+
 use crate::error::ParseError;
 use crate::event::Event;
+
+/// Events produced by a single [`Resolver::on_event`] step.
+///
+/// Inline capacity of one keeps the common passthrough case (one event in,
+/// one event out) entirely on the stack — no heap allocation per event.
+pub type ResolvedEventBuf<'input> = SmallVec<[Event<'input>; 1]>;
 
 /// Errors that can occur during event resolution.
 #[derive(Debug)]
@@ -86,13 +94,16 @@ impl From<ParseError> for ResolveError {
 /// downstream consumers.
 ///
 /// Implementations receive one event at a time and return zero or more output
-/// events:
-/// - Return `Ok(vec![event])` to pass through unchanged.
-/// - Return `Ok(vec![])` to suppress the event.
-/// - Return `Ok(vec![e1, e2, ...])` to expand into multiple events.
+/// events (the [`smallvec!`] macro is re-exported from this module):
+/// - Return `Ok(smallvec![event])` to pass through unchanged.
+/// - Return `Ok(smallvec![])` to suppress the event.
+/// - Return `Ok(smallvec![e1, e2, ...])` to expand into multiple events.
+///
+/// The passthrough case stays allocation-free: [`ResolvedEventBuf`] holds one
+/// event inline (ADR-0007).
 pub trait Resolver<'input> {
     /// Process a single event and return the resulting events.
-    fn on_event(&mut self, event: Event<'input>) -> Result<Vec<Event<'input>>, ResolveError>;
+    fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError>;
 }
 
 /// A resolver that passes all events through unchanged.
@@ -100,8 +111,8 @@ pub trait Resolver<'input> {
 pub struct NoopResolver;
 
 impl<'input> Resolver<'input> for NoopResolver {
-    fn on_event(&mut self, event: Event<'input>) -> Result<Vec<Event<'input>>, ResolveError> {
-        Ok(vec![event])
+    fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+        Ok(smallvec![event])
     }
 }
 
@@ -149,17 +160,13 @@ impl<'input, R: Resolver<'input>> Iterator for ResolvedEvents<'input, R> {
             };
 
             match self.resolver.on_event(upstream_event) {
-                Ok(mut events) => {
-                    if events.is_empty() {
+                Ok(events) => {
+                    let mut drain = events.into_iter();
+                    let Some(first) = drain.next() else {
                         // Suppressed — try next upstream event.
                         continue;
-                    }
-                    if events.len() == 1 {
-                        return Some(Ok(events.remove(0)));
-                    }
-                    // Buffer multi-event results, yield the first.
-                    let mut drain = events.into_iter();
-                    let first = drain.next().expect("non-empty checked above");
+                    };
+                    // Buffer any extra events, yield the first.
                     self.buffer.extend(drain);
                     return Some(Ok(first));
                 }

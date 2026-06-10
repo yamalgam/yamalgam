@@ -372,11 +372,17 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     type Error = Error;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let event = self.peek_event()?.clone();
-        match event {
-            Event::Scalar { value, style, .. } => {
-                // Consume the event.
-                let _ = self.next_event()?;
+        // Dispatch on a borrowed peek; arms that bind nothing release the
+        // borrow, so consuming arms can take the event without cloning it.
+        match self.peek_event()? {
+            Event::Scalar { .. } => {
+                let Event::Scalar { value, style, .. } = self.next_event()? else {
+                    return Err(Error::Unexpected {
+                        expected: "scalar event after scalar peek",
+                        found: "event stream changed between peek and next".to_string(),
+                        span: None,
+                    });
+                };
 
                 match style {
                     ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted => {

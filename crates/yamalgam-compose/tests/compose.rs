@@ -4,7 +4,8 @@ use std::borrow::Cow;
 
 use yamalgam_compose::{Composer, from_str, from_str_single};
 use yamalgam_core::Value;
-use yamalgam_parser::{Event, ResolveError, Resolver};
+use yamalgam_parser::resolve::smallvec;
+use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
 
 #[test]
 fn parse_simple_mapping() {
@@ -79,7 +80,7 @@ fn undefined_alias_is_error() {
 struct UppercaseResolver;
 
 impl<'input> Resolver<'input> for UppercaseResolver {
-    fn on_event(&mut self, event: Event<'input>) -> Result<Vec<Event<'input>>, ResolveError> {
+    fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError> {
         match event {
             Event::Scalar {
                 anchor,
@@ -89,7 +90,7 @@ impl<'input> Resolver<'input> for UppercaseResolver {
                 span,
             } => {
                 let upper = value.to_uppercase();
-                Ok(vec![Event::Scalar {
+                Ok(smallvec![Event::Scalar {
                     anchor,
                     tag,
                     value: Cow::Owned(upper),
@@ -97,7 +98,7 @@ impl<'input> Resolver<'input> for UppercaseResolver {
                     span,
                 }])
             }
-            other => Ok(vec![other]),
+            other => Ok(smallvec![other]),
         }
     }
 }
