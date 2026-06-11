@@ -27,10 +27,7 @@ struct Xtask {
 
 #[derive(Subcommand, Debug)]
 enum Task {
-    /// Generate benchmark harnesses from benches/benchmarks.toml.
-    GenBenchmarks,
-
-    /// Run benchmarks (divan, gungraun, hyperfine).
+    /// Run benchmarks (self, comparative, hyperfine).
     Bench(commands::bench::BenchArgs),
     /// Generate shell completions for the yamalgam CLI.
     Completions(commands::completions::CompletionsArgs),
@@ -45,7 +42,6 @@ enum Task {
 fn main() -> Result<(), String> {
     let task = Xtask::parse();
     match task.command {
-        Task::GenBenchmarks => commands::gen_benchmarks::cmd_gen_benchmarks(),
         Task::Bench(args) => commands::bench::cmd_bench(args),
         Task::Completions(args) => commands::completions::cmd_completions(args),
         Task::Man(args) => commands::man::cmd_man(args),

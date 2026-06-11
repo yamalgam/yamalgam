@@ -1,10 +1,12 @@
 //! Info command implementation
 
 use clap::Args;
+use librebar::config::ConfigSources;
 use owo_colors::OwoColorize;
 use serde::Serialize;
 use tracing::{debug, instrument};
-use yamalgam_core::config::{Config, ConfigSources};
+
+use crate::config::Config;
 
 /// Arguments for the `info` subcommand.
 #[derive(Args, Debug, Default)]
@@ -138,29 +140,35 @@ pub fn cmd_info(
 mod tests {
     use super::*;
 
-    fn test_config() -> Config {
-        Config::default()
-    }
-
-    fn test_sources() -> ConfigSources {
-        ConfigSources::default()
+    #[test]
+    fn cmd_info_text_succeeds() {
+        assert!(
+            cmd_info(
+                InfoArgs::default(),
+                false,
+                &Config::default(),
+                &ConfigSources::default()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
-    fn test_cmd_info_text_succeeds() {
-        assert!(cmd_info(InfoArgs::default(), false, &test_config(), &test_sources()).is_ok());
+    fn cmd_info_json_via_global() {
+        assert!(
+            cmd_info(
+                InfoArgs::default(),
+                true,
+                &Config::default(),
+                &ConfigSources::default()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
-    fn test_cmd_info_json_via_global() {
-        assert!(cmd_info(InfoArgs::default(), true, &test_config(), &test_sources()).is_ok());
-    }
-
-    #[test]
-    fn test_config_info_no_file() {
-        let config = Config::default();
-        let sources = ConfigSources::default();
-        let info = ConfigInfo::from_config(&config, &sources);
+    fn config_info_no_file() {
+        let info = ConfigInfo::from_config(&Config::default(), &ConfigSources::default());
         assert!(info.config_file.is_none());
         assert_eq!(info.log_level, "info");
     }

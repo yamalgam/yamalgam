@@ -128,36 +128,32 @@ fn parses_toml_config() {
     assert_eq!(json["config"]["log_level"], "warn");
 }
 
-// YAML config is intentionally unsupported until yamalgam parses its own
-// config — figment's yaml feature would pull deprecated serde_yaml into
-// the dependency tree. Discovery skips YAML files entirely.
+// YAML config is supported through librebar's loader (serde-saphyr backed,
+// pure Rust — no serde_yaml/unsafe-libyaml). Once yamalgam publishes, the
+// plan is for librebar to parse YAML via yamalgam itself.
 
 #[test]
-fn yaml_project_config_is_ignored() {
+fn yaml_project_config_is_discovered() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join(".yamalgam.yaml"), "log_level: warn\n").unwrap();
 
     let json = info_json(tmp.path());
-    assert_eq!(
-        json["config"]["log_level"], "info",
-        "YAML config should be ignored during discovery"
-    );
+    assert_eq!(json["config"]["log_level"], "warn");
     assert!(
-        json["config"]["config_file"].is_null(),
-        "no config file should be reported"
+        json["config"]["config_file"]
+            .as_str()
+            .is_some_and(|p| p.ends_with(".yamalgam.yaml")),
+        "YAML config file should be reported"
     );
 }
 
 #[test]
-fn yml_project_config_is_ignored() {
+fn yml_project_config_is_discovered() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join(".yamalgam.yml"), "log_level: debug\n").unwrap();
 
     let json = info_json(tmp.path());
-    assert_eq!(
-        json["config"]["log_level"], "info",
-        "YAML config should be ignored during discovery"
-    );
+    assert_eq!(json["config"]["log_level"], "debug");
 }
 
 #[test]
@@ -199,14 +195,14 @@ fn closer_config_takes_precedence() {
 fn toml_discovered_when_yaml_also_present() {
     let tmp = TempDir::new().unwrap();
 
-    // YAML is not in the discovery extension list; TOML is found normally.
+    // TOML comes first in librebar's discovery extension order.
     fs::write(tmp.path().join(".yamalgam.toml"), r#"log_level = "debug""#).unwrap();
     fs::write(tmp.path().join(".yamalgam.yaml"), "log_level: error\n").unwrap();
 
     let json = info_json(tmp.path());
     assert_eq!(
         json["config"]["log_level"], "debug",
-        "TOML config should be used; YAML ignored"
+        "TOML config wins the extension-order tie"
     );
 }
 
@@ -267,22 +263,26 @@ fn invalid_toml_config_shows_error() {
 }
 
 #[test]
-fn explicit_yaml_config_is_rejected() {
+fn explicit_yaml_config_is_parsed() {
     let tmp = TempDir::new().unwrap();
     let config = tmp.path().join("config.yaml");
     fs::write(&config, "log_level: warn\n").unwrap();
 
-    cmd()
+    let output = cmd()
         .args([
             "-C",
             tmp.path().to_str().unwrap(),
             "--config",
             config.to_str().unwrap(),
             "info",
+            "--json",
         ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unsupported config file format"));
+        .output()
+        .expect("failed to run command");
+    assert!(output.status.success());
+
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["config"]["log_level"], "warn");
 }
 
 #[test]

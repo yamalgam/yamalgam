@@ -6,48 +6,27 @@
 //!
 //! # Structure
 //!
-//! - [`Cli`] - The root argument parser (clap derive)
+//! - [`Cli`] - The root argument parser (clap derive, librebar [`CommonArgs`] flattened)
 //! - [`Commands`] - Available subcommands
 //! - [`commands`] - Command implementations
+//! - [`config`] - CLI configuration loaded via librebar discovery
 //!
 //! # Documentation Generation
 //!
 //! The [`command()`] function returns the clap `Command` for generating man pages
 //! and shell completions via `xtask`.
+//!
+//! [`CommonArgs`]: librebar::cli::CommonArgs
 pub mod commands;
+pub mod config;
 
-// Re-export serde deserialization API.
+// Re-export the YAML API so `yamalgam` works as a single dependency.
+pub use yamalgam_core::{LoaderConfig, Mapping, Value};
 pub use yamalgam_serde::{
     Deserializer, Error as DeserializeError, from_reader, from_str, from_str_with_config,
 };
 
 use clap::{CommandFactory, Parser, Subcommand};
-use std::path::PathBuf;
-
-/// Color output preference.
-#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
-pub enum ColorChoice {
-    /// Detect terminal capabilities automatically.
-    #[default]
-    Auto,
-    /// Always emit colors.
-    Always,
-    /// Never emit colors.
-    Never,
-}
-
-impl ColorChoice {
-    /// Configure global color output based on this choice.
-    ///
-    /// Call this once at startup to set the color mode.
-    pub fn apply(self) {
-        match self {
-            Self::Auto => {} // owo-colors auto-detects by default
-            Self::Always => owo_colors::set_override(true),
-            Self::Never => owo_colors::set_override(false),
-        }
-    }
-}
 
 const ENV_HELP: &str = "\
 ENVIRONMENT VARIABLES:
@@ -59,42 +38,22 @@ ENVIRONMENT VARIABLES:
 /// Command-line interface definition for yamalgam.
 #[derive(Parser)]
 #[command(name = "yamalgam")]
-#[command(about = "A modern, production-ready Rust CLI application.", long_about = None)]
+#[command(about = "YAML toolkit", long_about = None)]
 #[command(version, arg_required_else_help = true)]
 #[command(after_help = ENV_HELP)]
 #[command(disable_help_flag = true)]
 pub struct Cli {
-    /// The subcommand to execute.
-    #[command(subcommand)]
-    pub command: Option<Commands>,
-
-    /// Print only the version number (for scripting)
-    #[arg(long)]
-    pub version_only: bool,
+    /// Common flags (`-q`, `-v`, `--json`, `--color`, `-C`, `--version-only`).
+    #[command(flatten)]
+    pub common: librebar::cli::CommonArgs,
 
     /// Path to configuration file (overrides discovery)
     #[arg(short, long, global = true, value_name = "FILE")]
-    pub config: Option<PathBuf>,
+    pub config: Option<camino::Utf8PathBuf>,
 
-    /// Run as if started in DIR
-    #[arg(short = 'C', long, global = true)]
-    pub chdir: Option<PathBuf>,
-
-    /// Only print errors (suppresses warnings/info)
-    #[arg(short, long, global = true)]
-    pub quiet: bool,
-
-    /// More detail (repeatable; e.g. -vv)
-    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
-    pub verbose: u8,
-
-    /// Colorize output
-    #[arg(long, global = true, value_enum, default_value_t)]
-    pub color: ColorChoice,
-
-    /// Output as JSON (for scripting)
-    #[arg(long, global = true)]
-    pub json: bool,
+    /// The subcommand to execute.
+    #[command(subcommand)]
+    pub command: Option<Commands>,
 }
 
 /// Available subcommands for the CLI.
@@ -108,17 +67,7 @@ pub enum Commands {
 
 /// Returns the clap command for documentation generation.
 ///
-/// Adds a custom `-h`/`--help` flag using `HelpShort` so both render
-/// the compact single-line format. This is done at the Command level
-/// (not as a struct field) because clap's derive treats `HelpShort`
-/// as a value-less exit action that conflicts with struct population.
+/// Wraps the derive output with librebar's compact `-h`/`--help` flag.
 pub fn command() -> clap::Command {
-    Cli::command().arg(
-        clap::Arg::new("help")
-            .short('h')
-            .long("help")
-            .help("Print help")
-            .global(true)
-            .action(clap::ArgAction::HelpShort),
-    )
+    librebar::cli::with_help_short(Cli::command())
 }
