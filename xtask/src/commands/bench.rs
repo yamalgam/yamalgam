@@ -7,13 +7,13 @@ use crate::workspace_root;
 
 #[derive(Args, Debug)]
 pub struct BenchArgs {
-    /// Skip divan (wall-clock) benchmarks
+    /// Skip scanner/parser self-benchmarks
     #[arg(long)]
-    pub skip_divan: bool,
+    pub skip_self: bool,
 
-    /// Skip gungraun (instruction count) benchmarks
+    /// Skip comparative (vs peers) benchmarks
     #[arg(long)]
-    pub skip_gungraun: bool,
+    pub skip_comparative: bool,
 
     /// Skip CLI (hyperfine) benchmarks
     #[arg(long)]
@@ -37,48 +37,13 @@ pub fn cmd_bench(args: BenchArgs) -> Result<(), String> {
 
     let mut any_run = false;
 
-    // Divan benchmarks
-    if !args.skip_divan {
-        println!("\n=== Running Divan Benchmarks (wall-clock) ===\n");
+    // Scanner/parser self-benchmarks
+    if !args.skip_self {
+        println!("\n=== Running Self-Benchmarks (scanner + parser) ===\n");
 
-        let mut cmd = Command::new("cargo");
-        cmd.current_dir(&root)
-            .args(["bench", "--bench", "divan_benchmarks"]);
-
-        if let Some(ref filter) = args.filter {
-            cmd.args(["--", filter]);
-        }
-
-        let status = cmd
-            .status()
-            .map_err(|e| format!("Failed to run divan: {e}"))?;
-
-        if !status.success() {
-            return Err("Divan benchmarks failed".to_string());
-        }
-        any_run = true;
-    }
-
-    // Gungraun benchmarks
-    if !args.skip_gungraun {
-        println!("\n=== Running Gungraun Benchmarks (instruction count) ===\n");
-
-        // Check if valgrind is available
-        let valgrind_check = Command::new("which")
-            .arg("valgrind")
-            .output()
-            .map_err(|e| format!("Failed to check for valgrind: {e}"))?;
-
-        if !valgrind_check.status.success() {
-            println!("Warning: Valgrind not found. Skipping gungraun benchmarks.");
-            println!(
-                "Install with: brew install valgrind (macOS Intel) or apt install valgrind (Linux)"
-            );
-            println!("Note: Valgrind does not support macOS ARM (M1/M2/M3).\n");
-        } else {
+        for pkg in ["yamalgam-scanner", "yamalgam-parser"] {
             let mut cmd = Command::new("cargo");
-            cmd.current_dir(&root)
-                .args(["bench", "--bench", "gungraun_benchmarks"]);
+            cmd.current_dir(&root).args(["bench", "-p", pkg]);
 
             if let Some(ref filter) = args.filter {
                 cmd.args(["--", filter]);
@@ -86,13 +51,35 @@ pub fn cmd_bench(args: BenchArgs) -> Result<(), String> {
 
             let status = cmd
                 .status()
-                .map_err(|e| format!("Failed to run gungraun: {e}"))?;
+                .map_err(|e| format!("Failed to run {pkg} benchmarks: {e}"))?;
 
             if !status.success() {
-                return Err("Gungraun benchmarks failed".to_string());
+                return Err(format!("{pkg} benchmarks failed"));
             }
-            any_run = true;
         }
+        any_run = true;
+    }
+
+    // Comparative benchmarks against peer YAML crates
+    if !args.skip_comparative {
+        println!("\n=== Running Comparative Benchmarks (vs peers) ===\n");
+
+        let mut cmd = Command::new("cargo");
+        cmd.current_dir(&root)
+            .args(["bench", "-p", "yamalgam-bench"]);
+
+        if let Some(ref filter) = args.filter {
+            cmd.args(["--", filter]);
+        }
+
+        let status = cmd
+            .status()
+            .map_err(|e| format!("Failed to run comparative benchmarks: {e}"))?;
+
+        if !status.success() {
+            return Err("Comparative benchmarks failed".to_string());
+        }
+        any_run = true;
     }
 
     // CLI benchmarks with hyperfine
@@ -133,11 +120,8 @@ pub fn cmd_bench(args: BenchArgs) -> Result<(), String> {
         }
     }
 
-    if any_run {
-        println!("\n=== Benchmark Complete ===");
-        println!("Results saved to bench-reports/");
-    } else {
-        println!("No benchmarks were run. Check that required tools are installed.");
+    if !any_run {
+        println!("All benchmark suites were skipped.");
     }
 
     Ok(())

@@ -83,10 +83,6 @@ mdfix *files='':
 bench:
   cargo xtask bench
 
-# Run divan (wall-clock) benchmarks only
-bench-divan:
-  cargo bench --bench divan_benchmarks
-
 # Run CLI (hyperfine) benchmarks only
 bench-cli:
   ./scripts/bench-cli.sh

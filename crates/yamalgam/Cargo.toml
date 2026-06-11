@@ -10,8 +10,6 @@ homepage.workspace = true
 readme.workspace = true
 exclude = [
     # Workspace-level files (/ = workspace root)
-    # Copier answers file (template state, not project code)
-    "/.repo.yml",
    "/.claude/",
     "/.github/",
     "/AGENTS.md",
@@ -44,6 +42,7 @@ pkg-fmt = "zip"
 [dependencies]
 yamalgam-core = { version = "0.1", path = "../yamalgam-core" }
 yamalgam-serde = { path = "../yamalgam-serde" }
+librebar = { version = "0.1", features = ["cli", "config", "logging", "diagnostics"] }
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"
 tracing = "0.1"

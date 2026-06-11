@@ -5,299 +5,77 @@
 [![docs.rs](https://docs.rs/yamalgam/badge.svg)](https://docs.rs/yamalgam)
 [![MSRV](https://img.shields.io/badge/MSRV-1.89.0-blue.svg)](https://github.com/claylo/yamalgam)
 
-A modern, production-ready Rust CLI application.
+A pure Rust YAML toolkit: scanner, event parser, lossless CST, DOM, and a
+streaming serde deserializer — one pipeline, four consumers.
 
+> **Pre-release.** Nothing is published to crates.io yet; APIs change
+> without deprecation cycles. The `yg` CLI (jq-style queries for YAML)
+> lands in Milestone 10.
 
-## Features
+## Architecture
 
-
-- **Hierarchical Configuration** - Automatic config discovery from project directories up to user home
-
-- **Structured Logging** - Daily-rotated JSONL log files
-- **JSON Output** - Machine-readable output for scripting and automation
-- **Shell Completions** - Tab completion for Bash, Zsh, Fish, and PowerShell
-- **Man Pages** - Unix-style documentation
-
-## Installation
-
-### Homebrew (macOS and Linux)
-
-```bash
-brew install claylo/brew/yamalgam
+```
+YAML bytes → Scanner (tokens) → Parser (events) → Resolver middleware
+                                                        │
+                    ┌───────────┬───────────────┬───────┴───────┐
+                    │           │               │               │
+              Streaming     Value (DOM)       CST          SAX/Callbacks
+              serde Deser   (lossy)        (lossless)      (zero alloc)
 ```
 
-### Pre-built Binaries
+| Crate | Role |
+|-------|------|
+| `yamalgam` | CLI (becomes `yg`) + re-exported public API |
+| `yamalgam-core` | `Value` DOM, tag resolution, loader config, diagnostics |
+| `yamalgam-scanner` | Bytes → tokens |
+| `yamalgam-parser` | Tokens → events (full-fidelity: comments, indicators, spans) |
+| `yamalgam-compose` | Events → `Value` documents |
+| `yamalgam-cst` | Events → lossless concrete syntax tree (`to_text()` round-trips) |
+| `yamalgam-serde` | Streaming serde `Deserializer` (no intermediate DOM) |
 
-Download the latest release for your platform from the [releases page](https://github.com/claylo/yamalgam/releases).
+## Status
 
-Binaries are available for:
-- macOS (Apple Silicon and Intel)
-- Linux (x86_64 and ARM64, glibc and musl)
-- Windows (x86_64 and ARM64)
+- YAML 1.2 core schema; event compliance 350/351 against the
+  [YAML Test Suite](https://github.com/yaml/yaml-test-suite)
+- CST round-trip fidelity 343/351 (byte-for-byte `parse → to_text`)
+- Streaming serde deserializer with anchor/alias replay, multi-document
+  iteration, structured errors with source spans, and behavioral parity
+  with serde_yaml (divergences documented in tests)
+- Composer and serde pipelines agree on the entire test suite
+- Fastest of 8 benchmarked peers on small/medium inputs
 
-### From Source
+## Using the library (pre-release)
 
-```bash
-cargo install yamalgam
-```
+```rust
+use serde::Deserialize;
 
-Or build from source:
-
-```bash
-git clone https://github.com/claylo/yamalgam.git
-cd yamalgam
-cargo install --path crates/yamalgam
-```
-
-### Shell Completions
-
-Shell completions are included in release archives and Homebrew installs. For manual installation, see [Shell Completions](#shell-completions) below.
-
-## Usage
-
-```bash
-# Show version and build information
-yamalgam info
-
-# JSON output for scripting
-yamalgam info --json
-
-# Enable verbose output
-yamalgam --verbose <command>
-```
-
-
-## Configuration
-
-Configuration files are discovered automatically in order of precedence (highest first):
-
-1. `.yamalgam.<ext>` in current directory or any parent
-2. `yamalgam.<ext>` in current directory or any parent
-3. `~/.config/yamalgam/config.<ext>` (user config)
-
-**Supported formats:** TOML, YAML, JSON (extensions: `.toml`, `.yaml`, `.yml`, `.json`)
-
-Values from higher-precedence files override lower ones. Missing files are silently ignored.
-
-See the example configurations in the repository root for templates.
-
-### Example Configuration
-
-**TOML** (`~/.config/yamalgam/config.toml`):
-```toml
-log_level = "info"
-```
-
-**YAML** (`~/.config/yamalgam/config.yaml`):
-```yaml
-log_level: info
-```
-
-**JSON** (`~/.config/yamalgam/config.json`):
-```json
-{
-  "log_level": "info"
+#[derive(Deserialize)]
+struct Server {
+    host: String,
+    port: u16,
 }
+
+let server: Server = yamalgam::from_str("host: localhost\nport: 8080")?;
 ```
 
-### Configuration Options
+Multi-document streams:
 
-| Option | Values | Default | Description |
-|--------|--------|---------|-------------|
-| `log_level` | `debug`, `info`, `warn`, `error` | `info` | Minimum log level to display |
-| `log_dir` | path | platform default | Directory for JSONL log files |
-
-
-## Logging
-
-Logs are written as **JSONL** to a daily-rotated file.
-Rotation is date-suffixed (e.g. `yamalgam.jsonl.2026-01-06`).
-
-> **Note**: Logs never write to stdout, which is reserved for application output
-> (important for tools like MCP servers that use stdout for communication).
-
-Default log path (first writable wins):
-
-1. `/var/log/yamalgam.jsonl` (Unix only, requires write access)
-2. OS user data directory (e.g. `~/.local/share/yamalgam/logs/yamalgam.jsonl`)
-3. Falls back to stderr if no writable directory is found
-
-Overrides:
-
-- `YAMALGAM_LOG_PATH` — log file path (daily rotation appends `.YYYY-MM-DD`)
-- `YAMALGAM_LOG_DIR` — directory (file name defaults to `yamalgam.jsonl`)
-- `YAMALGAM_ENV` — environment tag (default: `dev`)
-- Config file key: `log_dir`
-
-
-## Shell Completions
-
-Shell completions are included in the release archives. To install manually:
-
-**Bash**
-```bash
-yamalgam completions bash > ~/.local/share/bash-completion/completions/yamalgam
-```
-
-**Zsh**
-```bash
-yamalgam completions zsh > ~/.zfunc/_yamalgam
-```
-
-**Fish**
-```bash
-yamalgam completions fish > ~/.config/fish/completions/yamalgam.fish
-```
-
-**PowerShell**
-```powershell
-yamalgam completions powershell > $PROFILE.CurrentUserAllHosts
+```rust
+let docs: Vec<yamalgam::Value> = yamalgam::Deserializer::from_str("---\na: 1\n---\nb: 2")
+    .documents()
+    .collect::<Result<_, _>>()?;
 ```
 
 ## Development
 
-This project uses a workspace layout with multiple crates:
-
-```
-crates/
-├── yamalgam/       # CLI binary
-└── yamalgam-core/  # Core library (config, errors)
-```
-
-### Prerequisites
-
-- Rust 1.89.0+ (2024 edition)
-- [just](https://github.com/casey/just) (task runner)
-- [cargo-nextest](https://nexte.st/) (test runner)
-
-### Quick Start
-
 ```bash
-# List available tasks
-just --list
-
-# Run full check suite (format, lint, test)
-just check
-
-# Run tests only
-just test
-
-# Run with coverage
-just cov
+just check   # fmt + clippy + deny + nextest + doc-tests
+just bench   # scanner/parser self-benches, comparative, CLI
 ```
 
-### Build Tasks
-
-| Command | Description |
-|---------|-------------|
-| `just check` | Format, lint, and test |
-| `just fmt` | Format code with rustfmt |
-| `just clippy` | Run clippy lints |
-| `just test` | Run tests with nextest |
-| `just doc-test` | Run documentation tests |
-| `just cov` | Generate coverage report |
-
-
-### xtask Commands
-
-The project includes an xtask crate for build automation:
-
-```bash
-# Generate man pages
-cargo xtask man
-
-# Generate shell completions
-cargo xtask completions
-
-# Generate for specific shell
-cargo xtask completions --shell zsh
-```
-
-## Architecture
-
-### Crate Organization
-
-- **yamalgam** - The CLI binary. Handles argument parsing, command dispatch, and user interaction.
-- **yamalgam-core** - The core library. Contains configuration loading, error types, and shared functionality.
-
-### Error Handling
-
-- Libraries use `thiserror` for structured error types
-- Binaries use `anyhow` for flexible error propagation
-- All errors include context for debugging
-
-
-### Configuration System
-
-The `ConfigLoader` provides flexible configuration discovery:
-
-```rust
-use yamalgam_core::config::{Config, ConfigLoader};
-
-let config = ConfigLoader::new()
-    .with_project_search(std::env::current_dir()?)
-    .with_user_config(true)
-    .load()?;
-```
-
-Features:
-- Walks up directory tree looking for config files
-- Stops at repository boundaries (`.git` by default)
-- Merges multiple config sources with clear precedence
-- Supports explicit file paths for testing
-
-## CI/CD
-
-This project uses GitHub Actions for continuous integration:
-
-- **Build & Test** - Runs on every push and PR
-- **MSRV Check** - Verifies minimum supported Rust version
-- **Clippy** - Enforces lint rules
-- **Coverage** - Tracks test coverage
-
-### Dependabot
-
-This project uses Dependabot for security monitoring, but **not** for automatic pull requests. Instead:
-
-1. Dependabot scans for vulnerabilities in dependencies
-2. A weekly GitHub Actions workflow converts alerts into **issues**
-3. Maintainers review and address updates manually
-
-This approach provides:
-- Full control over when and how dependencies are updated
-- Opportunity to batch related updates together
-- Time to test updates before merging
-- Cleaner git history without automated PR noise
-
-Security alerts appear as issues labeled `dependabot-alert`.
-
-## Contributing
-
-Contributions welcome! Please see [AGENTS.md](AGENTS.md) for development conventions.
-
-### Commit Messages
-
-This project uses [Conventional Commits](https://www.conventionalcommits.org/):
-
-- `feat:` - New features
-- `fix:` - Bug fixes
-- `docs:` - Documentation changes
-- `perf:` - Performance improvements
-- `chore:` - Maintenance tasks
-
-### Code Style
-
-- Rust 2024 edition
-- `#![deny(unsafe_code)]` - Safe Rust only
-- Follow `rustfmt` defaults
-- Keep clippy clean
+The roadmap lives in [`docs/plans/README.md`](docs/plans/README.md).
 
 ## License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
-
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.

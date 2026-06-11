@@ -14,9 +14,9 @@ readme = "README.md"
 repository = "https://github.com/claylo/yamalgam"
 homepage = "https://github.com/claylo/yamalgam"
 documentation = "https://docs.rs/yamalgam"
-description = "A modern, production-ready Rust CLI application."
-keywords = []
-categories = ["", ""]
+description = "Pure Rust YAML toolkit: parser, CST, serde, and query CLI"
+keywords = ["yaml", "parser", "serde", "cst"]
+categories = ["parser-implementations", "command-line-utilities"]
 
 [workspace.lints.rust]
 # Use "deny" instead of "forbid" to allow benchmark harnesses to override

@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      skip_gungraun:
-        description: 'Skip gungraun benchmarks'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -24,85 +19,6 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Divan benchmarks run on all platforms
-  divan:
-    name: Divan (wall-clock)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-
-      - name: Generate benchmark harnesses
-        run: cargo xtask gen-benchmarks
-
-
-      - name: Run Divan benchmarks
-        run: |
-          mkdir -p bench-reports
-          cargo bench --bench divan_benchmarks 2>&1 | tee bench-reports/divan-ci.txt
-
-      - name: Upload Divan results
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: divan-results
-          path: bench-reports/divan-ci.txt
-          retention-days: 30
-
-  # Gungraun requires Valgrind (Linux only, no ARM64)
-  gungraun:
-    name: Gungraun (instruction count)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    if: ${{ !inputs.skip_gungraun }}
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
-
-      - name: Install Valgrind
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y valgrind
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-      - name: Install gungraun-runner
-        uses: ./.github/actions/setup-cargo-tools
-        with:
-          binstall-tools: gungraun-runner
-
-
-      - name: Generate benchmark harnesses
-        run: cargo xtask gen-benchmarks
-
-
-      - name: Run Gungraun benchmarks
-        run: |
-          mkdir -p bench-reports
-          cargo bench --bench gungraun_benchmarks 2>&1 | tee bench-reports/gungraun-ci.txt
-
-      - name: Upload Gungraun results
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: gungraun-results
-          path: bench-reports/gungraun-ci.txt
-          retention-days: 30
-
   # Comparative benchmarks (yamalgam vs YAML peers)
   comparative:
     name: Comparative (vs peers)

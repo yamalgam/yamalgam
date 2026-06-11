@@ -1,24 +1,16 @@
 //! Core library for yamalgam.
 //!
-//! This crate provides the foundational types and functionality used by the
-//! `yamalgam` CLI and any downstream consumers.
-//!
-//! # Modules
-//!
-//! - [`config`] - Configuration loading and management
-//! - [`error`] - Error types and result aliases
+//! Foundational types shared across the yamalgam pipeline: the [`Value`]
+//! DOM, tag resolution, loader configuration and resource limits, source
+//! positions, and diagnostics.
 //!
 //! # Quick Start
 //!
-//! ```no_run
-//! use yamalgam_core::{Config, ConfigLoader};
+//! ```
+//! use yamalgam_core::Value;
 //!
-//! let (config, _sources) = ConfigLoader::new()
-//!     .with_user_config(true)
-//!     .load()
-//!     .expect("Failed to load configuration");
-//!
-//! println!("Log level: {:?}", config.log_level);
+//! let v = Value::from("hello");
+//! assert_eq!(v.as_str(), Some("hello"));
 //! ```
 #![deny(unsafe_code)]
 
@@ -45,15 +37,9 @@
 // y[impl overview.tags.global-tags-uri+3]
 // y[impl overview.tags.local-tags+3]
 
-pub mod config;
-
 pub mod diagnostic;
 
-pub mod error;
-
 pub mod loader;
-
-pub mod observability;
 
 pub mod tag;
 
@@ -61,11 +47,7 @@ pub mod tag_resolution;
 
 pub mod value;
 
-pub use config::{Config, ConfigLoader, LogLevel};
-
 pub use diagnostic::{Diagnostic, Label, Mark, Severity, Span};
-
-pub use error::{ConfigError, ConfigResult};
 
 pub use loader::{IncludePolicy, LoaderConfig, RefPolicy, ResolutionPolicy, ResourceLimits};
 
