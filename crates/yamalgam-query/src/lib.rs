@@ -15,5 +15,5 @@ pub mod value;
 
 pub use build::{parse_str, parse_str_with_config};
 pub use emit::{EmitFormat, EmitOpts};
-pub use error::BuildError;
+pub use error::{BuildError, YgError};
 pub use value::{Meta, NodeStyle, YamlVal};
