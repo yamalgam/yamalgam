@@ -12,7 +12,7 @@ use predicates::prelude::*;
 /// cargo build directories, but works correctly for standard project layouts.
 #[allow(deprecated)]
 fn cmd() -> Command {
-    Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap()
+    Command::cargo_bin("yg").unwrap()
 }
 
 // =============================================================================
@@ -180,24 +180,6 @@ fn color_never_accepted() {
 // =============================================================================
 // Error Cases
 // =============================================================================
-
-#[test]
-fn no_subcommand_shows_help() {
-    // arg_required_else_help makes clap print help to stderr and exit 2
-    cmd()
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("Usage:"));
-}
-
-#[test]
-fn invalid_subcommand_shows_error() {
-    cmd()
-        .arg("not-a-command")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("error:"));
-}
 
 #[test]
 fn invalid_flag_shows_error() {

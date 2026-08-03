@@ -28,7 +28,7 @@ class Yamalgam < Formula
   end
 
   def install
-    bin.install "bin/yamalgam"
+    bin.install "bin/yg"
     man1.install Dir["share/man/man1/*.1"]
     bash_completion.install "share/completions/yamalgam.bash" => "yamalgam"
     zsh_completion.install "share/completions/_yamalgam"

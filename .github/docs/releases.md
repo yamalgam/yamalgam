@@ -181,7 +181,7 @@ class Yamalgam < Formula
   end
 
   def install
-    bin.install "bin/yamalgam"
+    bin.install "bin/yg"
     man1.install Dir["share/man/man1/*.1"]
     bash_completion.install "share/completions/yamalgam.bash" => "yamalgam"
     zsh_completion.install "share/completions/_yamalgam"
@@ -213,7 +213,7 @@ section = "utility"
 priority = "optional"
 assets = [
     # Binary
-    ["target/release/yamalgam", "usr/bin/", "755"],
+    ["target/release/yg", "usr/bin/", "755"],
     # Man pages (if using xtask)
     ["target/dist/share/man/man1/*", "usr/share/man/man1/", "644"],
     # Shell completions
@@ -239,7 +239,7 @@ gh variable set DEB_ENABLED --body "true"
 [package.metadata.generate-rpm]
 assets = [
     # Binary
-    { source = "target/release/yamalgam", dest = "/usr/bin/yamalgam", mode = "755" },
+    { source = "target/release/yg", dest = "/usr/bin/yg", mode = "755" },
     # Man pages (if using xtask)
     { source = "target/dist/share/man/man1/*", dest = "/usr/share/man/man1/", mode = "644", doc = true },
     # Shell completions
@@ -275,7 +275,7 @@ npm/
 └── platforms/
     ├── yamalgam-darwin-arm64/
     │   ├── package.json
-    │   └── bin/yamalgam
+    │   └── bin/yg
     ├── yamalgam-darwin-x64/
     ├── yamalgam-linux-arm64/
     ├── yamalgam-linux-x64/
@@ -512,17 +512,17 @@ Each release tarball contains:
 ```
 yamalgam-{version}-{target}/
 ├── bin/
-│   └── yamalgam          # The compiled binary
+│   └── yg                # The compiled binary
 ├── share/
 │   ├── man/
 │   │   └── man1/
-│   │       ├── yamalgam.1           # Main command man page
-│   │       └── yamalgam-*.1         # Subcommand man pages
+│   │       ├── yg.1           # Main command man page
+│   │       └── yg-*.1         # Subcommand man pages
 │   └── completions/
-│       ├── yamalgam.bash            # Bash completions
-│       ├── yamalgam.fish            # Fish completions
-│       ├── yamalgam.ps1             # PowerShell completions
-│       └── _yamalgam                # Zsh completions
+│       ├── yg.bash            # Bash completions
+│       ├── yg.fish            # Fish completions
+│       ├── yg.ps1             # PowerShell completions
+│       └── _yg                # Zsh completions
 ├── LICENSE-*
 ├── README.md
 └── CHANGELOG.md
@@ -535,7 +535,7 @@ This structure follows [XDG conventions](https://specifications.freedesktop.org/
 All release builds use [cargo-auditable](https://github.com/rust-secure-code/cargo-auditable) to embed dependency information in the binary. This enables vulnerability scanning of deployed binaries:
 
 ```bash
-cargo audit bin ./target/release/yamalgam
+cargo audit bin ./target/release/yg
 ```
 
 ### CycloneDX SBOM

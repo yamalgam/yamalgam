@@ -1644,6 +1644,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "yamalgam-core",
+ "yamalgam-query",
  "yamalgam-serde",
 ]
 

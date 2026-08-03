@@ -301,6 +301,21 @@ impl YamlVal {
         }
     }
 
+    /// Return whether this value is a string.
+    #[must_use]
+    pub const fn is_string(&self) -> bool {
+        matches!(&self.data, Data::Str(_))
+    }
+
+    /// Borrow this value's string content.
+    #[must_use]
+    pub fn as_str_content(&self) -> Option<&str> {
+        match &self.data {
+            Data::Str(string) => Some(string),
+            _ => None,
+        }
+    }
+
     /// Iterate mapping keys in insertion order, or return an empty iterator.
     pub fn keys(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
         match &self.data {

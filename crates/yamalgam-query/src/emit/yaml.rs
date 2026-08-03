@@ -231,11 +231,14 @@ impl Context<'_> {
 
     fn scalar(&self, value: &YamlVal, position: Position) -> Rendered {
         match &value.data {
-            Data::Null => Rendered::Inline("null".into()),
-            Data::Bool(boolean) => Rendered::Inline(boolean.to_string()),
-            Data::Int(integer) => Rendered::Inline(integer.to_string()),
-            Data::Float(float) => Rendered::Inline(fmt_float(*float)),
-            Data::Str(string) => self.string(string, value, position),
+            Data::Null => Rendered::Inline(self.paint("null", "2")),
+            Data::Bool(boolean) => Rendered::Inline(self.paint(&boolean.to_string(), "33")),
+            Data::Int(integer) => Rendered::Inline(self.paint(&integer.to_string(), "33")),
+            Data::Float(float) => Rendered::Inline(self.paint(&fmt_float(*float), "33")),
+            Data::Str(string) => match self.string(string, value, position) {
+                Rendered::Inline(text) => Rendered::Inline(self.paint(&text, "32")),
+                literal => literal,
+            },
             Data::Seq(_) | Data::Map(_) => unreachable!("collections are not scalars"),
         }
     }
@@ -324,7 +327,7 @@ impl Context<'_> {
         self.anchors_emitted
             .iter()
             .any(|anchor| anchor == alias)
-            .then(|| format!("*{alias}"))
+            .then(|| self.paint(&format!("*{alias}"), "35"))
     }
 
     fn properties(&self, value: &YamlVal) -> String {
@@ -345,7 +348,11 @@ impl Context<'_> {
                 prefix.push(' ');
             }
         }
-        prefix
+        if prefix.is_empty() {
+            prefix
+        } else {
+            self.paint(&prefix, "35")
+        }
     }
 
     fn record_anchor(&mut self, value: &YamlVal) {
@@ -360,7 +367,7 @@ impl Context<'_> {
         let content = string.strip_suffix('\n').unwrap_or(string);
         for line in content.split('\n') {
             self.indent(output, depth);
-            output.push_str(line);
+            output.push_str(&self.paint(line, "32"));
             output.push('\n');
         }
     }
@@ -379,6 +386,14 @@ impl Context<'_> {
 
     fn indent(&self, output: &mut String, depth: usize) {
         output.push_str(&" ".repeat(self.options.indent.saturating_mul(depth)));
+    }
+
+    fn paint(&self, text: &str, ansi_code: &str) -> String {
+        if self.options.color {
+            format!("\x1b[{ansi_code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
     }
 }
 

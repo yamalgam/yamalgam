@@ -122,7 +122,21 @@ pub fn compile_filter(code: &str, variables: &[String]) -> Result<Filter<YgKind>
 pub fn run_filter<E: From<YgError>>(
     filter: &Filter<YgKind>,
     context: &RunCtx,
-    inputs: impl Iterator<Item = Result<YamlVal, String>>,
+    inputs: impl Iterator<Item = Result<YamlVal, String>> + 'static,
+    visit: impl FnMut(YamlVal) -> Result<(), E>,
+) -> Result<Option<bool>, E> {
+    run_filter_with_null_input(filter, context, inputs, false, visit)
+}
+
+/// Run a filter with the real input stream available to `input`/`inputs`.
+///
+/// When `null_input` is true, the filter driver is a single null while native
+/// input filters continue to consume from `inputs`.
+pub fn run_filter_with_null_input<E: From<YgError>>(
+    filter: &Filter<YgKind>,
+    context: &RunCtx,
+    inputs: impl Iterator<Item = Result<YamlVal, String>> + 'static,
+    null_input: bool,
     mut visit: impl FnMut(YamlVal) -> Result<(), E>,
 ) -> Result<Option<bool>, E> {
     let inputs: Box<dyn Iterator<Item = Result<YamlVal, String>>> = Box::new(inputs);
@@ -135,7 +149,13 @@ pub fn run_filter<E: From<YgError>>(
     let jaq_context = Ctx::<YgKind>::new(&data, Vars::new([]));
     let mut last = None;
 
-    for input in &inputs {
+    let mut driver: Box<dyn Iterator<Item = Result<YamlVal, String>> + '_> = if null_input {
+        Box::new(core::iter::once(Ok(YamlVal::null())))
+    } else {
+        Box::new(&inputs)
+    };
+
+    for input in &mut driver {
         let input = input.map_err(|error| E::from(YgError::InputParse(error)))?;
         for output in filter.id.run((jaq_context.clone(), input)) {
             let output: YamlVal = output.map_err(|error| E::from(YgError::runtime(error)))?;

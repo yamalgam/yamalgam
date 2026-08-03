@@ -20,7 +20,7 @@ pub fn cmd_completions(args: CompletionsArgs) -> Result<(), String> {
     fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
 
     let mut cmd = yamalgam::command();
-    let bin_name = "yamalgam";
+    let bin_name = "yg";
 
     let shells: Vec<Shell> = match args.shell {
         Some(shell) => vec![shell],
