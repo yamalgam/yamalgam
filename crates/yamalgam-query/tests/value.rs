@@ -1,6 +1,8 @@
 //! Resolved-value and presentation-metadata semantics for `YamlVal`.
 
+use yamalgam_core::{LoaderConfig, TagResolution};
 use yamalgam_query::value::{Meta, NodeStyle, YamlVal};
+use yamalgam_query::{BuildError, parse_str, parse_str_with_config};
 use yamalgam_scanner::ScalarStyle;
 
 #[test]
@@ -117,4 +119,101 @@ fn nan_is_a_reflexive_total_order_value() {
     assert_eq!(nan, nan.clone());
     assert_eq!(nan.cmp(&nan), std::cmp::Ordering::Equal);
     assert!(nan < YamlVal::int(-5));
+}
+
+#[test]
+fn builder_preserves_scalar_metadata() {
+    let docs = parse_str("base: &b !custom 'hi'\n").unwrap();
+    let value = docs[0].get_str("base").unwrap();
+    let meta = value.meta().unwrap();
+
+    assert_eq!(meta.anchor.as_deref(), Some("b"));
+    assert_eq!(meta.tag.as_deref(), Some("!custom"));
+    assert_eq!(
+        meta.style,
+        Some(NodeStyle::Scalar(ScalarStyle::SingleQuoted))
+    );
+    assert_eq!(meta.raw.as_deref(), Some("hi"));
+}
+
+#[test]
+fn plain_scalars_resolve_using_the_configured_schema() {
+    // r[datamodel.schema.default]
+    let docs = parse_str("a: 1\nb: yes\nc: 1.5\nd: null\n").unwrap();
+    let map = &docs[0];
+    assert_eq!(map.get_str("a"), Some(&YamlVal::int(1)));
+    assert_eq!(map.get_str("b"), Some(&YamlVal::str("yes")));
+    assert_eq!(map.get_str("c"), Some(&YamlVal::float(1.5)));
+    assert_eq!(map.get_str("d"), Some(&YamlVal::null()));
+
+    let config = LoaderConfig::moderate().with_tag_resolution(TagResolution::Failsafe);
+    let docs = parse_str_with_config("a: 1\n", &config).unwrap();
+    assert_eq!(docs[0].get_str("a"), Some(&YamlVal::str("1")));
+}
+
+#[test]
+fn aliases_splice_values_with_identity_metadata() {
+    let docs = parse_str("a: &x [1, 2]\nb: *x\n").unwrap();
+    let map = &docs[0];
+
+    assert_eq!(map.get_str("a"), map.get_str("b"));
+    let alias = map.get_str("b").unwrap();
+    assert_eq!(alias.meta().unwrap().alias_of.as_deref(), Some("x"));
+    assert!(alias.meta().unwrap().anchor.is_none());
+}
+
+#[test]
+fn merge_keys_are_preserved_instead_of_expanded() {
+    // r[ext.merge.preserve]
+    let docs = parse_str("base: &b {x: 1}\nchild:\n  <<: *b\n  y: 2\n").unwrap();
+    let child = docs[0].get_str("child").unwrap();
+
+    assert!(child.get_str("x").is_none());
+    let merge_key = child.keys().next().unwrap();
+    assert_eq!(merge_key.tag_shorthand().as_deref(), Some("!!merge"));
+}
+
+#[test]
+fn unknown_alias_reports_its_name() {
+    let error = parse_str("a: *nope\n").unwrap_err();
+
+    assert!(matches!(error, BuildError::UnknownAlias { name, .. } if name == "nope"));
+}
+
+#[test]
+fn parser_builds_multiple_and_explicit_empty_documents() {
+    let docs = parse_str("---\n1\n---\n2\n---\n").unwrap();
+
+    assert_eq!(
+        docs,
+        vec![YamlVal::int(1), YamlVal::int(2), YamlVal::null()]
+    );
+}
+
+#[test]
+fn explicit_core_tags_force_resolution() {
+    let docs = parse_str("a: !!str 5\nb: !!int '5'\nc: !!bool yes\n").unwrap();
+    let map = &docs[0];
+
+    assert_eq!(map.get_str("a"), Some(&YamlVal::str("5")));
+    assert_eq!(map.get_str("b"), Some(&YamlVal::int(5)));
+    assert_eq!(map.get_str("c"), Some(&YamlVal::str("yes")));
+}
+
+#[test]
+fn builder_enforces_anchor_count_limit() {
+    let mut config = LoaderConfig::unchecked();
+    config.limits.max_anchor_count = Some(1);
+
+    let error = parse_str_with_config("a: &one 1\nb: &two 2\n", &config).unwrap_err();
+    assert!(matches!(error, BuildError::Limit(message) if message.contains("anchor count")));
+}
+
+#[test]
+fn builder_enforces_alias_expansion_limit() {
+    let mut config = LoaderConfig::unchecked();
+    config.limits.max_alias_expansions = Some(1);
+
+    let error = parse_str_with_config("a: &one 1\nb: *one\nc: *one\n", &config).unwrap_err();
+    assert!(matches!(error, BuildError::Limit(message) if message.contains("alias expansions")));
 }

@@ -1,1 +1,287 @@
-//! Parser-event to YAML-value construction.
+//! Build [`YamlVal`] trees directly from parser events.
+//!
+//! Unlike the lossy composer, this builder retains tags, anchors, aliases,
+//! collection/scalar styles, and raw scalar text.
+
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use yamalgam_core::{LoaderConfig, TagResolution, TagResolver as _, Value};
+use yamalgam_parser::{Event, Parser};
+use yamalgam_scanner::ScalarStyle;
+
+use crate::error::BuildError;
+use crate::value::{Data, Meta, NodeStyle, YamlVal, YgMap};
+
+/// Parse every document using the moderate loader configuration.
+// r[cli.usage]
+pub fn parse_str(input: &str) -> Result<Vec<YamlVal>, BuildError> {
+    parse_str_with_config(input, &LoaderConfig::moderate())
+}
+
+/// Parse every document using an explicit loader configuration.
+pub fn parse_str_with_config(
+    input: &str,
+    config: &LoaderConfig,
+) -> Result<Vec<YamlVal>, BuildError> {
+    config
+        .limits
+        .check_input_size(input.len())
+        .map_err(BuildError::Limit)?;
+
+    let mut events = Parser::with_config(input, config)
+        .filter(|event| event.as_ref().map_or(true, |event| !event.is_structural()));
+    let mut builder = Builder::new(config);
+    let mut documents = Vec::new();
+
+    while let Some(event) = next_optional_event(&mut events)? {
+        match event {
+            Event::StreamStart => {}
+            Event::StreamEnd => break,
+            Event::VersionDirective { .. } | Event::TagDirective { .. } => {}
+            Event::DocumentStart { .. } => {
+                builder.start_document();
+                match next_optional_event(&mut events)? {
+                    Some(Event::DocumentEnd { .. }) | None => {
+                        documents.push(YamlVal::null());
+                    }
+                    Some(Event::StreamEnd) => {
+                        documents.push(YamlVal::null());
+                        break;
+                    }
+                    Some(first) => documents.push(builder.node(first, &mut events, 0)?),
+                }
+            }
+            Event::DocumentEnd { .. } => {}
+            first => {
+                builder.start_document();
+                documents.push(builder.node(first, &mut events, 0)?);
+            }
+        }
+    }
+
+    Ok(documents)
+}
+
+struct Builder<'config> {
+    config: &'config LoaderConfig,
+    anchors: HashMap<String, YamlVal>,
+    alias_expansions: usize,
+}
+
+impl<'config> Builder<'config> {
+    fn new(config: &'config LoaderConfig) -> Self {
+        Self {
+            config,
+            anchors: HashMap::new(),
+            alias_expansions: 0,
+        }
+    }
+
+    fn start_document(&mut self) {
+        self.anchors.clear();
+        self.alias_expansions = 0;
+    }
+
+    fn node<'input>(
+        &mut self,
+        first: Event<'input>,
+        events: &mut impl Iterator<Item = Result<Event<'input>, yamalgam_parser::ParseError>>,
+        depth: usize,
+    ) -> Result<YamlVal, BuildError> {
+        self.config
+            .limits
+            .check_depth(depth)
+            .map_err(BuildError::Limit)?;
+
+        match first {
+            // r[datamodel.metadata.tag]
+            // r[datamodel.metadata.anchor]
+            // r[datamodel.metadata.style]
+            Event::Scalar {
+                anchor,
+                tag,
+                value,
+                style,
+                ..
+            } => {
+                let data = self.resolve_scalar(&value, style, tag.as_deref());
+                self.finish(data, anchor, tag, NodeStyle::Scalar(style), Some(&value))
+            }
+            Event::SequenceStart {
+                anchor, tag, style, ..
+            } => {
+                let mut items = Vec::new();
+                loop {
+                    let event = next_event(events)?;
+                    if matches!(event, Event::SequenceEnd { .. }) {
+                        break;
+                    }
+                    items.push(self.node(event, events, depth + 1)?);
+                }
+                self.finish(
+                    Data::Seq(Rc::new(items)),
+                    anchor,
+                    tag,
+                    NodeStyle::Collection(style),
+                    None,
+                )
+            }
+            Event::MappingStart {
+                anchor, tag, style, ..
+            } => {
+                let mut map = YgMap::default();
+                loop {
+                    let event = next_event(events)?;
+                    if matches!(event, Event::MappingEnd { .. }) {
+                        break;
+                    }
+                    let mut key = self.node(event, events, depth + 1)?;
+                    self.tag_merge_key(&mut key);
+                    let value_event = next_event(events)?;
+                    let value = self.node(value_event, events, depth + 1)?;
+                    map.0.insert(key, value);
+                }
+                self.finish(
+                    Data::Map(Rc::new(map)),
+                    anchor,
+                    tag,
+                    NodeStyle::Collection(style),
+                    None,
+                )
+            }
+            Event::Alias { name, span } => {
+                // r[comparison.strict.anchor-identity]
+                self.alias_expansions += 1;
+                self.config
+                    .limits
+                    .check_alias_expansions(self.alias_expansions)
+                    .map_err(BuildError::Limit)?;
+
+                let mut value = self.anchors.get(name.as_ref()).cloned().ok_or_else(|| {
+                    BuildError::UnknownAlias {
+                        name: name.to_string(),
+                        span,
+                    }
+                })?;
+                let meta = value.meta_mut();
+                meta.anchor = None;
+                meta.alias_of = Some(Rc::from(name.as_ref()));
+                Ok(value)
+            }
+            unexpected => Err(BuildError::Limit(format!(
+                "unexpected parser event while building a node: {unexpected:?}"
+            ))),
+        }
+    }
+
+    // r[datamodel.schema]
+    fn resolve_scalar(&self, text: &str, style: ScalarStyle, tag: Option<&str>) -> Data {
+        if let Some(tag) = tag {
+            return resolve_tagged(text, tag);
+        }
+        if style != ScalarStyle::Plain {
+            return Data::Str(Rc::from(text));
+        }
+        core_value_to_data(self.config.tag_resolution.resolve_scalar(text))
+    }
+
+    fn finish(
+        &mut self,
+        data: Data,
+        anchor: Option<Cow<'_, str>>,
+        tag: Option<Cow<'_, str>>,
+        style: NodeStyle,
+        raw: Option<&str>,
+    ) -> Result<YamlVal, BuildError> {
+        let meta = Meta {
+            tag: tag.as_deref().map(Rc::from),
+            anchor: anchor.as_deref().map(Rc::from),
+            alias_of: None,
+            style: Some(style),
+            raw: raw.map(Rc::from),
+        };
+        let node = YamlVal {
+            data,
+            meta: Some(Rc::new(meta)),
+        };
+
+        if let Some(name) = anchor {
+            self.anchors.insert(name.into_owned(), node.clone());
+            self.config
+                .limits
+                .check_anchor_count(self.anchors.len())
+                .map_err(BuildError::Limit)?;
+        }
+
+        Ok(node)
+    }
+
+    fn tag_merge_key(&self, key: &mut YamlVal) {
+        // r[ext.merge.preserve]
+        let is_merge = matches!(&key.data, Data::Str(value) if &**value == "<<")
+            && key.meta().is_none_or(|meta| {
+                meta.tag.is_none()
+                    && matches!(meta.style, Some(NodeStyle::Scalar(ScalarStyle::Plain)))
+            });
+        if is_merge {
+            key.meta_mut().tag = Some(Rc::from("tag:yaml.org,2002:merge"));
+        }
+    }
+}
+
+fn next_optional_event<'input>(
+    events: &mut impl Iterator<Item = Result<Event<'input>, yamalgam_parser::ParseError>>,
+) -> Result<Option<Event<'input>>, BuildError> {
+    events.next().transpose().map_err(BuildError::from)
+}
+
+fn next_event<'input>(
+    events: &mut impl Iterator<Item = Result<Event<'input>, yamalgam_parser::ParseError>>,
+) -> Result<Event<'input>, BuildError> {
+    next_optional_event(events)?
+        .ok_or_else(|| BuildError::Limit("unexpected end of parser event stream".into()))
+}
+
+pub(crate) fn core_value_to_data(value: Value) -> Data {
+    match value {
+        Value::Null => Data::Null,
+        Value::Bool(value) => Data::Bool(value),
+        Value::Integer(value) => Data::Int(value),
+        Value::Float(value) => Data::Float(value),
+        Value::String(value) => Data::Str(Rc::from(value)),
+        Value::Sequence(_) | Value::Mapping(_) => {
+            unreachable!("scalar resolver returned a collection")
+        }
+    }
+}
+
+fn resolve_tagged(text: &str, tag: &str) -> Data {
+    let suffix = tag
+        .strip_prefix("tag:yaml.org,2002:")
+        .or_else(|| tag.strip_prefix("!!"));
+
+    let resolved = || core_value_to_data(TagResolution::Yaml12.resolve_scalar(text));
+    match suffix {
+        Some("str") => Data::Str(Rc::from(text)),
+        Some("null") => match resolved() {
+            data @ Data::Null => data,
+            _ => Data::Str(Rc::from(text)),
+        },
+        Some("bool") => match resolved() {
+            data @ Data::Bool(_) => data,
+            _ => Data::Str(Rc::from(text)),
+        },
+        Some("int") => match resolved() {
+            data @ Data::Int(_) => data,
+            _ => Data::Str(Rc::from(text)),
+        },
+        Some("float") => match resolved() {
+            data @ Data::Float(_) => data,
+            Data::Int(value) => Data::Float(value as f64),
+            _ => Data::Str(Rc::from(text)),
+        },
+        Some(_) | None => Data::Str(Rc::from(text)),
+    }
+}

@@ -13,4 +13,6 @@ mod ops;
 mod valt;
 pub mod value;
 
-// Public re-exports land with the implementations in later tasks.
+pub use build::{parse_str, parse_str_with_config};
+pub use error::BuildError;
+pub use value::{Meta, NodeStyle, YamlVal};

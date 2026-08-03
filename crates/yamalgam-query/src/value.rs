@@ -173,10 +173,30 @@ impl YamlVal {
     #[must_use]
     pub fn tag_shorthand(&self) -> Option<String> {
         let tag = self.meta().and_then(|meta| meta.tag.as_deref())?;
+        if tag.starts_with("!!") {
+            return Some(tag.to_owned());
+        }
         Some(
             tag.strip_prefix("tag:yaml.org,2002:")
                 .map_or_else(|| tag.to_owned(), |suffix| format!("!!{suffix}")),
         )
+    }
+
+    /// Look up a mapping value by a string key using resolved comparison.
+    #[must_use]
+    pub fn get_str(&self, key: &str) -> Option<&Self> {
+        match &self.data {
+            Data::Map(map) => map.0.get(&Self::str(key)),
+            _ => None,
+        }
+    }
+
+    /// Iterate mapping keys in insertion order, or return an empty iterator.
+    pub fn keys(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
+        match &self.data {
+            Data::Map(map) => Box::new(map.0.keys()),
+            _ => Box::new(core::iter::empty()),
+        }
     }
 }
 
@@ -311,7 +331,7 @@ impl FromIterator<(YamlVal, YamlVal)> for YgMap {
     }
 }
 
-fn data_rank(data: &Data) -> u8 {
+const fn data_rank(data: &Data) -> u8 {
     match data {
         Data::Null => 0,
         Data::Bool(_) => 1,
