@@ -109,3 +109,45 @@ fn json_conversion_and_standard_definitions_work() {
     assert_eq!(eval("explode", "\"ab\"\n"), vec!["[97, 98]"]);
     assert_eq!(eval(r#""42" | tonumber"#, "null\n"), vec!["42"]);
 }
+
+#[test]
+fn yaml_metadata_filters_expose_source_properties() {
+    let document = concat!(
+        "plain: 1\n",
+        "quoted: \"1\"\n",
+        "lit: |\n  x\n",
+        "anchored: &a [1]\n",
+        "ref: *a\n",
+        "tagged: !custom v\n",
+    );
+
+    assert_eq!(eval(".tagged | tag", document), vec!["\"!custom\""]);
+    assert_eq!(eval(".plain | tag", document), vec!["null"]);
+    assert_eq!(eval(".anchored | anchor", document), vec!["a"]);
+    assert_eq!(eval(".ref | anchor", document), vec!["a"]);
+    assert_eq!(eval(".plain | anchor", document), vec!["null"]);
+    assert_eq!(eval(".quoted | style", document), vec!["double-quoted"]);
+    assert_eq!(eval(".lit | style", document), vec!["literal"]);
+    assert_eq!(eval(".anchored | style", document), vec!["flow"]);
+    assert_eq!(eval(".ref | kind", document), vec!["alias"]);
+    assert_eq!(eval(".plain | kind", document), vec!["scalar"]);
+    assert_eq!(eval(".ref | is_alias", document), vec!["true"]);
+    assert_eq!(eval(".plain | raw", document), vec!["\"1\""]);
+    assert_eq!(eval(r#""1.0" | raw"#, "null\n"), vec!["\"1.0\""]);
+    assert_eq!(eval(".plain | resolved_type", document), vec!["integer"]);
+}
+
+#[test]
+fn raw_rejects_collections() {
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let filter = engine::compile_filter("raw", &[]).unwrap();
+    let documents = yamalgam_query::parse_str("[1]\n").unwrap();
+    let result = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    );
+
+    assert!(result.is_err());
+}

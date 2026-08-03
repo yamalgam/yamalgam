@@ -53,6 +53,42 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
         ("fromjson", v(0), |context_value| {
             bome(context_value.1.fromjson())
         }),
+        ("tag", v(0), |context_value| {
+            bome(Ok(context_value
+                .1
+                .tag_shorthand()
+                .map_or_else(YamlVal::null, YamlVal::str)))
+        }),
+        ("anchor", v(0), |context_value| {
+            bome(Ok(context_value
+                .1
+                .meta()
+                .and_then(|metadata| metadata.anchor.as_deref().or(metadata.alias_of.as_deref()))
+                .map_or_else(YamlVal::null, YamlVal::str)))
+        }),
+        ("style", v(0), |context_value| {
+            bome(Ok(context_value
+                .1
+                .style_name()
+                .map_or_else(YamlVal::null, YamlVal::str)))
+        }),
+        ("kind", v(0), |context_value| {
+            bome(Ok(YamlVal::str(context_value.1.kind_name())))
+        }),
+        ("is_alias", v(0), |context_value| {
+            bome(Ok(YamlVal::from(
+                context_value
+                    .1
+                    .meta()
+                    .is_some_and(|metadata| metadata.alias_of.is_some()),
+            )))
+        }),
+        ("raw", v(0), |context_value| {
+            bome(context_value.1.raw_text())
+        }),
+        ("resolved_type", v(0), |context_value| {
+            bome(Ok(YamlVal::str(context_value.1.type_name())))
+        }),
     ])
 }
 

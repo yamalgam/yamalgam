@@ -182,6 +182,41 @@ impl YamlVal {
         )
     }
 
+    /// Return the source presentation style name.
+    #[must_use]
+    pub fn style_name(&self) -> Option<&'static str> {
+        self.meta()
+            .and_then(|metadata| metadata.style)
+            .map(|style| match style {
+                NodeStyle::Scalar(ScalarStyle::Plain) => "plain",
+                NodeStyle::Scalar(ScalarStyle::SingleQuoted) => "single-quoted",
+                NodeStyle::Scalar(ScalarStyle::DoubleQuoted) => "double-quoted",
+                NodeStyle::Scalar(ScalarStyle::Literal) => "literal",
+                NodeStyle::Scalar(ScalarStyle::Folded) => "folded",
+                NodeStyle::Collection(CollectionStyle::Block) => "block",
+                NodeStyle::Collection(CollectionStyle::Flow) => "flow",
+            })
+    }
+
+    pub(crate) fn raw_text(&self) -> jaq_core::ValR<Self> {
+        match &self.data {
+            Data::Seq(_) | Data::Map(_) => Err(jaq_core::Error::str(format_args!(
+                "{} has no raw form",
+                self.type_name()
+            ))),
+            Data::Str(string) => Ok(Self::str(
+                self.meta()
+                    .and_then(|metadata| metadata.raw.clone())
+                    .unwrap_or_else(|| string.clone()),
+            )),
+            _ => Ok(Self::str(
+                self.meta()
+                    .and_then(|metadata| metadata.raw.as_deref().map(str::to_owned))
+                    .unwrap_or_else(|| self.to_string()),
+            )),
+        }
+    }
+
     /// Look up a mapping value by a string key using resolved comparison.
     #[must_use]
     pub fn get_str(&self, key: &str) -> Option<&Self> {
