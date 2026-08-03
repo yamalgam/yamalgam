@@ -224,3 +224,40 @@ fn jq_18_compatibility_definitions_cover_manual_examples() {
     assert_eq!(eval(r#"join(", ")"#, "{a: 1, b: 2}\n"), vec!["1, 2"]);
     assert_eq!(eval(r#"[scan("c")]"#, "abcdefabc\n"), vec!["[c, c]"]);
 }
+
+#[test]
+fn assignment_operators_update_paths_and_collections() {
+    assert_eq!(eval(".a = 9", "a: 1\nb: 2\n"), vec!["{a: 9, b: 2}"]);
+    assert_eq!(eval(".a |= . + 1", "a: 1\n"), vec!["{a: 2}"]);
+    assert_eq!(eval(".a += 5", "a: 1\n"), vec!["{a: 6}"]);
+    assert_eq!(eval(".a //= 9", "a: null\n"), vec!["{a: 9}"]);
+    assert_eq!(eval(".a.b.c = 1", "a: {}\n"), vec!["{a: {b: {c: 1}}}"]);
+    assert_eq!(eval(".[] |= . * 2", "[1, 2]\n"), vec!["[2, 4]"]);
+    assert_eq!(eval("del(.a)", "a: 1\nb: 2\n"), vec!["{b: 2}"]);
+    assert_eq!(eval("del(.b)", "a: 1\nb: 2\nc: 3\n"), vec!["{a: 1, c: 3}"]);
+    assert_eq!(eval(".[1:2] = [9, 9]", "[1, 2, 3]\n"), vec!["[1, 9, 9, 3]"]);
+}
+
+#[test]
+fn assignment_preserves_untouched_sibling_metadata() {
+    let source = "a: 1\nb: \"quoted\"\nflow: {x: 1}\n";
+    let filter = engine::compile_filter(".a = 2", &[]).unwrap();
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let documents = yamalgam_query::parse_str(source).unwrap();
+    let mut output = Vec::new();
+    engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |value| {
+            output.push(value);
+            Ok::<_, yamalgam_query::YgError>(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        yamalgam_query::emit::to_yaml(&output[0], &Default::default()),
+        "a: 2\nb: \"quoted\"\nflow: {x: 1}\n"
+    );
+}
