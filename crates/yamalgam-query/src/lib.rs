@@ -5,7 +5,7 @@
 //! and raw scalar text—through filter pipelines.
 
 pub mod build;
-mod emit;
+pub mod emit;
 pub mod engine;
 mod error;
 mod funs;
@@ -14,5 +14,6 @@ mod valt;
 pub mod value;
 
 pub use build::{parse_str, parse_str_with_config};
+pub use emit::{EmitFormat, EmitOpts};
 pub use error::BuildError;
 pub use value::{Meta, NodeStyle, YamlVal};
