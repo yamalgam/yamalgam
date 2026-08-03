@@ -22,6 +22,28 @@ fn eval(filter: &str, input: &str) -> Vec<String> {
     output
 }
 
+fn eval_yaml(filter: &str, input: &str) -> Vec<String> {
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let compiled = engine::compile_filter(filter, &[]).unwrap();
+    let documents = yamalgam_query::parse_str(input).unwrap();
+    let mut output = Vec::new();
+    engine::run_filter(
+        &compiled,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |value| {
+            output.push(
+                yamalgam_query::emit::to_yaml(&value, &yamalgam_query::EmitOpts::compact())
+                    .trim_end()
+                    .to_owned(),
+            );
+            Ok::<(), yamalgam_query::YgError>(())
+        },
+    )
+    .unwrap();
+    output
+}
+
 #[test]
 fn identity_and_field_access_work() {
     assert_eq!(eval(".", "a: 1\n"), vec!["{a: 1}"]);
@@ -260,4 +282,66 @@ fn assignment_preserves_untouched_sibling_metadata() {
         yamalgam_query::emit::to_yaml(&output[0], &Default::default()),
         "a: 2\nb: \"quoted\"\nflow: {x: 1}\n"
     );
+}
+
+#[test]
+fn metadata_mutation_filters_update_and_clear_properties() {
+    assert_eq!(
+        eval(".a |= set_tag(\"!special\") | .a | tag", "a: 1\n"),
+        vec!["\"!special\""]
+    );
+    assert_eq!(eval("set_tag(null) | tag", "!x v\n"), vec!["null"]);
+    assert_eq!(eval("set_tag(\"!!str\") | tag", "1\n"), vec!["\"!!str\""]);
+    assert_eq!(
+        eval_yaml(".a |= set_anchor(\"base\")", "a: {x: 1}\nb: 2\n"),
+        vec!["{a: &base {x: 1}, b: 2}"]
+    );
+    assert_eq!(
+        eval_yaml(".a |= set_style(\"double-quoted\")", "a: hi\n"),
+        vec!["{a: \"hi\"}"]
+    );
+    assert_eq!(
+        eval_yaml(".a |= set_style(\"flow\")", "a:\n  - 1\n"),
+        vec!["{a: [1]}"]
+    );
+}
+
+#[test]
+fn set_style_rejects_node_kind_mismatches() {
+    let filter = engine::compile_filter("set_style(\"flow\")", &[]).unwrap();
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let documents = yamalgam_query::parse_str("scalar\n").unwrap();
+    let result = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn set_anchor_rejects_invalid_names() {
+    let filter = engine::compile_filter("set_anchor(\"not valid\")", &[]).unwrap();
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let documents = yamalgam_query::parse_str("scalar\n").unwrap();
+    let result = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn merge_expands_merge_keys_with_yaml_precedence_and_order() {
+    let document = "base: &b {x: 1, y: 1}\nchild:\n  <<: *b\n  y: 2\n";
+    assert_eq!(eval(".child | merge", document), vec!["{x: 1, y: 2}"]);
+
+    let document = "a: &a {x: 1}\nb: &b {x: 2, y: 9}\nc:\n  <<: [*a, *b]\n";
+    assert_eq!(eval(".c | merge", document), vec!["{x: 1, y: 9}"]);
+
+    let document = "base: &b {x: 1, y: 1}\nchild:\n  y: 2\n  <<: *b\n";
+    assert_eq!(eval(".child | merge", document), vec!["{y: 2, x: 1}"]);
 }

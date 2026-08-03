@@ -240,6 +240,127 @@ impl YamlVal {
         })
     }
 
+    pub(crate) fn set_tag(mut self, tag: Self) -> jaq_core::ValR<Self> {
+        let tag = match tag.data {
+            Data::Null => None,
+            Data::Str(tag) => Some(tag.strip_prefix("!!").map_or_else(
+                || tag.clone(),
+                |suffix| Rc::from(format!("tag:yaml.org,2002:{suffix}")),
+            )),
+            data => {
+                return Err(jaq_core::Error::typ(
+                    Self {
+                        data,
+                        meta: tag.meta,
+                    },
+                    "string or null",
+                ));
+            }
+        };
+        self.meta_mut().tag = tag;
+        Ok(self)
+    }
+
+    pub(crate) fn set_anchor(mut self, anchor: Self) -> jaq_core::ValR<Self> {
+        let anchor = match anchor.data {
+            Data::Null => None,
+            Data::Str(anchor)
+                if !anchor.is_empty()
+                    && anchor.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || "_-".contains(character)
+                    }) =>
+            {
+                Some(anchor)
+            }
+            Data::Str(anchor) => {
+                return Err(jaq_core::Error::str(format_args!(
+                    "invalid anchor name {anchor:?}; expected [A-Za-z0-9_-]+"
+                )));
+            }
+            data => {
+                return Err(jaq_core::Error::typ(
+                    Self {
+                        data,
+                        meta: anchor.meta,
+                    },
+                    "string or null",
+                ));
+            }
+        };
+        let metadata = self.meta_mut();
+        metadata.anchor = anchor;
+        if metadata.anchor.is_some() {
+            metadata.alias_of = None;
+        }
+        Ok(self)
+    }
+
+    pub(crate) fn set_style(mut self, style: Self) -> jaq_core::ValR<Self> {
+        let Data::Str(style_name) = style.data else {
+            return Err(jaq_core::Error::typ(style, "style name string"));
+        };
+        let scalar = !matches!(&self.data, Data::Seq(_) | Data::Map(_));
+        let style = match (style_name.as_ref(), scalar) {
+            ("plain", true) => NodeStyle::Scalar(ScalarStyle::Plain),
+            ("single-quoted", true) => NodeStyle::Scalar(ScalarStyle::SingleQuoted),
+            ("double-quoted", true) => NodeStyle::Scalar(ScalarStyle::DoubleQuoted),
+            ("literal", true) => NodeStyle::Scalar(ScalarStyle::Literal),
+            ("folded", true) => NodeStyle::Scalar(ScalarStyle::Folded),
+            ("block", false) => NodeStyle::Collection(CollectionStyle::Block),
+            ("flow", false) => NodeStyle::Collection(CollectionStyle::Flow),
+            (name, _) => {
+                return Err(jaq_core::Error::str(format_args!(
+                    "style {name:?} does not apply to {} nodes",
+                    if scalar { "scalar" } else { "collection" }
+                )));
+            }
+        };
+        self.meta_mut().style = Some(style);
+        Ok(self)
+    }
+
+    pub(crate) fn merge_keys(&self) -> jaq_core::ValR<Self> {
+        let Data::Map(mapping) = &self.data else {
+            return Err(jaq_core::Error::typ(self.clone(), "mapping"));
+        };
+        let mut output = IndexMap::new();
+
+        for (key, value) in &mapping.0 {
+            if key.tag_shorthand().as_deref() != Some("!!merge") {
+                output.insert(key.clone(), value.clone());
+                continue;
+            }
+
+            let sources = match &value.data {
+                Data::Map(_) => vec![value],
+                Data::Seq(values) => values.iter().collect(),
+                _ => {
+                    return Err(jaq_core::Error::typ(
+                        value.clone(),
+                        "mapping or sequence of mappings",
+                    ));
+                }
+            };
+            let mut defaults = IndexMap::new();
+            for source in sources {
+                let Data::Map(source) = &source.data else {
+                    return Err(jaq_core::Error::typ(source.clone(), "mapping"));
+                };
+                for (key, value) in &source.0 {
+                    defaults.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            for (key, value) in defaults {
+                output.entry(key).or_insert(value);
+            }
+        }
+
+        Ok(Self {
+            data: Data::Map(Rc::new(YgMap(output))),
+            meta: self.meta.clone(),
+        })
+    }
+
     #[must_use]
     pub(crate) fn explode_aliases(&self) -> Self {
         let data = match &self.data {

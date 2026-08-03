@@ -116,6 +116,18 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
         ("raw", v(0), |context_value| {
             bome(context_value.1.raw_text())
         }),
+        ("set_tag", v(1), |context_value| {
+            unary(context_value, YamlVal::set_tag)
+        }),
+        ("set_anchor", v(1), |context_value| {
+            unary(context_value, YamlVal::set_anchor)
+        }),
+        ("set_style", v(1), |context_value| {
+            unary(context_value, YamlVal::set_style)
+        }),
+        ("merge", v(0), |context_value| {
+            bome(context_value.1.merge_keys())
+        }),
         ("resolved_type", v(0), |context_value| {
             bome(Ok(YamlVal::str(context_value.1.type_name())))
         }),
