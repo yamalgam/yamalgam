@@ -1,1 +1,433 @@
 //! jaq value-trait implementations.
+
+use std::rc::Rc;
+
+use jaq_core::box_iter::box_once;
+use jaq_core::path::Opt;
+use jaq_core::val::{Range, ValR, ValX};
+use jaq_core::{Error, Exn};
+
+use crate::value::{Data, YamlVal};
+
+impl From<Range<Self>> for YamlVal {
+    fn from(range: Range<Self>) -> Self {
+        let pairs = [("start", range.start), ("end", range.end)]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|value| (Self::str(key), value)))
+            .collect();
+        Self::map(pairs)
+    }
+}
+
+impl jaq_core::ValT for YamlVal {
+    fn from_num(number: &str) -> ValR<Self> {
+        number.parse::<i64>().map(Self::int).or_else(|_| {
+            number
+                .parse::<f64>()
+                .map(Self::float)
+                .map_err(|_| Error::str(format_args!("cannot parse {number} as number")))
+        })
+    }
+
+    fn from_map<I: IntoIterator<Item = (Self, Self)>>(iter: I) -> ValR<Self> {
+        Ok(Self::map(iter.into_iter().collect()))
+    }
+
+    fn key_values(self) -> Box<dyn Iterator<Item = ValR<(Self, Self), Self>>> {
+        match self.data {
+            Data::Seq(items) => Box::new(
+                Rc::unwrap_or_clone(items)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| Ok((Self::from(index), value))),
+            ),
+            Data::Map(mapping) => Box::new(Rc::unwrap_or_clone(mapping).0.into_iter().map(Ok)),
+            data => box_once(Err(Error::typ(
+                yaml_value(data),
+                "iterable (sequence or mapping)",
+            ))),
+        }
+    }
+
+    fn values(self) -> Box<dyn Iterator<Item = ValR<Self>>> {
+        match self.data {
+            Data::Seq(items) => Box::new(Rc::unwrap_or_clone(items).into_iter().map(Ok)),
+            Data::Map(mapping) => Box::new(
+                Rc::unwrap_or_clone(mapping)
+                    .0
+                    .into_iter()
+                    .map(|(_, value)| Ok(value)),
+            ),
+            data => box_once(Err(Error::typ(
+                yaml_value(data),
+                "iterable (sequence or mapping)",
+            ))),
+        }
+    }
+
+    fn index(self, index: &Self) -> ValR<Self> {
+        if matches!(&self.data, Data::Seq(_) | Data::Str(_))
+            && let Data::Map(range) = &index.data
+        {
+            let start = range.0.get(&Self::str("start"));
+            let end = range.0.get(&Self::str("end"));
+            return self.range(start..end);
+        }
+
+        match (&self.data, &index.data) {
+            (Data::Null, _) => Ok(Self::null()),
+            (Data::Seq(items), Data::Int(position)) => Ok(abs_index(*position, items.len())
+                .and_then(|position| items.get(position).cloned())
+                .unwrap_or_default()),
+            (Data::Seq(_), Data::Seq(needle)) if needle.is_empty() => Ok(Self::seq(Vec::new())),
+            (Data::Seq(items), Data::Seq(needle)) => Ok(items
+                .windows(needle.len())
+                .enumerate()
+                .filter_map(|(index, window)| {
+                    (window == needle.as_slice()).then_some(Self::from(index))
+                })
+                .collect()),
+            (Data::Map(mapping), _) => Ok(mapping.0.get(index).cloned().unwrap_or_default()),
+            _ => Err(Error::index(self, index.clone())),
+        }
+    }
+
+    fn range(self, range: Range<&Self>) -> ValR<Self> {
+        let (start, end) = range_bounds(range)?;
+        match self.data {
+            Data::Seq(items) => {
+                let (skip, take) = skip_take(start, end, items.len());
+                Ok(Self::seq(
+                    items.iter().skip(skip).take(take).cloned().collect(),
+                ))
+            }
+            Data::Str(string) => {
+                let (skip, take) = skip_take(start, end, string.chars().count());
+                Ok(Self::str(
+                    string.chars().skip(skip).take(take).collect::<String>(),
+                ))
+            }
+            data => Err(Error::typ(
+                yaml_value(data),
+                "rangeable (sequence or string)",
+            )),
+        }
+    }
+
+    fn map_values<'a, I: Iterator<Item = ValX<'a, Self>>>(
+        mut self,
+        opt: Opt,
+        f: impl Fn(Self) -> I,
+    ) -> ValX<'a, Self> {
+        match &mut self.data {
+            Data::Seq(items) => {
+                let previous = core::mem::take(Rc::make_mut(items));
+                *Rc::make_mut(items) =
+                    previous.into_iter().flat_map(f).collect::<Result<_, _>>()?;
+                Ok(self)
+            }
+            Data::Map(mapping) => {
+                let previous = core::mem::take(&mut Rc::make_mut(mapping).0);
+                Rc::make_mut(mapping).0 = previous
+                    .into_iter()
+                    .filter_map(|(key, value)| f(value).next().map(|value| Ok((key, value?))))
+                    .collect::<Result<_, Exn<'_, Self>>>()?;
+                Ok(self)
+            }
+            _ => opt.fail(self, |value| {
+                Exn::from(Error::typ(value, "iterable (sequence or mapping)"))
+            }),
+        }
+    }
+
+    fn map_index<'a, I: Iterator<Item = ValX<'a, Self>>>(
+        mut self,
+        index: &Self,
+        opt: Opt,
+        f: impl Fn(Self) -> I,
+    ) -> ValX<'a, Self> {
+        if matches!(&self.data, Data::Seq(_) | Data::Str(_))
+            && let Data::Map(range) = &index.data
+        {
+            let start = range.0.get(&Self::str("start"));
+            let end = range.0.get(&Self::str("end"));
+            return self.map_range(start..end, opt, f);
+        }
+
+        match &mut self.data {
+            Data::Map(mapping) => {
+                use indexmap::map::Entry::{Occupied, Vacant};
+
+                match Rc::make_mut(mapping).0.entry(index.clone()) {
+                    Occupied(mut entry) => {
+                        let previous = core::mem::take(entry.get_mut());
+                        match f(previous).next().transpose()? {
+                            Some(value) => {
+                                entry.insert(value);
+                            }
+                            None => {
+                                entry.shift_remove();
+                            }
+                        }
+                    }
+                    Vacant(entry) => {
+                        if let Some(value) = f(Self::null()).next().transpose()? {
+                            entry.insert(value);
+                        }
+                    }
+                }
+                Ok(self)
+            }
+            Data::Seq(items) => {
+                let Some(position) = index
+                    .as_int()
+                    .and_then(|position| abs_index(position, items.len()))
+                else {
+                    let error = Error::str(format_args!("index {index} out of bounds"));
+                    return opt.fail(self, |_| Exn::from(error));
+                };
+
+                let items = Rc::make_mut(items);
+                let previous = core::mem::take(&mut items[position]);
+                match f(previous).next().transpose()? {
+                    Some(value) => items[position] = value,
+                    None => {
+                        items.remove(position);
+                    }
+                }
+                Ok(self)
+            }
+            _ => opt.fail(self, |value| {
+                Exn::from(Error::typ(value, "iterable (sequence or mapping)"))
+            }),
+        }
+    }
+
+    fn map_range<'a, I: Iterator<Item = ValX<'a, Self>>>(
+        mut self,
+        range: Range<&Self>,
+        opt: Opt,
+        f: impl Fn(Self) -> I,
+    ) -> ValX<'a, Self> {
+        let (start, end) = match range_bounds(range) {
+            Ok(bounds) => bounds,
+            Err(error) => return opt.fail(self, |_| Exn::from(error)),
+        };
+
+        match &mut self.data {
+            Data::Seq(items) => {
+                let (skip, take) = skip_take(start, end, items.len());
+                let slice = Self::seq(items.iter().skip(skip).take(take).cloned().collect());
+                let replacement = f(slice).next().transpose()?;
+                let replacement = match replacement {
+                    None => Vec::new(),
+                    Some(value) => value
+                        .into_seq_vec()
+                        .map_err(|value| Exn::from(Error::typ(value, "sequence")))?,
+                };
+                Rc::make_mut(items).splice(skip..skip + take, replacement);
+                Ok(self)
+            }
+            Data::Str(string) => {
+                let (skip, take) = skip_take(start, end, string.chars().count());
+                let (start_byte, end_byte) = char_byte_range(string, skip, take);
+                let slice = Self::str(&string[start_byte..end_byte]);
+                let replacement = match f(slice).next().transpose()? {
+                    None => String::new(),
+                    Some(value) => value
+                        .into_rust_string()
+                        .map_err(|value| Exn::from(Error::typ(value, "string")))?,
+                };
+                let mut updated = String::with_capacity(
+                    string.len() - (end_byte - start_byte) + replacement.len(),
+                );
+                updated.push_str(&string[..start_byte]);
+                updated.push_str(&replacement);
+                updated.push_str(&string[end_byte..]);
+                *string = Rc::from(updated);
+                Ok(self)
+            }
+            _ => opt.fail(self, |value| {
+                Exn::from(Error::typ(value, "rangeable (sequence or string)"))
+            }),
+        }
+    }
+
+    fn as_bool(&self) -> bool {
+        !matches!(&self.data, Data::Null | Data::Bool(false))
+    }
+
+    fn into_string(self) -> Self {
+        match self.data {
+            Data::Str(string) => Self::str(string),
+            data => Self::str(yaml_value(data).to_string()),
+        }
+    }
+}
+
+impl YamlVal {
+    const fn as_int(&self) -> Option<i64> {
+        match self.data {
+            Data::Int(number) => Some(number),
+            _ => None,
+        }
+    }
+
+    fn into_rust_string(self) -> Result<String, Self> {
+        match self.data {
+            Data::Str(string) => Ok(string.to_string()),
+            _ => Err(self),
+        }
+    }
+}
+
+const fn yaml_value(data: Data) -> YamlVal {
+    YamlVal { data, meta: None }
+}
+
+fn range_bounds(range: Range<&YamlVal>) -> ValR<(Option<i64>, Option<i64>), YamlVal> {
+    let bound = |value: Option<&YamlVal>| {
+        value
+            .filter(|value| !matches!(&value.data, Data::Null))
+            .map(|value| {
+                value
+                    .as_int()
+                    .ok_or_else(|| Error::typ(value.clone(), "integer"))
+            })
+            .transpose()
+    };
+    Ok((bound(range.start)?, bound(range.end)?))
+}
+
+fn abs_index(index: i64, len: usize) -> Option<usize> {
+    let len = i128::try_from(len).ok()?;
+    let index = i128::from(index);
+    let index = if index < 0 { index + len } else { index };
+    usize::try_from(index)
+        .ok()
+        .filter(|index| *index < len as usize)
+}
+
+fn skip_take(start: Option<i64>, end: Option<i64>, len: usize) -> (usize, usize) {
+    let len = i128::try_from(len).unwrap_or(i128::MAX);
+    let absolute = |index: i64| {
+        let index = i128::from(index);
+        let index = if index < 0 { index + len } else { index };
+        usize::try_from(index.clamp(0, len)).unwrap_or(usize::MAX)
+    };
+    let start = start.map_or(0, absolute);
+    let end = end.map_or_else(|| usize::try_from(len).unwrap_or(usize::MAX), absolute);
+    (start, end.saturating_sub(start))
+}
+
+fn char_byte_range(string: &str, skip: usize, take: usize) -> (usize, usize) {
+    let byte_offset = |character| {
+        string
+            .char_indices()
+            .nth(character)
+            .map_or(string.len(), |(offset, _)| offset)
+    };
+    (byte_offset(skip), byte_offset(skip.saturating_add(take)))
+}
+
+#[cfg(test)]
+mod tests {
+    use jaq_core::{ValT as _, path::Opt};
+
+    use crate::build::parse_str;
+    use crate::value::YamlVal;
+
+    #[test]
+    fn from_num_parses_ints_and_floats() {
+        assert_eq!(YamlVal::from_num("3").unwrap(), YamlVal::int(3));
+        assert_eq!(YamlVal::from_num("3.5").unwrap(), YamlVal::float(3.5));
+        assert_eq!(YamlVal::from_num("1e3").unwrap(), YamlVal::float(1000.0));
+    }
+
+    #[test]
+    fn index_supports_any_mapping_key_type() {
+        let mapping = parse_str("1: int-key\ntrue: bool-key\n").unwrap().remove(0);
+
+        assert_eq!(
+            mapping.clone().index(&YamlVal::int(1)).unwrap(),
+            YamlVal::str("int-key")
+        );
+        assert_eq!(
+            mapping.index(&YamlVal::from(true)).unwrap(),
+            YamlVal::str("bool-key")
+        );
+    }
+
+    #[test]
+    fn missing_index_is_null_and_negative_sequence_index_wraps() {
+        let mapping = parse_str("a: 1\n").unwrap().remove(0);
+        assert_eq!(
+            mapping.index(&YamlVal::str("missing")).unwrap(),
+            YamlVal::null()
+        );
+
+        let sequence = parse_str("[1, 2, 3]\n").unwrap().remove(0);
+        assert_eq!(sequence.index(&YamlVal::int(-1)).unwrap(), YamlVal::int(3));
+    }
+
+    #[test]
+    fn values_iterates_sequence_and_mapping_values() {
+        let mapping = parse_str("a: 1\nb: 2\n").unwrap().remove(0);
+        let values = mapping.values().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(values, vec![YamlVal::int(1), YamlVal::int(2)]);
+    }
+
+    #[test]
+    fn map_values_preserves_container_metadata() {
+        let mapping = parse_str("{a: 1}\n").unwrap().remove(0);
+        let style = mapping.meta().unwrap().style;
+        let output = mapping
+            .map_values(Opt::Essential, |value| core::iter::once(Ok(value)))
+            .unwrap();
+
+        assert_eq!(output.meta().unwrap().style, style);
+    }
+
+    #[test]
+    fn ranges_slice_sequences_and_strings_by_value_units() {
+        let sequence = parse_str("[0, 1, 2, 3]\n").unwrap().remove(0);
+        assert_eq!(
+            sequence
+                .range(Some(&YamlVal::int(1))..Some(&YamlVal::int(-1)))
+                .unwrap(),
+            YamlVal::seq(vec![YamlVal::int(1), YamlVal::int(2)])
+        );
+
+        let string = YamlVal::str("héllo");
+        assert_eq!(
+            string
+                .range(Some(&YamlVal::int(1))..Some(&YamlVal::int(3)))
+                .unwrap(),
+            YamlVal::str("él")
+        );
+    }
+
+    #[test]
+    fn map_range_updates_unicode_strings_and_preserves_metadata() {
+        let string = parse_str("'héllo'\n").unwrap().remove(0);
+        let style = string.meta().unwrap().style;
+        let output = string
+            .map_range(
+                Some(&YamlVal::int(1))..Some(&YamlVal::int(3)),
+                Opt::Essential,
+                |_| core::iter::once(Ok(YamlVal::str("EY"))),
+            )
+            .unwrap();
+
+        assert_eq!(output, YamlVal::str("hEYlo"));
+        assert_eq!(output.meta().unwrap().style, style);
+    }
+
+    #[test]
+    fn jq_truthiness_and_interpolation_are_supported() {
+        assert!(!YamlVal::null().as_bool());
+        assert!(!YamlVal::from(false).as_bool());
+        assert!(YamlVal::int(0).as_bool());
+        assert_eq!(YamlVal::int(3).into_string(), YamlVal::str("3"));
+    }
+}

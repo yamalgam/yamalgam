@@ -198,6 +198,14 @@ impl YamlVal {
             _ => Box::new(core::iter::empty()),
         }
     }
+
+    /// Consume a sequence into its elements, returning other values unchanged.
+    pub(crate) fn into_seq_vec(self) -> Result<Vec<Self>, Self> {
+        match self.data {
+            Data::Seq(items) => Ok(Rc::unwrap_or_clone(items)),
+            _ => Err(self),
+        }
+    }
 }
 
 impl From<bool> for YamlVal {
