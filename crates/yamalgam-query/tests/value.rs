@@ -217,3 +217,27 @@ fn builder_enforces_alias_expansion_limit() {
     let error = parse_str_with_config("a: &one 1\nb: *one\nc: *one\n", &config).unwrap_err();
     assert!(matches!(error, BuildError::Limit(message) if message.contains("alias expansions")));
 }
+
+#[test]
+fn display_is_compact_flow_yaml() {
+    let value = parse_str("a: [1, two]\nb: null\n").unwrap().remove(0);
+
+    assert_eq!(value.to_string(), "{a: [1, two], b: null}");
+    assert_eq!(
+        YamlVal::str("needs: quoting").to_string(),
+        "\"needs: quoting\""
+    );
+    assert_eq!(YamlVal::str("true").to_string(), "\"true\"");
+    assert_eq!(YamlVal::float(1.0).to_string(), "1.0");
+    assert_eq!(YamlVal::float(f64::INFINITY).to_string(), ".inf");
+    assert_eq!(YamlVal::float(f64::NEG_INFINITY).to_string(), "-.inf");
+    assert_eq!(YamlVal::float(f64::NAN).to_string(), ".nan");
+}
+
+#[test]
+fn display_escapes_quoted_strings() {
+    assert_eq!(
+        YamlVal::str("line 1\n\"line 2\"\\").to_string(),
+        "\"line 1\\n\\\"line 2\\\"\\\\\""
+    );
+}

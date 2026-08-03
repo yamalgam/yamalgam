@@ -331,6 +331,103 @@ impl FromIterator<(YamlVal, YamlVal)> for YgMap {
     }
 }
 
+impl core::fmt::Display for YamlVal {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match &self.data {
+            Data::Null => formatter.write_str("null"),
+            Data::Bool(value) => write!(formatter, "{value}"),
+            Data::Int(value) => write!(formatter, "{value}"),
+            Data::Float(value) => formatter.write_str(&fmt_float(*value)),
+            Data::Str(value) if needs_quotes(value) => formatter.write_str(&quote_double(value)),
+            Data::Str(value) => formatter.write_str(value),
+            Data::Seq(items) => {
+                formatter.write_str("[")?;
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(formatter, "{item}")?;
+                }
+                formatter.write_str("]")
+            }
+            Data::Map(map) => {
+                formatter.write_str("{")?;
+                for (index, (key, value)) in map.0.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(formatter, "{key}: {value}")?;
+                }
+                formatter.write_str("}")
+            }
+        }
+    }
+}
+
+/// Return whether plain YAML emission would change a string's value or syntax.
+// r[output.yaml.quoting]
+pub(crate) fn needs_quotes(value: &str) -> bool {
+    use yamalgam_core::{TagResolution, TagResolver as _, Value};
+
+    if value.is_empty()
+        || !matches!(
+            TagResolution::Yaml12.resolve_scalar(value),
+            Value::String(_)
+        )
+    {
+        return true;
+    }
+
+    let first = value.chars().next().unwrap_or(' ');
+    let syntactic_first = "!&*-?:,[]{}#|>@`\"'%".contains(first);
+    value.starts_with(' ')
+        || value.ends_with(' ')
+        || syntactic_first
+        || value.contains(": ")
+        || value.ends_with(':')
+        || value.contains(" #")
+        || value.contains('\n')
+        || value.contains('\t')
+}
+
+/// Format a float using YAML 1.2 spellings and a round-trippable finite form.
+pub(crate) fn fmt_float(value: f64) -> String {
+    if value.is_nan() {
+        ".nan".into()
+    } else if value == f64::INFINITY {
+        ".inf".into()
+    } else if value == f64::NEG_INFINITY {
+        "-.inf".into()
+    } else {
+        format!("{value:?}")
+    }
+}
+
+/// Double-quote a string using YAML-compatible escapes.
+pub(crate) fn quote_double(value: &str) -> String {
+    use core::fmt::Write as _;
+
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\t' => output.push_str("\\t"),
+            '\r' => output.push_str("\\r"),
+            '\0' => output.push_str("\\0"),
+            control if (control as u32) < 0x20 => {
+                write!(output, "\\x{:02x}", control as u32)
+                    .expect("writing to a String cannot fail");
+            }
+            other => output.push(other),
+        }
+    }
+    output.push('"');
+    output
+}
+
 const fn data_rank(data: &Data) -> u8 {
     match data {
         Data::Null => 0,
