@@ -217,6 +217,81 @@ impl YamlVal {
         }
     }
 
+    pub(crate) fn resolve_with(
+        &self,
+        schema: yamalgam_core::TagResolution,
+    ) -> jaq_core::ValR<Self> {
+        use yamalgam_core::TagResolver as _;
+
+        let text = match (
+            &self.data,
+            self.meta().and_then(|metadata| metadata.raw.as_deref()),
+        ) {
+            (Data::Seq(_) | Data::Map(_), _) => {
+                return Err(jaq_core::Error::typ(self.clone(), "scalar"));
+            }
+            (_, Some(raw)) => raw.to_owned(),
+            (Data::Str(string), None) => string.to_string(),
+            _ => self.to_string(),
+        };
+        Ok(Self {
+            data: crate::build::core_value_to_data(schema.resolve_scalar(&text)),
+            meta: None,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn explode_aliases(&self) -> Self {
+        let data = match &self.data {
+            Data::Seq(items) => {
+                Data::Seq(Rc::new(items.iter().map(Self::explode_aliases).collect()))
+            }
+            Data::Map(mapping) => Data::Map(Rc::new(YgMap(
+                mapping
+                    .0
+                    .iter()
+                    .map(|(key, value)| (key.explode_aliases(), value.explode_aliases()))
+                    .collect(),
+            ))),
+            data => data.clone(),
+        };
+        let mut meta = self.meta.clone();
+        if let Some(metadata) = &mut meta {
+            let metadata = Rc::make_mut(metadata);
+            metadata.anchor = None;
+            metadata.alias_of = None;
+        }
+        Self { data, meta }
+    }
+
+    #[must_use]
+    pub(crate) fn alias_report(&self) -> Self {
+        let inventory = IdentityInventory::collect(self);
+        Self::map(
+            inventory
+                .aliases
+                .into_iter()
+                .map(|(anchor, paths)| {
+                    let paths = paths.into_iter().map(Self::seq).collect();
+                    (Self::str(anchor), Self::seq(paths))
+                })
+                .collect(),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn orphan_anchors(&self) -> Self {
+        let inventory = IdentityInventory::collect(self);
+        Self::seq(
+            inventory
+                .anchors
+                .into_iter()
+                .filter(|anchor| !inventory.aliases.contains_key(anchor))
+                .map(Self::str)
+                .collect(),
+        )
+    }
+
     /// Look up a mapping value by a string key using resolved comparison.
     #[must_use]
     pub fn get_str(&self, key: &str) -> Option<&Self> {
@@ -239,6 +314,58 @@ impl YamlVal {
         match self.data {
             Data::Seq(items) => Ok(Rc::unwrap_or_clone(items)),
             _ => Err(self),
+        }
+    }
+}
+
+struct IdentityInventory {
+    anchors: Vec<String>,
+    aliases: IndexMap<String, Vec<Vec<YamlVal>>>,
+}
+
+impl IdentityInventory {
+    fn collect(value: &YamlVal) -> Self {
+        let mut inventory = Self {
+            anchors: Vec::new(),
+            aliases: IndexMap::new(),
+        };
+        inventory.visit(value, &mut Vec::new());
+        inventory
+    }
+
+    fn visit(&mut self, value: &YamlVal, path: &mut Vec<YamlVal>) {
+        if let Some(alias) = value
+            .meta()
+            .and_then(|metadata| metadata.alias_of.as_deref())
+        {
+            self.aliases
+                .entry(alias.to_owned())
+                .or_default()
+                .push(path.clone());
+            return;
+        }
+        if let Some(anchor) = value.meta().and_then(|metadata| metadata.anchor.as_deref())
+            && !self.anchors.iter().any(|known| known == anchor)
+        {
+            self.anchors.push(anchor.to_owned());
+        }
+
+        match &value.data {
+            Data::Seq(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    path.push(YamlVal::from(index));
+                    self.visit(item, path);
+                    path.pop();
+                }
+            }
+            Data::Map(mapping) => {
+                for (key, value) in &mapping.0 {
+                    path.push(key.clone());
+                    self.visit(value, path);
+                    path.pop();
+                }
+            }
+            _ => {}
         }
     }
 }

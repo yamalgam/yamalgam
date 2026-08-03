@@ -1,6 +1,7 @@
 //! End-to-end tests for jaq filter compilation and execution.
 
 use yamalgam_core::LoaderConfig;
+use yamalgam_query::YamlVal;
 use yamalgam_query::engine::{self, RunCtx};
 
 fn eval(filter: &str, input: &str) -> Vec<String> {
@@ -150,4 +151,57 @@ fn raw_rejects_collections() {
     );
 
     assert!(result.is_err());
+}
+
+#[test]
+fn schema_filters_reresolve_scalar_text_explicitly() {
+    assert_eq!(eval("schema", "null\n"), vec!["core"]);
+    assert_eq!(eval(r#""yes" | resolve_as("1.1")"#, "null\n"), vec!["true"]);
+    assert_eq!(
+        eval(r#""yes" | resolve_as("1.1") | type"#, "null\n"),
+        vec!["boolean"]
+    );
+    assert_eq!(eval(".a | resolve", "a: '123'\n"), vec!["123"]);
+    assert_eq!(eval(".a | resolve | type", "a: '123'\n"), vec!["integer"]);
+}
+
+#[test]
+fn input_context_filters_read_run_metadata() {
+    let context = RunCtx::new(LoaderConfig::moderate());
+    {
+        let mut metadata = context.input_meta.borrow_mut();
+        metadata.filename = Some("test.yml".into());
+        metadata.document_index = 2;
+        metadata.file_index = 3;
+    }
+    let filter = engine::compile_filter("[filename, document_index, file_index]", &[]).unwrap();
+    let mut output = Vec::new();
+    engine::run_filter(
+        &filter,
+        &context,
+        std::iter::once(Ok(YamlVal::null())),
+        |value| {
+            output.push(value.to_string());
+            Ok::<_, yamalgam_query::YgError>(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(output, vec!["[test.yml, 2, 3]"]);
+}
+
+#[test]
+fn alias_audit_filters_report_and_strip_identity() {
+    let document = "a: &x 1\nb: *x\nc: &unused 2\n";
+
+    assert_eq!(eval("aliases", document), vec!["{x: [[b]]}"]);
+    assert_eq!(eval("orphan_anchors", document), vec!["[unused]"]);
+    assert_eq!(
+        eval("explode_aliases | .b | is_alias", document),
+        vec!["false"]
+    );
+    assert_eq!(
+        eval("explode_aliases | .a | anchor", document),
+        vec!["null"]
+    );
 }

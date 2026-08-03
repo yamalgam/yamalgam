@@ -89,7 +89,76 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
         ("resolved_type", v(0), |context_value| {
             bome(Ok(YamlVal::str(context_value.1.type_name())))
         }),
+        ("schema", v(0), |context_value| {
+            bome(Ok(YamlVal::str(
+                context_value.0.data().context.schema_name(),
+            )))
+        }),
+        ("resolve", v(0), |context_value| {
+            let schema = context_value.0.data().context.config.tag_resolution;
+            bome(context_value.1.resolve_with(schema))
+        }),
+        ("resolve_as", v(1), |context_value| {
+            unary(context_value, |value, schema| {
+                value.resolve_with(parse_schema(&schema)?)
+            })
+        }),
+        ("document_index", v(0), |context_value| {
+            let index = context_value
+                .0
+                .data()
+                .context
+                .input_meta
+                .borrow()
+                .document_index;
+            bome(Ok(YamlVal::from(index)))
+        }),
+        ("file_index", v(0), |context_value| {
+            let index = context_value
+                .0
+                .data()
+                .context
+                .input_meta
+                .borrow()
+                .file_index;
+            bome(Ok(YamlVal::from(index)))
+        }),
+        ("filename", v(0), |context_value| {
+            let filename = context_value
+                .0
+                .data()
+                .context
+                .input_meta
+                .borrow()
+                .filename
+                .clone();
+            bome(Ok(filename.map_or_else(YamlVal::null, YamlVal::str)))
+        }),
+        ("explode_aliases", v(0), |context_value| {
+            bome(Ok(context_value.1.explode_aliases()))
+        }),
+        ("aliases", v(0), |context_value| {
+            bome(Ok(context_value.1.alias_report()))
+        }),
+        ("orphan_anchors", v(0), |context_value| {
+            bome(Ok(context_value.1.orphan_anchors()))
+        }),
     ])
+}
+
+fn parse_schema(value: &YamlVal) -> Result<yamalgam_core::TagResolution, Error<YamlVal>> {
+    let Data::Str(name) = &value.data else {
+        return Err(Error::typ(value.clone(), "schema name string"));
+    };
+    match name.as_ref() {
+        "core" => Ok(yamalgam_core::TagResolution::Yaml12),
+        "failsafe" => Ok(yamalgam_core::TagResolution::Failsafe),
+        "json" => Ok(yamalgam_core::TagResolution::Json),
+        "1.1" => Ok(yamalgam_core::TagResolution::Yaml11),
+        _ => Err(Error::str(format_args!(
+            "unknown schema {name}; expected core, failsafe, json, or 1.1"
+        ))),
+    }
 }
 
 impl YamlVal {
