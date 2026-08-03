@@ -19,7 +19,7 @@ fix:
 
 # Check dependencies for security advisories and license compliance
 deny:
-  cargo deny --all-features check --config .config/deny.toml
+  cargo deny --all-features --config .config/deny.toml check
 
 test:
   cargo nextest run --workspace --all-features --cargo-quiet
@@ -294,4 +294,3 @@ release version:
     echo ""
     echo "To publish:"
     echo "  git push && git push --tags"
-

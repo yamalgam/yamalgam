@@ -11,7 +11,7 @@ use crate::config::Config;
 /// Arguments for the `info` subcommand.
 #[derive(Args, Debug, Default)]
 pub struct InfoArgs {
-    // No subcommand-specific arguments; uses global --json flag
+    // No subcommand-specific arguments; uses the resolved global output format.
 }
 
 #[derive(Serialize)]
@@ -70,7 +70,7 @@ struct FullInfo {
 /// Print package information
 ///
 /// # Arguments
-/// * `global_json` - Global `--json` flag from CLI
+/// * `global_json` - Whether the resolved global output format is JSON
 /// * `config` - Loaded configuration
 /// * `sources` - Config source metadata from loading
 #[instrument(name = "cmd_info", skip_all, fields(json_output))]

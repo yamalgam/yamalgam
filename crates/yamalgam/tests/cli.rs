@@ -76,11 +76,29 @@ fn version_only_prints_bare_version() {
 #[test]
 fn info_shows_package_name_and_version() {
     cmd()
-        .arg("info")
+        .args(["info", "--format", "text"])
         .assert()
         .success()
         .stdout(predicate::str::contains(env!("CARGO_PKG_NAME")))
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn info_auto_outputs_json_when_piped() {
+    let output = cmd().arg("info").assert().success();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("piped info output should be valid JSON");
+    assert_eq!(json["name"], env!("CARGO_PKG_NAME"));
+}
+
+#[test]
+fn info_format_json_outputs_valid_json() {
+    let output = cmd().args(["info", "--format", "json"]).assert().success();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("info --format json should output valid JSON");
+    assert_eq!(json["name"], env!("CARGO_PKG_NAME"));
 }
 
 #[test]
@@ -112,7 +130,7 @@ fn info_help_shows_command_options() {
         .args(["info", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--json"));
+        .stdout(predicate::str::contains("--format"));
 }
 
 // =============================================================================

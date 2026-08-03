@@ -51,11 +51,15 @@ fn main() -> anyhow::Result<()> {
     );
     let _guard = librebar::logging::init(&log_cfg, filter)
         .context("failed to initialize logging/tracing")?;
+    let json_output = matches!(
+        cli.common.output_format(),
+        librebar::cli::ResolvedOutputFormat::Json
+    );
 
     debug!(
         verbose = cli.common.verbose,
         quiet = cli.common.quiet,
-        json = cli.common.json,
+        json = json_output,
         color = ?cli.common.color,
         chdir = ?cli.common.chdir,
         "CLI initialized"
@@ -63,11 +67,9 @@ fn main() -> anyhow::Result<()> {
 
     // Execute command
     let result = match command {
-        Commands::Doctor(args) => {
-            commands::doctor::cmd_doctor(args, cli.common.json, &config_sources)
-        }
+        Commands::Doctor(args) => commands::doctor::cmd_doctor(args, json_output, &config_sources),
         Commands::Info(args) => {
-            commands::info::cmd_info(args, cli.common.json, &config, &config_sources)
+            commands::info::cmd_info(args, json_output, &config, &config_sources)
         }
     };
     if let Err(ref err) = result {

@@ -43,7 +43,7 @@ ENVIRONMENT VARIABLES:
 #[command(after_help = ENV_HELP)]
 #[command(disable_help_flag = true)]
 pub struct Cli {
-    /// Common flags (`-q`, `-v`, `--json`, `--color`, `-C`, `--version-only`).
+    /// Common flags (`-q`, `-v`, `--format`, `--color`, `-C`, `--version-only`).
     #[command(flatten)]
     pub common: librebar::cli::CommonArgs,
 
