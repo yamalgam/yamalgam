@@ -154,6 +154,32 @@ impl jaq_core::ValT for YamlVal {
             return self.map_range(start..end, opt, f);
         }
 
+        if matches!(&self.data, Data::Null) {
+            let replacement = f(Self::null()).next().transpose()?;
+            let Some(replacement) = replacement else {
+                return Ok(self);
+            };
+            self.data = match index.as_int() {
+                Some(position) if position >= 0 => {
+                    let Ok(position) = usize::try_from(position) else {
+                        let error = Error::str(format_args!("index {index} out of bounds"));
+                        return opt.fail(self, |_| Exn::from(error));
+                    };
+                    let mut items = vec![Self::null(); position];
+                    items.push(replacement);
+                    Data::Seq(Rc::new(items))
+                }
+                Some(_) => {
+                    let error = Error::str(format_args!("index {index} out of bounds"));
+                    return opt.fail(self, |_| Exn::from(error));
+                }
+                None => Data::Map(Rc::new(crate::value::YgMap(
+                    core::iter::once((index.clone(), replacement)).collect(),
+                ))),
+            };
+            return Ok(self);
+        }
+
         match &mut self.data {
             Data::Map(mapping) => {
                 use indexmap::map::Entry::{Occupied, Vacant};
@@ -179,10 +205,27 @@ impl jaq_core::ValT for YamlVal {
                 Ok(self)
             }
             Data::Seq(items) => {
-                let Some(position) = index
-                    .as_int()
-                    .and_then(|position| abs_index(position, items.len()))
-                else {
+                let Some(requested) = index.as_int() else {
+                    let error = Error::str(format_args!("index {index} out of bounds"));
+                    return opt.fail(self, |_| Exn::from(error));
+                };
+
+                let position = abs_index(requested, items.len());
+                if position.is_none() && requested >= 0 {
+                    let replacement = f(Self::null()).next().transpose()?;
+                    let Some(replacement) = replacement else {
+                        return Ok(self);
+                    };
+                    let Ok(position) = usize::try_from(requested) else {
+                        let error = Error::str(format_args!("index {index} out of bounds"));
+                        return opt.fail(self, |_| Exn::from(error));
+                    };
+                    let items = Rc::make_mut(items);
+                    items.resize(position.saturating_add(1), Self::null());
+                    items[position] = replacement;
+                    return Ok(self);
+                }
+                let Some(position) = position else {
                     let error = Error::str(format_args!("index {index} out of bounds"));
                     return opt.fail(self, |_| Exn::from(error));
                 };
@@ -260,7 +303,10 @@ impl jaq_core::ValT for YamlVal {
     fn into_string(self) -> Self {
         match self.data {
             Data::Str(string) => Self::str(string),
-            data => Self::str(yaml_value(data).to_string()),
+            data => Self::str(crate::emit::to_json(
+                &yaml_value(data),
+                &crate::EmitOpts::compact(),
+            )),
         }
     }
 }
@@ -435,6 +481,47 @@ mod tests {
     }
 
     #[test]
+    fn map_index_builds_and_extends_sequences_for_nonnegative_integer_paths() {
+        let built = YamlVal::null()
+            .map_index(&YamlVal::int(2), Opt::Essential, |_| {
+                core::iter::once(Ok(YamlVal::int(7)))
+            })
+            .unwrap();
+        assert_eq!(
+            built,
+            YamlVal::seq(vec![YamlVal::null(), YamlVal::null(), YamlVal::int(7)])
+        );
+
+        let extended = YamlVal::seq(vec![YamlVal::int(1)])
+            .map_index(&YamlVal::int(2), Opt::Essential, |_| {
+                core::iter::once(Ok(YamlVal::int(3)))
+            })
+            .unwrap();
+        assert_eq!(
+            extended,
+            YamlVal::seq(vec![YamlVal::int(1), YamlVal::null(), YamlVal::int(3)])
+        );
+    }
+
+    #[test]
+    fn map_index_builds_mappings_and_ignores_missing_deletes() {
+        let built = YamlVal::null()
+            .map_index(&YamlVal::str("a"), Opt::Essential, |_| {
+                core::iter::once(Ok(YamlVal::int(1)))
+            })
+            .unwrap();
+        assert_eq!(
+            built,
+            YamlVal::map(vec![(YamlVal::str("a"), YamlVal::int(1))])
+        );
+
+        let unchanged = YamlVal::seq(vec![YamlVal::int(1)])
+            .map_index(&YamlVal::int(3), Opt::Essential, |_| core::iter::empty())
+            .unwrap();
+        assert_eq!(unchanged, YamlVal::seq(vec![YamlVal::int(1)]));
+    }
+
+    #[test]
     fn ranges_slice_sequences_and_strings_by_value_units() {
         let sequence = parse_str("[0, 1, 2, 3]\n").unwrap().remove(0);
         assert_eq!(
@@ -475,6 +562,10 @@ mod tests {
         assert!(!YamlVal::from(false).as_bool());
         assert!(YamlVal::int(0).as_bool());
         assert_eq!(YamlVal::int(3).into_string(), YamlVal::str("3"));
+        assert_eq!(
+            YamlVal::seq(vec![YamlVal::str("foo")]).into_string(),
+            YamlVal::str("[\"foo\"]")
+        );
     }
 
     #[test]

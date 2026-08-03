@@ -205,3 +205,22 @@ fn alias_audit_filters_report_and_strip_identity() {
         vec!["null"]
     );
 }
+
+#[test]
+fn jq_18_compatibility_definitions_cover_manual_examples() {
+    assert_eq!(eval("have_decnum", "null\n"), vec!["false"]);
+    assert_eq!(eval("setpath([0, \"a\"]; 1)", "null\n"), vec!["[{a: 1}]"]);
+    assert_eq!(
+        eval("pick(.[2], .[0], .[0])", "[1, 2, 3, 4]\n"),
+        vec!["[1, null, 3]"]
+    );
+    assert_eq!(
+        eval(
+            r#"[.[] | trimstr("foo")]"#,
+            "[fo, foo, barfoo, foobarfoo, foob]\n"
+        ),
+        vec!["[fo, \"\", bar, bar, b]"]
+    );
+    assert_eq!(eval(r#"join(", ")"#, "{a: 1, b: 2}\n"), vec!["1, 2"]);
+    assert_eq!(eval(r#"[scan("c")]"#, "abcdefabc\n"), vec!["[c, c]"]);
+}

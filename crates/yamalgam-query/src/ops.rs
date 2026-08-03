@@ -139,6 +139,9 @@ impl core::ops::Div for YamlVal {
         use Data::{Float, Int, Str};
 
         let data = match (self.data, rhs.data) {
+            (left, right @ Int(0)) | (left, right @ Float(0.0)) => {
+                return Err(math_error(left, Math::Div, right));
+            }
             (Int(left), Int(right))
                 if right != 0 && left.checked_rem(right).is_some_and(|rem| rem == 0) =>
             {
@@ -172,6 +175,9 @@ impl core::ops::Rem for YamlVal {
         use Data::{Float, Int};
 
         let data = match (self.data, rhs.data) {
+            (left, right @ Int(0)) | (left, right @ Float(0.0)) => {
+                return Err(math_error(left, Math::Rem, right));
+            }
             (Int(left), Int(right)) if right != 0 => Int(left.checked_rem(right).unwrap_or(0)),
             (Int(left), Float(right)) => Float(left as f64 % right),
             (Float(left), Int(right)) => Float(left % right as f64),
@@ -284,6 +290,8 @@ mod tests {
             (YamlVal::int(5) / YamlVal::int(2)).unwrap(),
             YamlVal::float(2.5)
         );
+        assert!((YamlVal::int(5) / YamlVal::int(0)).is_err());
+        assert!((YamlVal::float(5.0) / YamlVal::float(0.0)).is_err());
         assert_eq!(
             (YamlVal::int(5) % YamlVal::int(2)).unwrap(),
             YamlVal::int(1)

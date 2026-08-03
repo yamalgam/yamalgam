@@ -25,6 +25,36 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
         ("_yaml_type", v(0), |context_value| {
             bome(Ok(YamlVal::str(context_value.1.type_name())))
         }),
+        ("_infinite", v(0), |_| {
+            bome(Ok(YamlVal::float(f64::INFINITY)))
+        }),
+        ("_nan", v(0), |_| bome(Ok(YamlVal::float(f64::NAN)))),
+        ("_is_nan", v(0), |context_value| {
+            bome(Ok(YamlVal::from(matches!(
+                context_value.1.data,
+                Data::Float(value) if value.is_nan()
+            ))))
+        }),
+        ("_is_infinite", v(0), |context_value| {
+            bome(Ok(YamlVal::from(matches!(
+                context_value.1.data,
+                Data::Float(value) if value.is_infinite()
+            ))))
+        }),
+        ("_is_finite", v(0), |context_value| {
+            bome(Ok(YamlVal::from(match context_value.1.data {
+                Data::Int(_) => true,
+                Data::Float(value) => value.is_finite(),
+                _ => false,
+            })))
+        }),
+        ("_is_normal", v(0), |context_value| {
+            bome(Ok(YamlVal::from(match context_value.1.data {
+                Data::Int(value) => value != 0,
+                Data::Float(value) => value.is_normal(),
+                _ => false,
+            })))
+        }),
         ("length", v(0), |context_value| {
             bome(context_value.1.length())
         }),
