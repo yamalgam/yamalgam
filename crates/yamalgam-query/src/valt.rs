@@ -330,6 +330,52 @@ fn char_byte_range(string: &str, skip: usize, take: usize) -> (usize, usize) {
     (byte_offset(skip), byte_offset(skip.saturating_add(take)))
 }
 
+impl jaq_std::ValT for YamlVal {
+    fn into_seq<S: FromIterator<Self>>(self) -> Result<S, Self> {
+        self.into_seq_vec()
+            .map(|values| values.into_iter().collect())
+    }
+
+    fn is_int(&self) -> bool {
+        matches!(&self.data, Data::Int(_))
+    }
+
+    fn as_isize(&self) -> Option<isize> {
+        match &self.data {
+            Data::Int(number) => isize::try_from(*number).ok(),
+            _ => None,
+        }
+    }
+
+    fn as_f64(&self) -> Option<f64> {
+        match &self.data {
+            Data::Int(number) => Some(*number as f64),
+            Data::Float(number) => Some(*number),
+            _ => None,
+        }
+    }
+
+    fn is_utf8_str(&self) -> bool {
+        matches!(&self.data, Data::Str(_))
+    }
+
+    fn as_bytes(&self) -> Option<&[u8]> {
+        match &self.data {
+            Data::Str(string) => Some(string.as_bytes()),
+            _ => None,
+        }
+    }
+
+    fn as_sub_str(&self, sub: &[u8]) -> Self {
+        debug_assert!(matches!(&self.data, Data::Str(_)));
+        Self::str(String::from_utf8_lossy(sub).into_owned())
+    }
+
+    fn from_utf8_bytes(bytes: impl AsRef<[u8]> + Send + 'static) -> Self {
+        Self::str(String::from_utf8_lossy(bytes.as_ref()).into_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use jaq_core::{ValT as _, path::Opt};
@@ -429,5 +475,24 @@ mod tests {
         assert!(!YamlVal::from(false).as_bool());
         assert!(YamlVal::int(0).as_bool());
         assert_eq!(YamlVal::int(3).into_string(), YamlVal::str("3"));
+    }
+
+    #[test]
+    fn std_valt_exposes_sequences_numbers_and_strings() {
+        use jaq_std::ValT as _;
+
+        assert!(YamlVal::int(3).is_int());
+        assert!(!YamlVal::float(3.0).is_int());
+        assert_eq!(YamlVal::int(3).as_isize(), Some(3));
+        assert_eq!(YamlVal::float(3.0).as_isize(), None);
+        assert_eq!(YamlVal::float(3.5).as_f64(), Some(3.5));
+        assert!(YamlVal::str("x").is_utf8_str());
+        assert_eq!(YamlVal::str("abc").as_bytes(), Some(b"abc".as_ref()));
+        assert_eq!(
+            YamlVal::seq(vec![YamlVal::int(1)])
+                .into_seq::<Vec<_>>()
+                .unwrap(),
+            vec![YamlVal::int(1)]
+        );
     }
 }
