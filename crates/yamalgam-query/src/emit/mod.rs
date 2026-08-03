@@ -4,6 +4,7 @@ mod json;
 mod yaml;
 
 pub use json::to_json;
+pub use yaml::to_yaml;
 
 /// Output format selector for the CLI.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
