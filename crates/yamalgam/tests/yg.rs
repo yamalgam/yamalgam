@@ -231,14 +231,70 @@ fn librebar_color_flags_are_canonical() {
 }
 
 #[test]
-fn in_place_is_not_available_until_atomic_write_lands() {
+fn in_place_edits_file_and_preserves_sibling_style() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("config.yml");
+    std::fs::write(&input, "a: 1\nb: \"keep\"\n").unwrap();
+
+    yg().args(["-i", ".a = 2"])
+        .arg(&input)
+        .assert()
+        .success()
+        .stdout("");
+    assert_eq!(
+        std::fs::read_to_string(input).unwrap(),
+        "a: 2\nb: \"keep\"\n"
+    );
+}
+
+#[test]
+fn in_place_edits_multi_document_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("multi.yml");
+    std::fs::write(&input, "a: 1\n---\na: 2\n").unwrap();
+
+    yg().args(["-i", ".a |= . + 10"])
+        .arg(&input)
+        .assert()
+        .success()
+        .stdout("");
+    assert_eq!(
+        std::fs::read_to_string(input).unwrap(),
+        "a: 11\n---\na: 12\n"
+    );
+}
+
+#[test]
+fn in_place_requires_a_file() {
+    yg().args(["-i", "."])
+        .write_stdin("a: 1\n")
+        .assert()
+        .code(2);
+}
+
+#[cfg(unix)]
+#[test]
+fn in_place_preserves_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("private.yml");
+    std::fs::write(&input, "a: 1\n").unwrap();
+    std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    yg().args(["-i", "."]).arg(&input).assert().success();
+    assert_eq!(
+        std::fs::metadata(input).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn in_place_failure_leaves_current_file_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("input.yml");
     std::fs::write(&input, "a: 1\n").unwrap();
 
-    yg().args(["-i", "."])
-        .arg(input)
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("not yet implemented"));
+    yg().args(["-i", ".a + true"]).arg(&input).assert().code(5);
+    assert_eq!(std::fs::read_to_string(input).unwrap(), "a: 1\n");
 }

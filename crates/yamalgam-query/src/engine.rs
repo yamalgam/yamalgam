@@ -15,6 +15,9 @@ use crate::value::YamlVal;
 /// jaq data-kind marker for YAML values.
 pub struct YgKind;
 
+/// A query filter compiled for yg's YAML value model.
+pub type CompiledFilter = Filter<YgKind>;
+
 impl DataT for YgKind {
     type V<'a> = YamlVal;
     type Data<'a> = &'a YgData<'a>;
@@ -90,7 +93,7 @@ fn yg_defs() -> impl Iterator<Item = load::parse::Def<&'static str>> {
 }
 
 /// Compile a query filter with the yg definitions and native functions.
-pub fn compile_filter(code: &str, variables: &[String]) -> Result<Filter<YgKind>, YgError> {
+pub fn compile_filter(code: &str, variables: &[String]) -> Result<CompiledFilter, YgError> {
     let arena = Arena::default();
     let definitions = jaq_core::defs().chain(jaq_std::defs()).chain(yg_defs());
     let loader = Loader::new(definitions);

@@ -99,7 +99,7 @@ pub struct QueryArgs {
     #[arg(short = 'c', long)]
     pub compact_output: bool,
 
-    /// Edit input files in place.
+    /// Edit files atomically; reserialization loses comments until CST editing lands.
     #[arg(short = 'i', long, requires = "files")]
     pub in_place: bool,
 
