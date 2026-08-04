@@ -86,6 +86,9 @@ impl RunCtx {
     }
 }
 
+// r[impl diverge.keys]
+// r[impl diverge.keys-sorted]
+// r[impl diverge.keys.seq]
 fn yg_defs() -> impl Iterator<Item = load::parse::Def<&'static str>> {
     load::parse(include_str!("defs.jq"), |parser| parser.defs())
         .expect("bundled yg definitions must parse")
@@ -93,6 +96,22 @@ fn yg_defs() -> impl Iterator<Item = load::parse::Def<&'static str>> {
 }
 
 /// Compile a query filter with the yg definitions and native functions.
+// r[impl overview.jaq-foundation]
+// r[impl filters.identity]
+// r[impl filters.pipe]
+// r[impl filters.comma]
+// r[impl filters.paren]
+// r[impl filters.cond.if]
+// r[impl filters.cond.and-or-not]
+// r[impl filters.cond.try]
+// r[impl filters.cond.alternative]
+// r[impl filters.binding]
+// r[impl filters.reduce]
+// r[impl filters.foreach]
+// r[impl filters.def]
+// r[impl filters.def.recursion]
+// r[impl filters.string-interp]
+// r[impl phases.core]
 pub fn compile_filter(code: &str, variables: &[String]) -> Result<CompiledFilter, YgError> {
     let arena = Arena::default();
     let definitions = jaq_core::defs().chain(jaq_std::defs()).chain(yg_defs());
@@ -142,6 +161,7 @@ pub fn run_filter_with_null_input<E: From<YgError>>(
     null_input: bool,
     mut visit: impl FnMut(YamlVal) -> Result<(), E>,
 ) -> Result<Option<bool>, E> {
+    let _limit_guard = crate::runtime_limits::activate(&context.config.limits);
     let inputs: Box<dyn Iterator<Item = Result<YamlVal, String>>> = Box::new(inputs);
     let inputs = RcIter::new(inputs);
     let data = YgData {
@@ -161,7 +181,24 @@ pub fn run_filter_with_null_input<E: From<YgError>>(
     for input in &mut driver {
         let input = input.map_err(|error| E::from(YgError::InputParse(error)))?;
         for output in filter.id.run((jaq_context.clone(), input)) {
-            let output: YamlVal = output.map_err(|error| E::from(YgError::runtime(error)))?;
+            let output: YamlVal = output.map_err(|error| {
+                let error = YgError::runtime(error);
+                let error = match error {
+                    YgError::Runtime(message) => {
+                        let metadata = context.input_meta.borrow();
+                        let source = metadata
+                            .filename
+                            .as_deref()
+                            .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
+                        YgError::Runtime(format!(
+                            "{source} document {}: {message}",
+                            metadata.document_index + 1
+                        ))
+                    }
+                    error => error,
+                };
+                E::from(error)
+            })?;
             last = Some(output.as_bool());
             visit(output)?;
         }

@@ -63,6 +63,8 @@ impl LoaderConfig {
     /// - `max_alias_expansions` = 10 000
     /// - `max_anchor_count` = 10 000
     /// - `max_merge_depth` = 64
+    /// - `max_collection_size` = 1 000 000
+    /// - `max_output_bytes` = 256 MB
     /// - Resolution disabled.
     #[must_use]
     pub const fn moderate() -> Self {
@@ -75,6 +77,8 @@ impl LoaderConfig {
                 max_alias_expansions: Some(10_000),
                 max_anchor_count: Some(10_000),
                 max_merge_depth: Some(64),
+                max_collection_size: Some(1_000_000),
+                max_output_bytes: Some(256 * 1024 * 1024),
             },
             resolution: ResolutionPolicy::disabled(),
             tag_resolution: TagResolution::Yaml12,
@@ -90,6 +94,8 @@ impl LoaderConfig {
     /// - `max_alias_expansions` = 100
     /// - `max_anchor_count` = 100
     /// - `max_merge_depth` = 10
+    /// - `max_collection_size` = 100 000
+    /// - `max_output_bytes` = 10 MB
     /// - Resolution disabled.
     #[must_use]
     pub const fn strict() -> Self {
@@ -102,6 +108,8 @@ impl LoaderConfig {
                 max_alias_expansions: Some(100),
                 max_anchor_count: Some(100),
                 max_merge_depth: Some(10),
+                max_collection_size: Some(100_000),
+                max_output_bytes: Some(10 * 1024 * 1024),
             },
             resolution: ResolutionPolicy::disabled(),
             tag_resolution: TagResolution::Yaml12,
@@ -117,6 +125,8 @@ impl LoaderConfig {
     /// - `max_alias_expansions` = 1 000 000
     /// - `max_anchor_count` = None (unlimited)
     /// - `max_merge_depth` = 256
+    /// - `max_collection_size` = None (unlimited)
+    /// - `max_output_bytes` = None (unlimited)
     /// - Resolution disabled.
     #[must_use]
     pub const fn trusted() -> Self {
@@ -129,6 +139,8 @@ impl LoaderConfig {
                 max_alias_expansions: Some(1_000_000),
                 max_anchor_count: None,
                 max_merge_depth: Some(256),
+                max_collection_size: None,
+                max_output_bytes: None,
             },
             resolution: ResolutionPolicy::disabled(),
             tag_resolution: TagResolution::Yaml12,
@@ -178,6 +190,10 @@ pub struct ResourceLimits {
     pub max_anchor_count: Option<usize>,
     /// Maximum depth when recursively resolving merge keys (`<<`).
     pub max_merge_depth: Option<usize>,
+    /// Maximum number of entries in one sequence or mapping.
+    pub max_collection_size: Option<usize>,
+    /// Maximum serialized output size in bytes.
+    pub max_output_bytes: Option<usize>,
 }
 
 impl ResourceLimits {
@@ -192,6 +208,8 @@ impl ResourceLimits {
             max_alias_expansions: None,
             max_anchor_count: None,
             max_merge_depth: None,
+            max_collection_size: None,
+            max_output_bytes: None,
         }
     }
 
@@ -265,6 +283,16 @@ impl ResourceLimits {
     /// configured maximum.
     pub fn check_merge_depth(&self, depth: usize) -> Result<(), String> {
         check_limit(depth, self.max_merge_depth, "merge depth")
+    }
+
+    /// Check whether a collection length is within the configured limit.
+    pub fn check_collection_size(&self, size: usize) -> Result<(), String> {
+        check_limit(size, self.max_collection_size, "collection size")
+    }
+
+    /// Check whether serialized output is within the configured byte limit.
+    pub fn check_output_size(&self, size: usize) -> Result<(), String> {
+        check_limit(size, self.max_output_bytes, "output size")
     }
 }
 

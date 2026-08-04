@@ -1,5 +1,6 @@
 //! The yg query pipeline: inputs to filter engine to serialized output.
 
+use std::collections::VecDeque;
 use std::io::{Read as _, Write};
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -32,6 +33,10 @@ pub fn cmd_query(
         Ok(parts) => parts,
         Err(error) => return Ok(report(error)),
     };
+    if args.in_place && json_output {
+        eprintln!("yg: -i/--in-place cannot be combined with JSON output");
+        return Ok(ExitCode::from(2));
+    }
     let filter = match engine::compile_filter(&filter_source, &[]) {
         Ok(filter) => filter,
         Err(error) => return Ok(report(error)),
@@ -50,10 +55,12 @@ pub fn cmd_query(
         );
     }
 
-    let records = match collect_inputs(&files, args, &config) {
-        Ok(records) => records,
-        Err(error) => return Ok(report(error)),
-    };
+    if !args.null_input
+        && let Err(error) = validate_input_paths(&files)
+    {
+        return Ok(report(error));
+    }
+    let records = deferred_inputs(files, args.clone(), config.clone());
     let context = Rc::new(RunCtx::new(config));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
@@ -65,7 +72,11 @@ pub fn cmd_query(
         json_output,
         color,
         &mut output,
-    );
+    )
+    .and_then(|last| {
+        output.flush().map_err(output_error)?;
+        Ok(last)
+    });
 
     Ok(match result {
         Err(error) => report(error),
@@ -76,22 +87,26 @@ pub fn cmd_query(
 fn run_records(
     filter: &CompiledFilter,
     context: Rc<RunCtx>,
-    records: Vec<InputRecord>,
+    records: impl Iterator<Item = InputRecord> + 'static,
     args: &QueryArgs,
     json_output: bool,
     color: bool,
     output: &mut dyn Write,
 ) -> Result<Option<bool>, YgError> {
     let iterator_context = Rc::clone(&context);
-    let inputs = records.into_iter().map(move |record| {
+    let inputs = records.map(move |record| {
         *iterator_context.input_meta.borrow_mut() = record.metadata;
         record.value
     });
 
+    // r[impl cli.compact]
+    // r[impl cli.sort-keys]
     let options = EmitOpts {
         compact: args.compact_output,
         sort_keys: args.sort_keys,
         color: color && !json_output,
+        schema: context.config.tag_resolution,
+        limits: context.config.limits.clone(),
         ..EmitOpts::default()
     };
     let mut first = true;
@@ -101,18 +116,20 @@ fn run_records(
         inputs,
         args.null_input,
         |value| -> Result<(), YgError> {
+            // r[impl cli.json-output]
+            // r[impl cli.raw-output]
+            // r[impl output.multidoc]
+            // r[impl output.multidoc.suppress]
             if json_output {
-                writeln!(output, "{}", to_json(&value, &options))
-                    .map_err(|error| YgError::Runtime(error.to_string()))?;
+                writeln!(output, "{}", to_json(&value, &options)?).map_err(output_error)?;
             } else if args.raw_output && value.is_string() {
                 writeln!(output, "{}", value.as_str_content().unwrap_or_default())
-                    .map_err(|error| YgError::Runtime(error.to_string()))?;
+                    .map_err(output_error)?;
             } else {
                 if !first && !args.no_doc {
-                    writeln!(output, "---").map_err(|error| YgError::Runtime(error.to_string()))?;
+                    writeln!(output, "---").map_err(output_error)?;
                 }
-                write!(output, "{}", to_yaml(&value, &options))
-                    .map_err(|error| YgError::Runtime(error.to_string()))?;
+                write!(output, "{}", to_yaml(&value, &options)?).map_err(output_error)?;
             }
             first = false;
             Ok(())
@@ -120,6 +137,8 @@ fn run_records(
     )
 }
 
+// r[impl cli.exit.success]
+// r[impl cli.exit.falsy]
 fn exit_status(last: Option<bool>, enabled: bool) -> ExitCode {
     if enabled {
         match last {
@@ -132,6 +151,8 @@ fn exit_status(last: Option<bool>, enabled: bool) -> ExitCode {
     }
 }
 
+// r[impl cli.inplace]
+// r[impl output.yaml.style-preservation]
 fn run_in_place(
     filter: &CompiledFilter,
     files: &[camino::Utf8PathBuf],
@@ -139,11 +160,23 @@ fn run_in_place(
     json_output: bool,
     config: &LoaderConfig,
 ) -> Result<Option<bool>, YgError> {
-    let mut last = None;
+    struct StagedEdit {
+        path: camino::Utf8PathBuf,
+        temporary: tempfile::NamedTempFile,
+        last: bool,
+    }
+
+    let mut staged = Vec::with_capacity(files.len());
 
     for (file_index, path) in files.iter().enumerate() {
-        let source_metadata = std::fs::metadata(path)
-            .map_err(|error| YgError::InputParse(format!("failed to inspect {path}: {error}")))?;
+        let source_metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| YgError::InputRead(format!("failed to inspect {path}: {error}")))?;
+        if source_metadata.file_type().is_symlink() {
+            return Err(YgError::Runtime(format!(
+                "refusing to replace symbolic link {path}; edit its target path directly"
+            )));
+        }
+        warn_if_hard_linked(path, &source_metadata);
         let mut records = collect_inputs(std::slice::from_ref(path), args, config)?;
         for record in &mut records {
             record.metadata.filename = Some(Rc::<str>::from(path.as_str()));
@@ -162,12 +195,17 @@ fn run_in_place(
         let file_last = run_records(
             filter,
             Rc::new(RunCtx::new(config.clone())),
-            records,
+            records.into_iter(),
             args,
             json_output,
             false,
             temporary.as_file_mut(),
-        )?;
+        )?
+        .ok_or_else(|| {
+            YgError::Runtime(format!(
+                "{path}: filter produced no output; refusing to replace the input file"
+            ))
+        })?;
         temporary
             .as_file_mut()
             .flush()
@@ -177,6 +215,7 @@ fn run_in_place(
                     "failed to finish temporary output for {path}: {error}"
                 ))
             })?;
+        preserve_owner(temporary.path(), &source_metadata, path)?;
         temporary
             .as_file()
             .set_permissions(source_metadata.permissions())
@@ -185,26 +224,77 @@ fn run_in_place(
                     "failed to preserve permissions for {path}: {error}"
                 ))
             })?;
-        temporary.persist(path).map_err(|error| {
-            YgError::Runtime(format!(
-                "failed to replace {path} atomically: {}",
-                error.error
-            ))
-        })?;
+        staged.push(StagedEdit {
+            path: path.clone(),
+            temporary,
+            last: file_last,
+        });
+    }
 
-        if file_last.is_some() {
-            last = file_last;
+    let mut replaced = Vec::new();
+    let mut last = None;
+    for edit in staged {
+        let path = edit.path;
+        if let Err(error) = edit.temporary.persist(&path) {
+            let replaced = if replaced.is_empty() {
+                String::new()
+            } else {
+                format!("; already replaced: {}", replaced.join(", "))
+            };
+            return Err(YgError::Runtime(format!(
+                "failed to replace {path} atomically: {}{replaced}",
+                error.error
+            )));
         }
+        replaced.push(path.to_string());
+        last = Some(edit.last);
     }
 
     Ok(last)
+}
+
+#[cfg(unix)]
+fn warn_if_hard_linked(path: &camino::Utf8Path, metadata: &std::fs::Metadata) {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if metadata.nlink() > 1 {
+        eprintln!(
+            "warning: {path} has {} hard links; atomic replacement will update only this path",
+            metadata.nlink()
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_hard_linked(_path: &camino::Utf8Path, _metadata: &std::fs::Metadata) {}
+
+#[cfg(unix)]
+fn preserve_owner(
+    temporary: &std::path::Path,
+    source: &std::fs::Metadata,
+    path: &camino::Utf8Path,
+) -> Result<(), YgError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    std::os::unix::fs::chown(temporary, Some(source.uid()), Some(source.gid())).map_err(|error| {
+        YgError::Runtime(format!("failed to preserve ownership for {path}: {error}"))
+    })
+}
+
+#[cfg(not(unix))]
+fn preserve_owner(
+    _temporary: &std::path::Path,
+    _source: &std::fs::Metadata,
+    _path: &camino::Utf8Path,
+) -> Result<(), YgError> {
+    Ok(())
 }
 
 fn filter_and_files(args: &QueryArgs) -> Result<(String, Vec<camino::Utf8PathBuf>), YgError> {
     match &args.from_file {
         Some(path) => {
             let source = std::fs::read_to_string(path).map_err(|error| {
-                YgError::InputParse(format!("failed to read filter {path}: {error}"))
+                YgError::InputRead(format!("failed to read filter {path}: {error}"))
             })?;
             let mut files = Vec::new();
             files.extend(args.filter.clone().map(camino::Utf8PathBuf::from));
@@ -218,6 +308,42 @@ fn filter_and_files(args: &QueryArgs) -> Result<(String, Vec<camino::Utf8PathBuf
     }
 }
 
+fn deferred_inputs(
+    files: Vec<camino::Utf8PathBuf>,
+    args: QueryArgs,
+    config: LoaderConfig,
+) -> impl Iterator<Item = InputRecord> {
+    let mut loaded = false;
+    let mut records = VecDeque::new();
+
+    std::iter::from_fn(move || {
+        if !loaded {
+            loaded = true;
+            match collect_inputs(&files, &args, &config) {
+                Ok(inputs) => records.extend(inputs),
+                Err(error) => records.push_back(InputRecord {
+                    metadata: InputMeta::default(),
+                    value: Err(error.to_string()),
+                }),
+            }
+        }
+        records.pop_front()
+    })
+}
+
+fn validate_input_paths(files: &[camino::Utf8PathBuf]) -> Result<(), YgError> {
+    for path in files.iter().filter(|path| path.as_str() != "-") {
+        std::fs::File::open(path)
+            .map_err(|error| YgError::InputRead(format!("failed to read {path}: {error}")))?;
+    }
+    Ok(())
+}
+
+// r[impl cli.multi-file]
+// r[impl cli.null-input]
+// r[impl cli.slurp]
+// r[impl cli.raw-input]
+// r[impl ext.documents]
 fn collect_inputs(
     files: &[camino::Utf8PathBuf],
     args: &QueryArgs,
@@ -229,7 +355,7 @@ fn collect_inputs(
         std::io::stdin()
             .read_to_string(&mut input)
             .map_err(|error| {
-                YgError::InputParse(format!("failed to read standard input: {error}"))
+                YgError::InputRead(format!("failed to read standard input: {error}"))
             })?;
         append_input(&mut records, input, None, 0, args, config);
     } else {
@@ -239,12 +365,12 @@ fn collect_inputs(
                 std::io::stdin()
                     .read_to_string(&mut input)
                     .map_err(|error| {
-                        YgError::InputParse(format!("failed to read standard input: {error}"))
+                        YgError::InputRead(format!("failed to read standard input: {error}"))
                     })?;
                 input
             } else {
                 std::fs::read_to_string(path).map_err(|error| {
-                    YgError::InputParse(format!("failed to read {path}: {error}"))
+                    YgError::InputRead(format!("failed to read {path}: {error}"))
                 })?
             };
             append_input(
@@ -342,6 +468,10 @@ fn append_input(
     }
 }
 
+// r[impl datamodel.schema.default]
+// r[impl datamodel.schema.failsafe]
+// r[impl datamodel.schema.json]
+// r[impl datamodel.schema.yaml11]
 const fn loader_config(args: &QueryArgs) -> LoaderConfig {
     let config = if args.strict {
         LoaderConfig::strict()
@@ -359,15 +489,31 @@ const fn loader_config(args: &QueryArgs) -> LoaderConfig {
 }
 
 fn report(error: YgError) -> ExitCode {
-    eprintln!("yg: {error}");
+    if !matches!(error, YgError::Halt(_) | YgError::BrokenPipe) {
+        eprintln!("yg: {error}");
+    }
     exit_for(&error)
 }
 
+fn output_error(error: std::io::Error) -> YgError {
+    if error.kind() == std::io::ErrorKind::BrokenPipe {
+        YgError::BrokenPipe
+    } else {
+        YgError::Runtime(format!("failed to write output: {error}"))
+    }
+}
+
+// r[impl cli.exit]
+// r[impl cli.exit.usage]
+// r[impl cli.exit.compile]
+// r[impl cli.exit.runtime]
 fn exit_for(error: &YgError) -> ExitCode {
     match error {
         YgError::FilterSyntax(_) => ExitCode::from(2),
         YgError::FilterCompile(_) => ExitCode::from(3),
+        YgError::InputRead(_) => ExitCode::from(2),
         YgError::InputParse(_) | YgError::Runtime(_) => ExitCode::from(5),
-        YgError::Halt(code) => ExitCode::from((*code).clamp(0, 255) as u8),
+        YgError::Halt(code) => ExitCode::from(*code as u8),
+        YgError::BrokenPipe => ExitCode::SUCCESS,
     }
 }

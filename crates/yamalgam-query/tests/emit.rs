@@ -1,5 +1,6 @@
 //! Integration tests for query result emitters.
 
+use yamalgam_core::{ResourceLimits, TagResolution};
 use yamalgam_query::{
     EmitOpts, YamlVal,
     emit::{to_json, to_yaml},
@@ -13,7 +14,7 @@ fn json_output_materializes_aliases_and_stringifies_keys() {
         .remove(0);
 
     assert_eq!(
-        to_json(&value, &EmitOpts::compact()),
+        to_json(&value, &EmitOpts::compact()).unwrap(),
         r#"{"a":[1,null],"b":[1,null],"1":[1,null]}"#
     );
 }
@@ -23,8 +24,20 @@ fn json_pretty_output_indents_two_spaces() {
     let value = parse_str("a: [1]\n").unwrap().remove(0);
 
     assert_eq!(
-        to_json(&value, &EmitOpts::default()),
+        to_json(&value, &EmitOpts::default()).unwrap(),
         "{\n  \"a\": [\n    1\n  ]\n}"
+    );
+}
+
+#[test]
+fn json_rejects_keys_that_collide_after_string_conversion() {
+    let value = parse_str("{1: alpha, \"1\": beta}\n").unwrap().remove(0);
+
+    assert!(
+        to_json(&value, &EmitOpts::compact())
+            .unwrap_err()
+            .to_string()
+            .contains("duplicated")
     );
 }
 
@@ -39,7 +52,7 @@ fn json_escapes_strings_and_can_sort_keys() {
     };
 
     assert_eq!(
-        to_json(&value, &options),
+        to_json(&value, &options).unwrap(),
         r#"{"a":"tab\tquote\"","b":"line\\break"}"#
     );
 }
@@ -54,9 +67,109 @@ fn yaml_scalars_quote_when_plain_text_would_change_type() {
     );
 
     assert_eq!(
-        to_yaml(&value, &EmitOpts::default()),
+        to_yaml(&value, &EmitOpts::default()).unwrap(),
         "- a\n- \"1\"\n- \"true\"\n- \"null\"\n- \"x: y\"\n"
     );
+}
+
+#[test]
+fn yaml_flow_scalars_quote_flow_indicators() {
+    let value = YamlVal::seq(vec![
+        YamlVal::str("x,y"),
+        YamlVal::str("x[y"),
+        YamlVal::str("x]y"),
+        YamlVal::str("x{y"),
+        YamlVal::str("x}y"),
+    ]);
+
+    let emitted = to_yaml(&value, &EmitOpts::compact()).unwrap();
+    assert_eq!(emitted, "[\"x,y\", \"x[y\", \"x]y\", \"x{y\", \"x}y\"]\n");
+    assert_eq!(parse_str(&emitted).unwrap(), vec![value]);
+}
+
+#[test]
+fn yaml_scalars_quote_for_active_schema() {
+    let value = YamlVal::str("yes");
+    let options = EmitOpts {
+        schema: TagResolution::Yaml11,
+        ..EmitOpts::default()
+    };
+
+    let emitted = to_yaml(&value, &options).unwrap();
+    assert_eq!(emitted, "\"yes\"\n");
+    assert_eq!(
+        yamalgam_query::parse_str_with_config(
+            &emitted,
+            &yamalgam_core::LoaderConfig::moderate().with_tag_resolution(TagResolution::Yaml11),
+        )
+        .unwrap(),
+        vec![value]
+    );
+}
+
+#[test]
+fn yaml_control_characters_are_double_quoted() {
+    let value = YamlVal::seq(vec![YamlVal::str("x\ry"), YamlVal::str("x\u{1b}y")]);
+
+    assert_eq!(
+        to_yaml(&value, &EmitOpts::default()).unwrap(),
+        "- \"x\\ry\"\n- \"x\\x1by\"\n"
+    );
+}
+
+#[test]
+fn emitters_bound_materialized_aliases() {
+    let document = parse_str("a: &a [1]\nb: &b [*a, *a]\nc: [*b, *b]\n")
+        .unwrap()
+        .remove(0);
+    let value = document.get_str("c").unwrap();
+    let options = EmitOpts {
+        limits: ResourceLimits {
+            max_alias_expansions: Some(2),
+            ..ResourceLimits::none()
+        },
+        ..EmitOpts::compact()
+    };
+
+    assert!(
+        to_json(value, &options)
+            .unwrap_err()
+            .to_string()
+            .contains("alias")
+    );
+    assert!(
+        to_yaml(value, &options)
+            .unwrap_err()
+            .to_string()
+            .contains("alias")
+    );
+}
+
+#[test]
+fn emitters_bound_constructed_depth_and_output_size() {
+    let deep = YamlVal::seq(vec![YamlVal::seq(vec![YamlVal::seq(
+        vec![YamlVal::null()],
+    )])]);
+    let depth_options = EmitOpts {
+        limits: ResourceLimits {
+            max_depth: Some(2),
+            ..ResourceLimits::none()
+        },
+        ..EmitOpts::compact()
+    };
+    assert!(to_json(&deep, &depth_options).is_err());
+    assert!(to_yaml(&deep, &depth_options).is_err());
+
+    let wide = YamlVal::seq(vec![YamlVal::str("12345"), YamlVal::str("67890")]);
+    let size_options = EmitOpts {
+        limits: ResourceLimits {
+            max_output_bytes: Some(10),
+            ..ResourceLimits::none()
+        },
+        ..EmitOpts::compact()
+    };
+    assert!(to_json(&wide, &size_options).is_err());
+    assert!(to_yaml(&wide, &size_options).is_err());
 }
 
 #[test]
@@ -64,7 +177,7 @@ fn yaml_multiline_strings_use_literal_blocks() {
     let value = parse_str("key: |\n  line1\n  line2\n").unwrap().remove(0);
 
     assert_eq!(
-        to_yaml(&value, &EmitOpts::default()),
+        to_yaml(&value, &EmitOpts::default()).unwrap(),
         "key: |\n  line1\n  line2\n"
     );
 }
@@ -73,7 +186,7 @@ fn yaml_multiline_strings_use_literal_blocks() {
 fn yaml_scalar_types_survive_emit_and_reparse() {
     let source = "int: 1\nfloat: 1.0\nbool: true\nnully: null\nstr: '1'\n";
     let value = parse_str(source).unwrap().remove(0);
-    let emitted = to_yaml(&value, &EmitOpts::default());
+    let emitted = to_yaml(&value, &EmitOpts::default()).unwrap();
     let reparsed = parse_str(&emitted).unwrap().remove(0);
 
     assert_eq!(value, reparsed);
@@ -84,7 +197,7 @@ fn yaml_block_collections_are_the_default() {
     let value = parse_str("a:\n  - 1\n  - x: 2\n").unwrap().remove(0);
 
     assert_eq!(
-        to_yaml(&value, &EmitOpts::default()),
+        to_yaml(&value, &EmitOpts::default()).unwrap(),
         "a:\n  - 1\n  - x: 2\n"
     );
 }
@@ -92,10 +205,13 @@ fn yaml_block_collections_are_the_default() {
 #[test]
 fn yaml_honors_flow_style_and_compact_forces_flow() {
     let flow = parse_str("a: {b: 1}\n").unwrap().remove(0);
-    assert_eq!(to_yaml(&flow, &EmitOpts::default()), "a: {b: 1}\n");
+    assert_eq!(to_yaml(&flow, &EmitOpts::default()).unwrap(), "a: {b: 1}\n");
 
     let block = parse_str("a:\n  b: 1\n").unwrap().remove(0);
-    assert_eq!(to_yaml(&block, &EmitOpts::compact()), "{a: {b: 1}}\n");
+    assert_eq!(
+        to_yaml(&block, &EmitOpts::compact()).unwrap(),
+        "{a: {b: 1}}\n"
+    );
 }
 
 #[test]
@@ -104,7 +220,7 @@ fn yaml_reemits_anchors_aliases_and_tags() {
         .unwrap()
         .remove(0);
     assert_eq!(
-        to_yaml(&anchored, &EmitOpts::default()),
+        to_yaml(&anchored, &EmitOpts::default()).unwrap(),
         "base: &b\n  x: 1\nchild: *b\n"
     );
 
@@ -112,7 +228,7 @@ fn yaml_reemits_anchors_aliases_and_tags() {
         .unwrap()
         .remove(0);
     assert_eq!(
-        to_yaml(&tagged, &EmitOpts::default()),
+        to_yaml(&tagged, &EmitOpts::default()).unwrap(),
         "a: !custom hi\nb: !!binary aGk=\n"
     );
 }
@@ -125,7 +241,7 @@ fn yaml_sort_keys_changes_output_not_the_value() {
         ..EmitOpts::default()
     };
 
-    assert_eq!(to_yaml(&value, &options), "a: 2\nb: 1\n");
+    assert_eq!(to_yaml(&value, &options).unwrap(), "a: 2\nb: 1\n");
     assert_eq!(
         value.keys().cloned().collect::<Vec<_>>(),
         vec![YamlVal::str("b"), YamlVal::str("a")]
@@ -144,7 +260,7 @@ fn yaml_emits_non_string_and_complex_keys() {
     ]);
 
     assert_eq!(
-        to_yaml(&value, &EmitOpts::default()),
+        to_yaml(&value, &EmitOpts::default()).unwrap(),
         "1: a\ntrue: b\n[1, 2]: c\n"
     );
 }
@@ -187,7 +303,7 @@ fn yaml_emit_reparse_round_trips_fixture_corpus() {
             }
         };
         for (index, document) in documents.into_iter().enumerate() {
-            let emitted = to_yaml(&document, &EmitOpts::default());
+            let emitted = to_yaml(&document, &EmitOpts::default()).unwrap();
             match parse_str(&emitted) {
                 Ok(reparsed) if reparsed.as_slice() == [document.clone()] => {}
                 Ok(reparsed) => failures.push(format!(

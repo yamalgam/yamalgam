@@ -34,6 +34,7 @@ fn eval_yaml(filter: &str, input: &str) -> Vec<String> {
         |value| {
             output.push(
                 yamalgam_query::emit::to_yaml(&value, &yamalgam_query::EmitOpts::compact())
+                    .unwrap()
                     .trim_end()
                     .to_owned(),
             );
@@ -279,8 +280,24 @@ fn assignment_preserves_untouched_sibling_metadata() {
     .unwrap();
 
     assert_eq!(
-        yamalgam_query::emit::to_yaml(&output[0], &Default::default()),
+        yamalgam_query::emit::to_yaml(&output[0], &Default::default()).unwrap(),
         "a: 2\nb: \"quoted\"\nflow: {x: 1}\n"
+    );
+}
+
+#[test]
+fn assignment_through_alias_emits_the_mutated_value() {
+    assert_eq!(
+        eval_yaml(".b.p = 2", "a: &x {p: 1}\nb: *x\n"),
+        vec!["{a: &x {p: 1}, b: {p: 2}}"]
+    );
+}
+
+#[test]
+fn string_splice_invalidates_stale_raw_text() {
+    assert_eq!(
+        eval(r#".a |= .[0:1] = "z" | .a | raw"#, "a: \"abc\"\n"),
+        vec!["zbc"]
     );
 }
 

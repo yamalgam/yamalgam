@@ -58,8 +58,9 @@ watch-clippy:
 # Lint markdown files
 mdlint *files='':
     #!/usr/bin/env bash
+    files="{{files}}"
     if command -v rumdl &>/dev/null; then
-        rumdl ${files:-.}
+        rumdl check ${files:-.}
     elif command -v markdownlint &>/dev/null; then
         markdownlint ${files:-"**/*.md"}
     else
@@ -70,8 +71,9 @@ mdlint *files='':
 # Fix markdown files
 mdfix *files='':
     #!/usr/bin/env bash
+    files="{{files}}"
     if command -v rumdl &>/dev/null; then
-        rumdl --fix ${files:-.}
+        rumdl check --fix ${files:-.}
     elif command -v markdownlint &>/dev/null; then
         markdownlint --fix ${files:-"**/*.md"}
     else

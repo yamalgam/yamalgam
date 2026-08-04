@@ -2,10 +2,22 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::io::Read as _;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 #[allow(deprecated)]
 fn yg() -> Command {
-    Command::cargo_bin("yg").unwrap()
+    let mut command = Command::cargo_bin("yg").unwrap();
+    command.env("YAMALGAM_LOG_DIR", std::env::temp_dir());
+    command
+}
+
+#[allow(deprecated)]
+fn yg_process() -> std::process::Command {
+    let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin("yg"));
+    command.env("YAMALGAM_LOG_DIR", std::env::temp_dir());
+    command
 }
 
 #[test]
@@ -44,6 +56,31 @@ fn files_process_as_unified_stream() {
 #[test]
 fn null_input() {
     yg().args(["-n", "1 + 1"]).assert().success().stdout("2\n");
+}
+
+#[test]
+fn null_input_does_not_wait_for_open_stdin() {
+    let mut child = yg_process()
+        .args(["-n", "1 + 1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!("yg -n blocked while standard input remained open");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"2\n");
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
@@ -211,6 +248,111 @@ fn exit_codes() {
 }
 
 #[test]
+fn halt_uses_posix_exit_codes_without_diagnostics() {
+    yg().args(["-n", "halt"])
+        .assert()
+        .code(0)
+        .stdout("")
+        .stderr("");
+    yg().args(["-n", "halt(-1)"])
+        .assert()
+        .code(255)
+        .stdout("")
+        .stderr("");
+}
+
+#[test]
+fn missing_input_uses_usage_exit_code() {
+    yg().arg(".")
+        .arg("this-file-does-not-exist.yml")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("failed to read"));
+}
+
+#[test]
+fn runtime_error_names_its_input_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("bad-value.yml");
+    std::fs::write(&input, "a: text\n").unwrap();
+
+    yg().arg(".a.b")
+        .arg(&input)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains(format!(
+            "{} document 1:",
+            input.display()
+        )));
+}
+
+#[test]
+fn closed_stdout_is_a_clean_success() {
+    let mut child = yg_process()
+        .args(["-n", "range(200000)"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut prefix = [0; 2];
+    stdout.read_exact(&mut prefix).unwrap();
+    drop(stdout);
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn strict_mode_bounds_filter_allocations() {
+    yg().args(["--strict", "-n", ".[100000] = 1 | length"])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("collection size"));
+    yg().args(["--strict", "-n", r#""a" * 2000000 | length"#])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("scalar size"));
+}
+
+#[test]
+fn strict_mode_bounds_constructed_output_depth() {
+    yg().args(["--strict", "-n", "reduce range(100) as $i (null; [.])"])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("depth"));
+}
+
+#[test]
+fn discarded_deep_values_drop_without_stack_overflow() {
+    yg().timeout(Duration::from_secs(10))
+        .args([
+            "--strict",
+            "-n",
+            "reduce range(20000) as $i (null; [.]) | 1",
+        ])
+        .assert()
+        .success()
+        .stdout("1\n");
+}
+
+#[test]
+fn fromjson_uses_active_limits_and_rejects_yaml_extensions() {
+    let nested_json = format!("{}null{}", "[".repeat(70), "]".repeat(70));
+    yg().args(["--strict", "fromjson"])
+        .write_stdin(format!("{nested_json:?}\n"))
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("depth"));
+
+    yg().args(["--strict", "-n", r#""a: &x [1]\nb: *x\n" | fromjson"#])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("fromjson"));
+}
+
+#[test]
 fn librebar_color_flags_are_canonical() {
     let output = yg()
         .args(["--color", "always", "."])
@@ -245,6 +387,92 @@ fn in_place_edits_file_and_preserves_sibling_style() {
         std::fs::read_to_string(input).unwrap(),
         "a: 2\nb: \"keep\"\n"
     );
+}
+
+#[test]
+fn in_place_refuses_empty_output_without_touching_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("config.yml");
+    let original = "enabled: false\nname: production\n";
+    std::fs::write(&input, original).unwrap();
+
+    yg().args(["-i", "select(.enabled)"])
+        .arg(&input)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("produced no output"));
+    assert_eq!(std::fs::read_to_string(input).unwrap(), original);
+}
+
+#[test]
+fn in_place_stages_all_files_before_replacing_any() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.yml");
+    let second = dir.path().join("second.yml");
+    std::fs::write(&first, "n: 1\n").unwrap();
+    std::fs::write(&second, "n: [bad\n").unwrap();
+
+    yg().args(["-i", ".n += 1"])
+        .arg(&first)
+        .arg(&second)
+        .assert()
+        .code(5);
+    assert_eq!(std::fs::read_to_string(first).unwrap(), "n: 1\n");
+}
+
+#[test]
+fn in_place_rejects_slurp_null_input_and_json_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("config.yml");
+    std::fs::write(&input, "a: 1\n").unwrap();
+
+    for arguments in [
+        vec!["-i", "-s", "."],
+        vec!["-i", "-n", "."],
+        vec!["-i", "--json", "."],
+    ] {
+        yg().args(arguments).arg(&input).assert().code(2);
+    }
+}
+
+#[test]
+fn in_place_accepts_filter_from_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("program.jq");
+    let input = dir.path().join("config.yml");
+    std::fs::write(&program, ".a = 2\n").unwrap();
+    std::fs::write(&input, "a: 1\n").unwrap();
+
+    yg().arg("-i")
+        .arg("-f")
+        .arg(&program)
+        .arg(&input)
+        .assert()
+        .success();
+    assert_eq!(std::fs::read_to_string(input).unwrap(), "a: 2\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn in_place_refuses_to_replace_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target.yml");
+    let link = dir.path().join("link.yml");
+    std::fs::write(&target, "a: 1\n").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    yg().args(["-i", ".a = 2"])
+        .arg(&link)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("symbolic link"));
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "a: 1\n");
 }
 
 #[test]

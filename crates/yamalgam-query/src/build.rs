@@ -12,10 +12,10 @@ use yamalgam_parser::{Event, Parser};
 use yamalgam_scanner::ScalarStyle;
 
 use crate::error::BuildError;
-use crate::value::{Data, Meta, NodeStyle, YamlVal, YgMap};
+use crate::value::{Data, Meta, NodeStyle, YamlVal, YgMap, YgSeq};
 
 /// Parse every document using the moderate loader configuration.
-// r[cli.usage]
+// r[impl cli.usage]
 pub fn parse_str(input: &str) -> Result<Vec<YamlVal>, BuildError> {
     parse_str_with_config(input, &LoaderConfig::moderate())
 }
@@ -96,9 +96,9 @@ impl<'config> Builder<'config> {
             .map_err(BuildError::Limit)?;
 
         match first {
-            // r[datamodel.metadata.tag]
-            // r[datamodel.metadata.anchor]
-            // r[datamodel.metadata.style]
+            // r[impl datamodel.metadata.tag]
+            // r[impl datamodel.metadata.anchor]
+            // r[impl datamodel.metadata.style]
             Event::Scalar {
                 anchor,
                 tag,
@@ -121,7 +121,7 @@ impl<'config> Builder<'config> {
                     items.push(self.node(event, events, depth + 1)?);
                 }
                 self.finish(
-                    Data::Seq(Rc::new(items)),
+                    Data::Seq(Rc::new(YgSeq(items))),
                     anchor,
                     tag,
                     NodeStyle::Collection(style),
@@ -152,7 +152,6 @@ impl<'config> Builder<'config> {
                 )
             }
             Event::Alias { name, span } => {
-                // r[comparison.strict.anchor-identity]
                 self.alias_expansions += 1;
                 self.config
                     .limits
@@ -176,7 +175,7 @@ impl<'config> Builder<'config> {
         }
     }
 
-    // r[datamodel.schema]
+    // r[impl datamodel.schema]
     fn resolve_scalar(&self, text: &str, style: ScalarStyle, tag: Option<&str>) -> Data {
         if let Some(tag) = tag {
             return resolve_tagged(text, tag);
@@ -219,7 +218,7 @@ impl<'config> Builder<'config> {
     }
 
     fn tag_merge_key(&self, key: &mut YamlVal) {
-        // r[ext.merge.preserve]
+        // r[impl ext.merge.preserve]
         let is_merge = matches!(&key.data, Data::Str(value) if &**value == "<<")
             && key.meta().is_none_or(|meta| {
                 meta.tag.is_none()

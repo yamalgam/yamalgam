@@ -114,22 +114,40 @@ parse and CST-round-trip as of the post-M9 fixes; the remaining
 - Plan: `2026-03-09-m9-serde-implementation-plan.md`
 
 ## Milestone 10 — yg CLI + Query Engine
-**Status:** Not started
 
-Integrate jaq-syn/jaq-core as expression engine. Implement `YamlVal` with jaq's `ValT` trait. Build `yg` CLI with core jq-compatible filters, YAML-native extensions (tag, anchor, style, kind, raw), and schema flags.
+**Status:** Complete
 
-- Spec: `docs/spec/yg-query-language-spec-draft-01.md`
-- Phases 1-2 from spec Section 11
+jaq 3 supplies the jq grammar and engine. `YamlVal` keeps YAML data and
+presentation metadata available to core jq filters and YAML-native extensions.
+
+- Spec: `docs/spec/yg-query-language-spec-draft-01.md`.
+- Plan: `docs/plans/2026-06-10-m10-yg-cli-implementation-plan.md`.
+- Scope: Phases 1-2 from spec Section 11.
 
 Key deliverables:
-- `yg <filter> [files...]` — YAML query and transformation
-- jq-familiar expression language via jaq (not reimplemented)
-- YAML 1.2 Core Schema by default, configurable (`--schema`) via TagResolver trait
-- `type` returns YAML names (`"mapping"`, `"sequence"`)
-- `keys` returns insertion order (not sorted — use `keys_sorted`)
-- `-j` JSON output with implicit `explode`
-- `-r` raw string output
-- Exit codes matching jq convention
+
+- `yg <filter> [files...]` queries and transforms YAML.
+- jaq provides the jq-familiar expression language.
+- YAML 1.2 Core Schema is the default; `--schema` selects another resolver.
+- `type` returns YAML names such as `"mapping"` and `"sequence"`.
+- `keys` returns insertion order; `keys_sorted` opts in to sorting.
+- `-j` emits JSON after alias materialization.
+- `-r` emits raw string output.
+- Exit codes follow jq conventions.
+
+The jq 1.8 manual harness passes 230 examples. It tracks 13 expected failures
+and 8 scope exclusions by exact case. Stale entries and unexpected passes fail
+the suite.
+
+Draft-01 deviations are recorded in
+`docs/spec/yg-spec-draft-01-implementation-notes.md`:
+
+- `explode_aliases` avoids jq's `explode` name collision.
+- Strict `===` waits for grammar support instead of forking jaq.
+- Numbers use an `i64`/`f64` backend.
+- M11 owns external resolution.
+- Librebar's `--color` interface replaces the draft's `-C`/`-M` pair.
+- Pre-CST `-i` edits lose comments and exact formatting.
 
 ## Milestone 11 — Built-in Resolvers
 **Status:** Not started

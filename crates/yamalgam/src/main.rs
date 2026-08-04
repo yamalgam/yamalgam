@@ -63,11 +63,14 @@ fn main() -> anyhow::Result<ExitCode> {
         }
         None => {
             // Query output is YAML-native in auto mode, including in pipelines.
+            // r[impl cli.json-output]
             let json_output = cli.query.json_output
                 || matches!(
                     cli.common.output_format_for(true),
                     ResolvedOutputFormat::Json
                 );
+            // Librebar 0.4 exposes color as --color auto|always|never.
+            // r[impl cli.color]
             let color = match cli.common.color {
                 ColorChoice::Always => true,
                 ColorChoice::Never => false,

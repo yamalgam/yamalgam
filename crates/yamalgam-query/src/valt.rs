@@ -29,19 +29,29 @@ impl jaq_core::ValT for YamlVal {
         })
     }
 
+    // r[impl filters.construct.mapping]
     fn from_map<I: IntoIterator<Item = (Self, Self)>>(iter: I) -> ValR<Self> {
         Ok(Self::map(iter.into_iter().collect()))
     }
 
+    // r[impl filters.iterator]
+    // r[impl filters.recurse]
+    // r[impl diverge.entries]
     fn key_values(self) -> Box<dyn Iterator<Item = ValR<(Self, Self), Self>>> {
         match self.data {
             Data::Seq(items) => Box::new(
                 Rc::unwrap_or_clone(items)
+                    .into_values()
                     .into_iter()
                     .enumerate()
                     .map(|(index, value)| Ok((Self::from(index), value))),
             ),
-            Data::Map(mapping) => Box::new(Rc::unwrap_or_clone(mapping).0.into_iter().map(Ok)),
+            Data::Map(mapping) => Box::new(
+                Rc::unwrap_or_clone(mapping)
+                    .into_entries()
+                    .into_iter()
+                    .map(Ok),
+            ),
             data => box_once(Err(Error::typ(
                 yaml_value(data),
                 "iterable (sequence or mapping)",
@@ -49,12 +59,16 @@ impl jaq_core::ValT for YamlVal {
         }
     }
 
+    // r[impl filters.iterator]
+    // r[impl filters.recurse]
     fn values(self) -> Box<dyn Iterator<Item = ValR<Self>>> {
         match self.data {
-            Data::Seq(items) => Box::new(Rc::unwrap_or_clone(items).into_iter().map(Ok)),
+            Data::Seq(items) => {
+                Box::new(Rc::unwrap_or_clone(items).into_values().into_iter().map(Ok))
+            }
             Data::Map(mapping) => Box::new(
                 Rc::unwrap_or_clone(mapping)
-                    .0
+                    .into_entries()
                     .into_iter()
                     .map(|(_, value)| Ok(value)),
             ),
@@ -65,6 +79,11 @@ impl jaq_core::ValT for YamlVal {
         }
     }
 
+    // r[impl filters.field]
+    // r[impl filters.field.nonstring-keys]
+    // r[impl filters.index]
+    // r[impl filters.slice]
+    // r[impl filters.optional]
     fn index(self, index: &Self) -> ValR<Self> {
         if matches!(&self.data, Data::Seq(_) | Data::Str(_))
             && let Data::Map(range) = &index.data
@@ -92,6 +111,7 @@ impl jaq_core::ValT for YamlVal {
         }
     }
 
+    // r[impl filters.slice]
     fn range(self, range: Range<&Self>) -> ValR<Self> {
         let (start, end) = range_bounds(range)?;
         match self.data {
@@ -119,11 +139,12 @@ impl jaq_core::ValT for YamlVal {
         opt: Opt,
         f: impl Fn(Self) -> I,
     ) -> ValX<'a, Self> {
-        match &mut self.data {
+        match self.data_mut() {
             Data::Seq(items) => {
-                let previous = core::mem::take(Rc::make_mut(items));
-                *Rc::make_mut(items) =
-                    previous.into_iter().flat_map(f).collect::<Result<_, _>>()?;
+                let previous = core::mem::take(&mut Rc::make_mut(items).0);
+                *Rc::make_mut(items) = crate::value::YgSeq(
+                    previous.into_iter().flat_map(f).collect::<Result<_, _>>()?,
+                );
                 Ok(self)
             }
             Data::Map(mapping) => {
@@ -140,6 +161,10 @@ impl jaq_core::ValT for YamlVal {
         }
     }
 
+    // r[impl filters.assign.update]
+    // r[impl filters.assign.plain]
+    // r[impl filters.assign.arithmetic]
+    // r[impl phases.mutation]
     fn map_index<'a, I: Iterator<Item = ValX<'a, Self>>>(
         mut self,
         index: &Self,
@@ -159,15 +184,23 @@ impl jaq_core::ValT for YamlVal {
             let Some(replacement) = replacement else {
                 return Ok(self);
             };
-            self.data = match index.as_int() {
+            let data = match index.as_int() {
                 Some(position) if position >= 0 => {
                     let Ok(position) = usize::try_from(position) else {
                         let error = Error::str(format_args!("index {index} out of bounds"));
                         return opt.fail(self, |_| Exn::from(error));
                     };
+                    let Some(size) = position.checked_add(1) else {
+                        let error = Error::str(format_args!("index {index} out of bounds"));
+                        return opt.fail(self, |_| Exn::from(error));
+                    };
+                    if let Err(message) = crate::runtime_limits::check_collection_size(size) {
+                        let error = Error::str(message);
+                        return opt.fail(self, |_| Exn::from(error));
+                    }
                     let mut items = vec![Self::null(); position];
                     items.push(replacement);
-                    Data::Seq(Rc::new(items))
+                    Data::Seq(Rc::new(crate::value::YgSeq(items)))
                 }
                 Some(_) => {
                     let error = Error::str(format_args!("index {index} out of bounds"));
@@ -177,10 +210,11 @@ impl jaq_core::ValT for YamlVal {
                     core::iter::once((index.clone(), replacement)).collect(),
                 ))),
             };
+            *self.data_mut() = data;
             return Ok(self);
         }
 
-        match &mut self.data {
+        match self.data_mut() {
             Data::Map(mapping) => {
                 use indexmap::map::Entry::{Occupied, Vacant};
 
@@ -220,8 +254,16 @@ impl jaq_core::ValT for YamlVal {
                         let error = Error::str(format_args!("index {index} out of bounds"));
                         return opt.fail(self, |_| Exn::from(error));
                     };
+                    let Some(size) = position.checked_add(1) else {
+                        let error = Error::str(format_args!("index {index} out of bounds"));
+                        return opt.fail(self, |_| Exn::from(error));
+                    };
+                    if let Err(message) = crate::runtime_limits::check_collection_size(size) {
+                        let error = Error::str(message);
+                        return opt.fail(self, |_| Exn::from(error));
+                    }
                     let items = Rc::make_mut(items);
-                    items.resize(position.saturating_add(1), Self::null());
+                    items.resize(size, Self::null());
                     items[position] = replacement;
                     return Ok(self);
                 }
@@ -257,7 +299,7 @@ impl jaq_core::ValT for YamlVal {
             Err(error) => return opt.fail(self, |_| Exn::from(error)),
         };
 
-        match &mut self.data {
+        match self.data_mut() {
             Data::Seq(items) => {
                 let (skip, take) = skip_take(start, end, items.len());
                 let slice = Self::seq(items.iter().skip(skip).take(take).cloned().collect());
@@ -303,10 +345,8 @@ impl jaq_core::ValT for YamlVal {
     fn into_string(self) -> Self {
         match self.data {
             Data::Str(string) => Self::str(string),
-            data => Self::str(crate::emit::to_json(
-                &yaml_value(data),
-                &crate::EmitOpts::compact(),
-            )),
+            data => crate::emit::to_json(&yaml_value(data), &crate::EmitOpts::compact())
+                .map_or_else(|error| Self::str(format!("<yg: {error}>")), Self::str),
         }
     }
 }

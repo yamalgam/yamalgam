@@ -45,6 +45,9 @@ fn deep_merge(left: &mut Rc<YgMap>, right: &YgMap) {
     }
 }
 
+// r[impl diverge.add]
+// r[impl diverge.add-strings]
+// r[impl diverge.add-mappings]
 impl core::ops::Add for YamlVal {
     type Output = Result;
 
@@ -103,6 +106,7 @@ impl core::ops::Sub for YamlVal {
     }
 }
 
+// r[impl diverge.multiply]
 impl core::ops::Mul for YamlVal {
     type Output = Result;
 
@@ -119,6 +123,11 @@ impl core::ops::Mul for YamlVal {
             (Str(string), Int(count)) | (Int(count), Str(string)) if count > 0 => {
                 let count = usize::try_from(count)
                     .map_err(|_| math_error(Str(string.clone()), Math::Mul, Int(count)))?;
+                let size = string
+                    .len()
+                    .checked_mul(count)
+                    .ok_or_else(|| Error::str("string size overflow"))?;
+                crate::runtime_limits::check_scalar_size(size).map_err(Error::str)?;
                 Str(Rc::from(string.repeat(count)))
             }
             (Str(_), Int(_)) | (Int(_), Str(_)) => Null,

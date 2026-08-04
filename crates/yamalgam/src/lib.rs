@@ -36,6 +36,7 @@ ENVIRONMENT VARIABLES:
 ";
 
 /// Command-line interface definition for yg.
+// r[impl cli]
 #[derive(Parser)]
 #[command(name = "yg")]
 #[command(about = "YAML-native jq-style query tool", long_about = None)]
@@ -61,7 +62,8 @@ pub struct Cli {
 }
 
 /// Arguments for yg's default query mode.
-#[derive(Args, Debug, Default)]
+// r[impl cli.usage]
+#[derive(Args, Clone, Debug, Default)]
 pub struct QueryArgs {
     /// Filter expression (defaults to `.`).
     #[arg(value_name = "FILTER")]
@@ -72,54 +74,71 @@ pub struct QueryArgs {
     pub files: Vec<camino::Utf8PathBuf>,
 
     /// Run the filter once with null input.
+    // r[impl cli.null-input]
     #[arg(short = 'n', long)]
     pub null_input: bool,
 
     /// Read all input documents into one sequence.
+    // r[impl cli.slurp]
     #[arg(short = 's', long)]
     pub slurp: bool,
 
     /// Read each input line as a string.
+    // r[impl cli.raw-input]
     #[arg(short = 'R', long)]
     pub raw_input: bool,
 
     /// Read the filter from a file.
+    // r[impl cli.from-file]
     #[arg(short = 'f', long, value_name = "FILE")]
     pub from_file: Option<camino::Utf8PathBuf>,
 
     /// Output JSON, expanding YAML aliases.
+    // r[impl cli.json-output]
     #[arg(short = 'j', long)]
     pub json_output: bool,
 
     /// Output strings without YAML quoting.
+    // r[impl cli.raw-output]
     #[arg(short = 'r', long)]
     pub raw_output: bool,
 
     /// Emit each result on one line.
+    // r[impl cli.compact]
     #[arg(short = 'c', long)]
     pub compact_output: bool,
 
     /// Edit files atomically; reserialization loses comments until CST editing lands.
-    #[arg(short = 'i', long, requires = "files")]
+    // r[impl cli.inplace]
+    #[arg(
+        short = 'i',
+        long,
+        conflicts_with_all = ["null_input", "slurp", "json_output"]
+    )]
     pub in_place: bool,
 
     /// Sort mapping keys in output.
+    // r[impl cli.sort-keys]
     #[arg(short = 'S', long)]
     pub sort_keys: bool,
 
     /// Suppress YAML document separators between results.
+    // r[impl output.multidoc.suppress]
     #[arg(short = 'N', long)]
     pub no_doc: bool,
 
     /// Schema used to resolve plain scalars.
+    // r[impl cli.schema-flag]
     #[arg(long, value_enum, default_value_t = SchemaArg::Core)]
     pub schema: SchemaArg,
 
     /// Use generous resource limits for trusted local input.
+    // r[impl cli.trusted]
     #[arg(long, conflicts_with = "strict")]
     pub trusted: bool,
 
     /// Use tight resource limits for untrusted input.
+    // r[impl cli.strict]
     #[arg(long)]
     pub strict: bool,
 

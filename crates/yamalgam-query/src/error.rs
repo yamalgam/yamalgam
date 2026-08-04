@@ -37,12 +37,18 @@ pub enum YgError {
     /// An input document could not be read or parsed.
     #[error("{0}")]
     InputParse(String),
+    /// An input file was unavailable.
+    #[error("{0}")]
+    InputRead(String),
     /// The filter failed while running.
     #[error("{0}")]
     Runtime(String),
     /// The filter explicitly requested `halt(code)`.
     #[error("halt")]
     Halt(i32),
+    /// The output consumer closed its pipe normally.
+    #[error("broken pipe")]
+    BrokenPipe,
 }
 
 impl YgError {
@@ -54,5 +60,11 @@ impl YgError {
                 Self::Halt,
             ),
         }
+    }
+}
+
+impl From<crate::emit::EmitError> for YgError {
+    fn from(error: crate::emit::EmitError) -> Self {
+        Self::Runtime(error.to_string())
     }
 }

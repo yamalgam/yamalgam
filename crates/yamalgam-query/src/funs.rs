@@ -7,6 +7,7 @@ use crate::engine::YgKind;
 use crate::value::{Data, YamlVal};
 
 /// Return all native functions available to yg filters.
+// r[impl filters.regex]
 pub fn all_funs() -> impl Iterator<Item = Fun<YgKind>> {
     let run = run::<YgKind>;
     jaq_core::funs::<YgKind>()
@@ -75,20 +76,30 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
             unary(context_value, |value, target| value.bsearch(&target))
         }),
         ("tojson", v(0), |context_value| {
-            bome(Ok(YamlVal::str(crate::emit::to_json(
-                &context_value.1,
-                &crate::EmitOpts::compact(),
-            ))))
+            bome(
+                crate::emit::to_json(&context_value.1, &crate::EmitOpts::compact())
+                    .map(YamlVal::str)
+                    .map_err(Error::str),
+            )
         }),
         ("fromjson", v(0), |context_value| {
-            bome(context_value.1.fromjson())
+            let config = context_value
+                .0
+                .data()
+                .context
+                .config
+                .clone()
+                .with_tag_resolution(yamalgam_core::TagResolution::Json);
+            bome(context_value.1.fromjson(&config))
         }),
+        // r[impl ext.tag]
         ("tag", v(0), |context_value| {
             bome(Ok(context_value
                 .1
                 .tag_shorthand()
                 .map_or_else(YamlVal::null, YamlVal::str)))
         }),
+        // r[impl ext.anchor]
         ("anchor", v(0), |context_value| {
             bome(Ok(context_value
                 .1
@@ -96,15 +107,18 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
                 .and_then(|metadata| metadata.anchor.as_deref().or(metadata.alias_of.as_deref()))
                 .map_or_else(YamlVal::null, YamlVal::str)))
         }),
+        // r[impl ext.style]
         ("style", v(0), |context_value| {
             bome(Ok(context_value
                 .1
                 .style_name()
                 .map_or_else(YamlVal::null, YamlVal::str)))
         }),
+        // r[impl ext.kind]
         ("kind", v(0), |context_value| {
             bome(Ok(YamlVal::str(context_value.1.kind_name())))
         }),
+        // r[impl ext.is-alias]
         ("is_alias", v(0), |context_value| {
             bome(Ok(YamlVal::from(
                 context_value
@@ -113,38 +127,48 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
                     .is_some_and(|metadata| metadata.alias_of.is_some()),
             )))
         }),
+        // r[impl ext.raw]
         ("raw", v(0), |context_value| {
             bome(context_value.1.raw_text())
         }),
+        // r[impl ext.set-tag]
         ("set_tag", v(1), |context_value| {
             unary(context_value, YamlVal::set_tag)
         }),
+        // r[impl ext.set-anchor]
         ("set_anchor", v(1), |context_value| {
             unary(context_value, YamlVal::set_anchor)
         }),
+        // r[impl ext.set-style]
         ("set_style", v(1), |context_value| {
             unary(context_value, YamlVal::set_style)
         }),
+        // r[impl ext.merge]
         ("merge", v(0), |context_value| {
             bome(context_value.1.merge_keys())
         }),
+        // r[impl ext.resolved-type]
         ("resolved_type", v(0), |context_value| {
             bome(Ok(YamlVal::str(context_value.1.type_name())))
         }),
+        // r[impl ext.schema]
         ("schema", v(0), |context_value| {
             bome(Ok(YamlVal::str(
                 context_value.0.data().context.schema_name(),
             )))
         }),
+        // r[impl ext.resolve]
         ("resolve", v(0), |context_value| {
             let schema = context_value.0.data().context.config.tag_resolution;
             bome(context_value.1.resolve_with(schema))
         }),
+        // r[impl ext.resolve-as]
         ("resolve_as", v(1), |context_value| {
             unary(context_value, |value, schema| {
                 value.resolve_with(parse_schema(&schema)?)
             })
         }),
+        // r[impl ext.document-index]
         ("document_index", v(0), |context_value| {
             let index = context_value
                 .0
@@ -155,6 +179,7 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
                 .document_index;
             bome(Ok(YamlVal::from(index)))
         }),
+        // r[impl ext.file-index]
         ("file_index", v(0), |context_value| {
             let index = context_value
                 .0
@@ -165,6 +190,7 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
                 .file_index;
             bome(Ok(YamlVal::from(index)))
         }),
+        // r[impl ext.filename]
         ("filename", v(0), |context_value| {
             let filename = context_value
                 .0
@@ -176,12 +202,15 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
                 .clone();
             bome(Ok(filename.map_or_else(YamlVal::null, YamlVal::str)))
         }),
+        // r[impl ext.explode]
         ("explode_aliases", v(0), |context_value| {
             bome(Ok(context_value.1.explode_aliases()))
         }),
+        // r[impl ext.aliases]
         ("aliases", v(0), |context_value| {
             bome(Ok(context_value.1.alias_report()))
         }),
+        // r[impl ext.orphan-anchors]
         ("orphan_anchors", v(0), |context_value| {
             bome(Ok(context_value.1.orphan_anchors()))
         }),
@@ -288,21 +317,70 @@ impl YamlVal {
         ))
     }
 
-    fn fromjson(&self) -> ValR<Self> {
+    fn fromjson(&self, config: &yamalgam_core::LoaderConfig) -> ValR<Self> {
         let Data::Str(source) = &self.data else {
             return Err(Error::typ(self.clone(), "string"));
         };
-        let config = yamalgam_core::LoaderConfig::moderate()
-            .with_tag_resolution(yamalgam_core::TagResolution::Json);
-        let mut documents = crate::build::parse_str_with_config(source, &config)
+        config
+            .limits
+            .check_input_size(source.len())
             .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
-        if documents.len() == 1 {
-            Ok(documents.remove(0))
-        } else {
-            Err(Error::str(format_args!(
-                "fromjson: expected 1 document, got {}",
-                documents.len()
-            )))
+        let value = serde_json::from_str(source)
+            .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+        json_value(value, &config.limits, 0)
+    }
+}
+
+fn json_value(
+    value: serde_json::Value,
+    limits: &yamalgam_core::ResourceLimits,
+    depth: usize,
+) -> ValR<YamlVal> {
+    limits
+        .check_depth(depth)
+        .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+    match value {
+        serde_json::Value::Null => Ok(YamlVal::null()),
+        serde_json::Value::Bool(value) => Ok(YamlVal::from(value)),
+        serde_json::Value::Number(value) => value.as_i64().map_or_else(
+            || {
+                value
+                    .as_f64()
+                    .map(YamlVal::float)
+                    .ok_or_else(|| Error::str(format_args!("fromjson: unsupported number {value}")))
+            },
+            |value| Ok(YamlVal::int(value)),
+        ),
+        serde_json::Value::String(value) => {
+            limits
+                .check_scalar_size(value.len())
+                .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+            Ok(YamlVal::str(value))
+        }
+        serde_json::Value::Array(values) => {
+            limits
+                .check_collection_size(values.len())
+                .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+            values
+                .into_iter()
+                .map(|value| json_value(value, limits, depth + 1))
+                .collect::<Result<Vec<_>, _>>()
+                .map(YamlVal::seq)
+        }
+        serde_json::Value::Object(values) => {
+            limits
+                .check_collection_size(values.len())
+                .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    limits
+                        .check_key_size(key.len())
+                        .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+                    Ok((YamlVal::str(key), json_value(value, limits, depth + 1)?))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(YamlVal::map)
         }
     }
 }

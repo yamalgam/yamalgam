@@ -3,15 +3,16 @@
 use yamalgam_parser::CollectionStyle;
 use yamalgam_scanner::ScalarStyle;
 
-use crate::emit::EmitOpts;
+use crate::emit::{EmitError, EmitFormat, EmitOpts, validate_value};
 use crate::value::{Data, NodeStyle, YamlVal, YgMap, fmt_float, needs_quotes, quote_double};
 
 /// Render one value as a YAML document body.
 ///
 /// The result does not include a `---` document separator and always ends in
 /// a newline.
-#[must_use]
-pub fn to_yaml(value: &YamlVal, options: &EmitOpts) -> String {
+// r[impl output.yaml]
+pub fn to_yaml(value: &YamlVal, options: &EmitOpts) -> Result<String, EmitError> {
+    validate_value(value, options, EmitFormat::Yaml)?;
     let mut output = String::new();
     let mut context = Context {
         options,
@@ -21,7 +22,11 @@ pub fn to_yaml(value: &YamlVal, options: &EmitOpts) -> String {
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    output
+    options
+        .limits
+        .check_output_size(output.len())
+        .map_err(EmitError::Limit)?;
+    Ok(output)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -243,6 +248,8 @@ impl Context<'_> {
         }
     }
 
+    // r[impl output.yaml.style-preservation]
+    // r[impl output.yaml.style-default]
     fn string(&self, string: &str, value: &YamlVal, position: Position) -> Rendered {
         let block_allowed = !self.options.compact
             && matches!(
@@ -259,13 +266,19 @@ impl Context<'_> {
         if string.contains('\n') && literal_safe && block_allowed {
             return Rendered::Literal(string.to_owned());
         }
-        if string.contains('\n') || needs_quotes(string) {
+        if string.contains('\n')
+            || needs_quotes(
+                string,
+                self.options.schema,
+                matches!(position, Position::Flow),
+            )
+        {
             return Rendered::Inline(quote_double(string));
         }
 
         match value.meta().and_then(|meta| meta.style) {
-            Some(NodeStyle::Scalar(ScalarStyle::SingleQuoted)) if !string.contains('\'') => {
-                Rendered::Inline(format!("'{string}'"))
+            Some(NodeStyle::Scalar(ScalarStyle::SingleQuoted)) => {
+                Rendered::Inline(format!("'{}'", string.replace('\'', "''")))
             }
             Some(NodeStyle::Scalar(ScalarStyle::DoubleQuoted)) => {
                 Rendered::Inline(quote_double(string))

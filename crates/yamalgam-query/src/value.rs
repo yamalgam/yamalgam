@@ -18,7 +18,7 @@ pub enum NodeStyle {
 }
 
 /// YAML node metadata, excluded from resolved equality, ordering, and hashing.
-// r[datamodel.metadata]
+// r[impl datamodel.metadata]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Meta {
     /// Explicit tag as carried by the parser.
@@ -34,36 +34,106 @@ pub struct Meta {
 }
 
 /// Order-preserving YAML mapping with order-sensitive equality.
-// r[comparison.resolved.collection]
+// r[impl comparison.resolved.collection]
 #[derive(Clone, Debug, Default)]
 pub struct YgMap(pub(crate) IndexMap<YamlVal, YamlVal>);
 
+/// YAML sequence storage with iterative destruction for deeply nested values.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct YgSeq(pub(crate) Vec<YamlVal>);
+
 /// Resolved YAML value data.
+// r[impl datamodel.types]
 #[derive(Clone, Debug, Default)]
 pub enum Data {
-    /// Null value. r[datamodel.types.null]
+    /// Null value.
+    // r[impl datamodel.types.null]
     #[default]
     Null,
-    /// Boolean value. r[datamodel.types.bool]
+    /// Boolean value.
+    // r[impl datamodel.types.bool]
     Bool(bool),
-    /// Signed 64-bit integer. r[datamodel.types.int]
+    /// Signed 64-bit integer.
+    // r[impl datamodel.types.int]
     Int(i64),
-    /// IEEE 754 double-precision float. r[datamodel.types.float]
+    /// IEEE 754 double-precision float.
+    // r[impl datamodel.types.float]
     Float(f64),
-    /// Unicode string. r[datamodel.types.str]
+    /// Unicode string.
+    // r[impl datamodel.types.str]
     Str(Rc<str>),
-    /// Sequence. r[datamodel.types.seq]
-    Seq(Rc<Vec<YamlVal>>),
-    /// Mapping with arbitrary resolved-value keys. r[datamodel.types.mapping]
+    /// Sequence.
+    // r[impl datamodel.types.seq]
+    Seq(Rc<YgSeq>),
+    /// Mapping with arbitrary resolved-value keys.
+    // r[impl datamodel.types.mapping]
     Map(Rc<YgMap>),
 }
 
 /// Resolved YAML data plus optional source presentation metadata.
-// r[datamodel]
+// r[impl datamodel]
 #[derive(Clone, Debug, Default)]
 pub struct YamlVal {
     pub(crate) data: Data,
     pub(crate) meta: Option<Rc<Meta>>,
+}
+
+impl YgSeq {
+    pub(crate) fn into_values(mut self) -> Vec<YamlVal> {
+        core::mem::take(&mut self.0)
+    }
+}
+
+impl core::ops::Deref for YgSeq {
+    type Target = Vec<YamlVal>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for YgSeq {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl YgMap {
+    pub(crate) fn into_entries(mut self) -> IndexMap<YamlVal, YamlVal> {
+        core::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for YgSeq {
+    fn drop(&mut self) {
+        drop_values(core::mem::take(&mut self.0));
+    }
+}
+
+impl Drop for YgMap {
+    fn drop(&mut self) {
+        let entries = core::mem::take(&mut self.0);
+        drop_values(entries.into_iter().flat_map(<[_; 2]>::from));
+    }
+}
+
+fn drop_values(values: impl IntoIterator<Item = YamlVal>) {
+    let mut stack = values.into_iter().collect::<Vec<_>>();
+    while let Some(mut value) = stack.pop() {
+        match core::mem::take(&mut value.data) {
+            Data::Seq(items) => {
+                if let Ok(items) = Rc::try_unwrap(items) {
+                    stack.extend(items.into_values());
+                }
+            }
+            Data::Map(mapping) => {
+                if let Ok(mapping) = Rc::try_unwrap(mapping) {
+                    stack.extend(mapping.into_entries().into_iter().flat_map(<[_; 2]>::from));
+                }
+            }
+            Data::Null | Data::Bool(_) | Data::Int(_) | Data::Float(_) | Data::Str(_) => {}
+        }
+    }
 }
 
 impl YamlVal {
@@ -107,7 +177,7 @@ impl YamlVal {
     #[must_use]
     pub fn seq(items: Vec<Self>) -> Self {
         Self {
-            data: Data::Seq(Rc::new(items)),
+            data: Data::Seq(Rc::new(YgSeq(items))),
             meta: None,
         }
     }
@@ -139,8 +209,20 @@ impl YamlVal {
         Rc::make_mut(self.meta.get_or_insert_with(|| Rc::new(Meta::default())))
     }
 
+    /// Return mutable value data after invalidating source identity and raw text.
+    pub(crate) fn data_mut(&mut self) -> &mut Data {
+        if let Some(metadata) = &mut self.meta {
+            let metadata = Rc::make_mut(metadata);
+            metadata.anchor = None;
+            metadata.alias_of = None;
+            metadata.raw = None;
+        }
+        &mut self.data
+    }
+
     /// Return the YAML data-model type name.
-    // r[diverge.type]
+    // r[impl diverge.type]
+    // r[impl diverge.type.rationale]
     #[must_use]
     pub const fn type_name(&self) -> &'static str {
         match &self.data {
@@ -155,7 +237,7 @@ impl YamlVal {
     }
 
     /// Return the source node kind without schema resolution.
-    // r[ext.kind]
+    // r[impl ext.kind]
     #[must_use]
     pub fn kind_name(&self) -> &'static str {
         if self.meta().is_some_and(|meta| meta.alias_of.is_some()) {
@@ -169,7 +251,7 @@ impl YamlVal {
     }
 
     /// Return a core tag in `!!name` shorthand, preserving other tag forms.
-    // r[ext.tag]
+    // r[impl ext.tag]
     #[must_use]
     pub fn tag_shorthand(&self) -> Option<String> {
         let tag = self.meta().and_then(|meta| meta.tag.as_deref())?;
@@ -183,6 +265,7 @@ impl YamlVal {
     }
 
     /// Return the source presentation style name.
+    // r[impl ext.style]
     #[must_use]
     pub fn style_name(&self) -> Option<&'static str> {
         self.meta()
@@ -198,6 +281,7 @@ impl YamlVal {
             })
     }
 
+    // r[impl ext.raw]
     pub(crate) fn raw_text(&self) -> jaq_core::ValR<Self> {
         match &self.data {
             Data::Seq(_) | Data::Map(_) => Err(jaq_core::Error::str(format_args!(
@@ -217,6 +301,8 @@ impl YamlVal {
         }
     }
 
+    // r[impl ext.resolve]
+    // r[impl ext.resolve-as]
     pub(crate) fn resolve_with(
         &self,
         schema: yamalgam_core::TagResolution,
@@ -240,6 +326,7 @@ impl YamlVal {
         })
     }
 
+    // r[impl ext.set-tag]
     pub(crate) fn set_tag(mut self, tag: Self) -> jaq_core::ValR<Self> {
         let tag = match tag.data {
             Data::Null => None,
@@ -261,6 +348,7 @@ impl YamlVal {
         Ok(self)
     }
 
+    // r[impl ext.set-anchor]
     pub(crate) fn set_anchor(mut self, anchor: Self) -> jaq_core::ValR<Self> {
         let anchor = match anchor.data {
             Data::Null => None,
@@ -295,6 +383,7 @@ impl YamlVal {
         Ok(self)
     }
 
+    // r[impl ext.set-style]
     pub(crate) fn set_style(mut self, style: Self) -> jaq_core::ValR<Self> {
         let Data::Str(style_name) = style.data else {
             return Err(jaq_core::Error::typ(style, "style name string"));
@@ -319,6 +408,7 @@ impl YamlVal {
         Ok(self)
     }
 
+    // r[impl ext.merge]
     pub(crate) fn merge_keys(&self) -> jaq_core::ValR<Self> {
         let Data::Map(mapping) = &self.data else {
             return Err(jaq_core::Error::typ(self.clone(), "mapping"));
@@ -362,11 +452,12 @@ impl YamlVal {
     }
 
     #[must_use]
+    // r[impl ext.explode]
     pub(crate) fn explode_aliases(&self) -> Self {
         let data = match &self.data {
-            Data::Seq(items) => {
-                Data::Seq(Rc::new(items.iter().map(Self::explode_aliases).collect()))
-            }
+            Data::Seq(items) => Data::Seq(Rc::new(YgSeq(
+                items.iter().map(Self::explode_aliases).collect(),
+            ))),
             Data::Map(mapping) => Data::Map(Rc::new(YgMap(
                 mapping
                     .0
@@ -386,6 +477,7 @@ impl YamlVal {
     }
 
     #[must_use]
+    // r[impl ext.aliases]
     pub(crate) fn alias_report(&self) -> Self {
         let inventory = IdentityInventory::collect(self);
         Self::map(
@@ -401,6 +493,7 @@ impl YamlVal {
     }
 
     #[must_use]
+    // r[impl ext.orphan-anchors]
     pub(crate) fn orphan_anchors(&self) -> Self {
         let inventory = IdentityInventory::collect(self);
         Self::seq(
@@ -448,7 +541,7 @@ impl YamlVal {
     /// Consume a sequence into its elements, returning other values unchanged.
     pub(crate) fn into_seq_vec(self) -> Result<Vec<Self>, Self> {
         match self.data {
-            Data::Seq(items) => Ok(Rc::unwrap_or_clone(items)),
+            Data::Seq(items) => Ok(Rc::unwrap_or_clone(items).into_values()),
             _ => Err(self),
         }
     }
@@ -540,12 +633,18 @@ impl From<f64> for YamlVal {
 }
 
 impl FromIterator<Self> for YamlVal {
+    // r[impl filters.construct.seq]
     fn from_iter<T: IntoIterator<Item = Self>>(iter: T) -> Self {
         Self::seq(iter.into_iter().collect())
     }
 }
 
-// r[comparison.resolved]
+// r[impl comparison]
+// r[impl comparison.resolved]
+// r[impl comparison.resolved.type-coercion]
+// r[impl comparison.resolved.numeric]
+// r[impl comparison.resolved.string]
+// r[impl comparison.resolved.null]
 impl PartialEq for YamlVal {
     fn eq(&self, other: &Self) -> bool {
         match (&self.data, &other.data) {
@@ -585,7 +684,11 @@ impl PartialOrd for YamlVal {
     }
 }
 
-// r[comparison.ordering]
+// r[impl comparison.ordering]
+// r[impl comparison.ordering.numeric]
+// r[impl comparison.ordering.string]
+// r[impl comparison.ordering.cross-type]
+// r[impl diverge.sort]
 impl Ord for YamlVal {
     fn cmp(&self, other: &Self) -> Ordering {
         match (&self.data, &other.data) {
@@ -644,7 +747,11 @@ impl core::fmt::Display for YamlVal {
             Data::Bool(value) => write!(formatter, "{value}"),
             Data::Int(value) => write!(formatter, "{value}"),
             Data::Float(value) => formatter.write_str(&fmt_float(*value)),
-            Data::Str(value) if needs_quotes(value) => formatter.write_str(&quote_double(value)),
+            Data::Str(value)
+                if needs_quotes(value, yamalgam_core::TagResolution::Yaml12, false) =>
+            {
+                formatter.write_str(&quote_double(value))
+            }
             Data::Str(value) => formatter.write_str(value),
             Data::Seq(items) => {
                 formatter.write_str("[")?;
@@ -671,16 +778,11 @@ impl core::fmt::Display for YamlVal {
 }
 
 /// Return whether plain YAML emission would change a string's value or syntax.
-// r[output.yaml.quoting]
-pub(crate) fn needs_quotes(value: &str) -> bool {
-    use yamalgam_core::{TagResolution, TagResolver as _, Value};
+// r[impl output.yaml.quoting]
+pub(crate) fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, flow: bool) -> bool {
+    use yamalgam_core::{TagResolver as _, Value};
 
-    if value.is_empty()
-        || !matches!(
-            TagResolution::Yaml12.resolve_scalar(value),
-            Value::String(_)
-        )
-    {
+    if value.is_empty() || !matches!(schema.resolve_scalar(value), Value::String(_)) {
         return true;
     }
 
@@ -692,8 +794,8 @@ pub(crate) fn needs_quotes(value: &str) -> bool {
         || value.contains(": ")
         || value.ends_with(':')
         || value.contains(" #")
-        || value.contains('\n')
-        || value.contains('\t')
+        || value.chars().any(char::is_control)
+        || (flow && value.contains([',', '[', ']', '{', '}']))
 }
 
 /// Format a float using YAML 1.2 spellings and a round-trippable finite form.
