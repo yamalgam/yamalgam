@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 6
+  fixed: 7
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 41
+  open: 40
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -127,3 +127,22 @@ can no longer be reinterpreted as a YAML document boundary.
 A focused regression test asserts quoted output and parse/emit round trips for
 both document markers and their followed-by-text forms. All 94 query tests and
 the clippy gate pass.
+
+---
+
+## 2026-08-03 — Runtime value growth bounded
+
+**Disposition:** fixed
+**Addresses:**
+[growth-operators-bypass-runtime-limits](README.md#growth-operators-bypass-runtime-limits)
+**Commit:** ac28cf65681e061f5adbc672ff6fa49992b9908a
+**Author:** Codex
+
+String concatenation and sequence/mapping addition now check their prospective
+sizes before allocating or extending. Fallible mapping and `map_values`
+constructors enforce the same active collection cap incrementally.
+
+For jaq's infallible array-construction contract, the runtime now stops at the
+first over-limit item, records a scoped pending error, and makes the engine
+return that violation before accepting output. Tests cover all five growth
+paths under deliberately small limits; all 96 query tests and clippy pass.
