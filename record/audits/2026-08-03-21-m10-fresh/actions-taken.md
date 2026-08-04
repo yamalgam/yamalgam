@@ -6,8 +6,8 @@ status:
   mitigated: 0
   accepted: 0
   disputed: 0
-  deferred: 0
-  open: 29
+  deferred: 1
+  open: 28
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -367,3 +367,23 @@ entry.
 
 All 86 `yamalgam` package tests and the workspace Clippy and Cargo-deny gates
 pass. Cargo-deny reports only its existing policy warnings.
+
+---
+
+## 2026-08-03 — Config parser swap bounded by publication
+
+**Disposition:** deferred
+**Addresses:**
+[yg-ships-competing-yaml-parser-for-its-own-config](README.md#yg-ships-competing-yaml-parser-for-its-own-config)
+**Commit:** 05587d99111d54aaa1d7940d8a7cac1a74e43d32
+**Author:** Codex
+
+ADR 0008 accepts the existing Librebar YAML backend only as an interim and ties
+its removal to the post-M10 yamalgam publication milestone. The chosen
+pluggable-backend swap remains unchanged; this remediation does not invent a
+second cross-repository integration.
+
+Mutating Just dependency updates now restore `serde-saphyr` and
+`granit-parser` to the audited 1.0.0 versions. Moving either pin requires an
+explicit edit and review. The ADR passes bito completeness and readability at
+grade 9.8, and Just and Cargo dry-runs confirm the update guard and pins.
