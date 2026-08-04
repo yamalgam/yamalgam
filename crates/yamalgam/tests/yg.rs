@@ -499,6 +499,16 @@ fn in_place_stages_all_files_before_replacing_any() {
 }
 
 #[test]
+fn in_place_help_states_conflicts() {
+    yg().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "incompatible with -n, -s, and JSON output",
+        ));
+}
+
+#[test]
 fn in_place_rejects_slurp_null_input_and_json_output() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("config.yml");

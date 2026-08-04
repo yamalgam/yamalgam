@@ -154,6 +154,9 @@ or define a distinct result that the value model can represent
 - `-i` writes a same-directory temporary file, syncs it, preserves permissions,
   and atomically replaces each source file. It carries supported node metadata
   through reserialization, but comments and exact formatting are lost until
-  CST-spliced editing lands
+  CST-spliced editing lands. `-i` is exclusive with `-n`, `-s`, and JSON output
+  (both `-j` and `--format json`): null/slurp modes have no coherent per-file
+  replacement semantics, and JSON output would silently change a YAML file's
+  format
   ([`r[cli.inplace]`](yg-query-language-spec-draft-01.md#83-output-flags),
   [`r[output.yaml.style-preservation]`](yg-query-language-spec-draft-01.md#91-yaml-output-default)).

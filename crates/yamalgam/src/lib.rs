@@ -123,7 +123,8 @@ pub struct QueryArgs {
     #[arg(short = 'c', long)]
     pub compact_output: bool,
 
-    /// Edit files atomically; reserialization loses comments until CST editing lands.
+    /// Edit files atomically; incompatible with -n, -s, and JSON output.
+    /// Reserialization loses comments until CST editing lands.
     // r[impl cli.inplace]
     #[arg(
         short = 'i',
