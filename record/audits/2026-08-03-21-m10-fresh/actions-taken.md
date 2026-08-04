@@ -3,11 +3,11 @@ audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
   fixed: 40
-  mitigated: 2
+  mitigated: 3
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 3
+  open: 2
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -868,3 +868,25 @@ surface.
 Locked metadata still resolves jaq-core 3.1.0 and jaq-std 3.0.1. All 119
 `yamalgam-query` tests, workspace Clippy, and Cargo Deny pass; Cargo Deny emits
 only the repository's existing policy warnings.
+
+---
+
+## 2026-08-04 — Librebar trust boundary recorded
+
+**Disposition:** mitigated
+**Addresses:**
+[librebar-upgrade-expands-trust-boundary](README.md#librebar-upgrade-expands-trust-boundary)
+**Commit:** b47ae9036fb85bf9336a060559b5cb120092abd9
+**Author:** Codex
+
+The manifest and M10 implementation notes now identify `rust-zstd` 0.1.0 and
+`leakguard` 0.8.0 as transitive edges of librebar's explicitly scoped logging
+and diagnostics features. The locked sources contain no unsafe code, and
+neither crate has a Cargo Deny or RustSec advisory.
+
+Residual risk remains in both crates' limited 0.x maintenance history.
+Removing `rust-zstd` requires librebar to split compressed rotation from its
+logging feature; until then, defaults remain disabled, the feature set stays
+explicit, and changes to the locked transitives require review. Locked graph
+checks, Markdown lint, Cargo Deny, and Cargo Audit pass with only the existing
+allowed `dlopen_derive` warning and baseline policy warnings.
