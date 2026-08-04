@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 29
+  fixed: 30
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 14
+  open: 13
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -665,3 +665,21 @@ parser that borrows the same owned `String` needs a separate owned-source
 iterator design. A regression proves a valid first document is delivered
 before a later parse error. All 117 `yamalgam-query` tests and the workspace
 Clippy gate pass.
+
+---
+
+## 2026-08-04 — Mapping keys iterator made concrete
+
+**Disposition:** fixed
+**Addresses:**
+[keys-returns-boxed-trait-object](README.md#keys-returns-boxed-trait-object)
+**Commit:** 15f232cfc6ca275ba9fd3b8fc3ebe081ca58f523
+**Author:** Codex
+
+`YamlVal::keys` now mirrors `entries()` with an optional concrete exact-size
+iterator. Mapping calls no longer allocate or dynamically dispatch, and
+non-mapping values are distinguishable from empty mappings through the return
+type.
+
+Focused assertions pin insertion order and the non-mapping `None` case. All
+117 `yamalgam-query` tests and the workspace Clippy gate pass.
