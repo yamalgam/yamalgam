@@ -87,6 +87,17 @@ fn yaml_scalars_quote_when_plain_text_would_change_type() {
 }
 
 #[test]
+fn yaml_document_markers_are_quoted_at_the_root() {
+    for marker in ["...", "... text", "---", "--- text"] {
+        let value = YamlVal::str(marker);
+        let emitted = to_yaml(&value, &EmitOpts::default()).unwrap();
+
+        assert_eq!(emitted, format!("\"{marker}\"\n"));
+        assert_eq!(parse_str(&emitted).unwrap(), vec![value]);
+    }
+}
+
+#[test]
 fn yaml_flow_scalars_quote_flow_indicators() {
     let value = YamlVal::seq(vec![
         YamlVal::str("x,y"),

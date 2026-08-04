@@ -1031,9 +1031,16 @@ pub(crate) fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, fl
 
     let first = value.chars().next().unwrap_or(' ');
     let syntactic_first = "!&*-?:,[]{}#|>@`\"'%".contains(first);
+    let document_marker = ["---", "..."].into_iter().any(|marker| {
+        value == marker
+            || value
+                .strip_prefix(marker)
+                .is_some_and(|suffix| suffix.chars().next().is_some_and(char::is_whitespace))
+    });
     value.starts_with(' ')
         || value.ends_with(' ')
         || syntactic_first
+        || document_marker
         || value.contains(": ")
         || value.ends_with(':')
         || value.contains(" #")
