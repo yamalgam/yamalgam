@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 2
+  fixed: 4
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 45
+  open: 43
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -70,3 +70,24 @@ behavior.
 Regression tests exercise both the logical alias-tree output cap and recursive
 depth truncation. Together with commit `e95ce8b`, this closes both amplification
 paths recorded by the finding.
+
+---
+
+## 2026-08-03 — Scalar text allocation shared
+
+**Disposition:** fixed
+**Addresses:**
+[build-raw-metadata-duplicates-every-scalar](README.md#build-raw-metadata-duplicates-every-scalar),
+[resolver-allocates-throwaway-string-per-scalar](README.md#resolver-allocates-throwaway-string-per-scalar)
+**Commit:** f236453974b937c6fb15e7a12774ba6f209db3f8
+**Author:** Codex
+
+The builder now allocates scalar source text once as `Rc<str>` and shares that
+allocation between `Data::Str` and `Meta::raw`. Typed scalars retain the single
+raw-text allocation while storing their resolved non-string value.
+
+Plain and explicitly typed scalar paths consult the allocation-free
+`resolves_as_string` predicate before full resolution, avoiding the temporary
+owned `Value::String` that was immediately copied and dropped. A pointer
+identity regression test covers plain, quoted, explicitly string-tagged, and
+failed typed-tag string paths.
