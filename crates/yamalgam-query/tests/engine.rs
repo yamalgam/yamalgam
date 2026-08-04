@@ -431,6 +431,43 @@ fn runtime_limits_bound_collection_growth() {
     }
 }
 
+#[test]
+fn runtime_limits_bound_constructed_value_depth_before_comparison() {
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_depth = Some(2);
+
+    let error = runtime_limit_error("reduce range(4) as $i (null; [.]) | . == .", config);
+
+    assert!(error.contains("depth"), "unexpected error: {error}");
+}
+
+#[test]
+fn runtime_limits_validate_filter_output_depth() {
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_depth = Some(2);
+    let context = RunCtx::new(config);
+    let filter = engine::compile_filter(".", &[]).unwrap();
+    let value = YamlVal::seq(vec![YamlVal::seq(vec![YamlVal::seq(
+        vec![YamlVal::null()],
+    )])]);
+    let mut outputs = 0;
+
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        core::iter::once(Ok::<_, yamalgam_query::YgError>(value)),
+        |_| {
+            outputs += 1;
+            Ok::<_, yamalgam_query::YgError>(())
+        },
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert_eq!(outputs, 0);
+    assert!(error.contains("depth"), "unexpected error: {error}");
+}
+
 fn tostring_error(input: &str, config: LoaderConfig) -> (String, usize) {
     let filter = engine::compile_filter("tostring", &[]).unwrap();
     let context = RunCtx::new(config);

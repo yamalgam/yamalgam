@@ -176,6 +176,32 @@ fn drop_values(values: impl IntoIterator<Item = YamlVal>) {
 }
 
 impl YamlVal {
+    pub(crate) fn check_depth(&self, limits: &yamalgam_core::ResourceLimits) -> Result<(), String> {
+        let mut stack = vec![(self, 0_usize)];
+        while let Some((value, depth)) = stack.pop() {
+            limits.check_depth(depth)?;
+            let child_depth = depth
+                .checked_add(1)
+                .ok_or_else(|| "value depth overflow".to_owned())?;
+            match &value.data {
+                Data::Seq(items) => {
+                    stack.extend(items.iter().map(|item| (item, child_depth)));
+                }
+                Data::Map(mapping) => {
+                    stack.extend(
+                        mapping
+                            .0
+                            .iter()
+                            .flat_map(<[_; 2]>::from)
+                            .map(|item| (item, child_depth)),
+                    );
+                }
+                Data::Null | Data::Bool(_) | Data::Int(_) | Data::Float(_) | Data::Str(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Construct null without source metadata.
     #[must_use]
     pub const fn null() -> Self {
@@ -777,7 +803,14 @@ impl FromIterator<Self> for YamlVal {
             }
             items.push(item);
         }
-        Self::seq(items)
+        let value = Self::seq(items);
+        if let Err(message) = value.check_depth(&crate::runtime_limits::current())
+            && crate::runtime_limits::record_error(message)
+        {
+            Self::null()
+        } else {
+            value
+        }
     }
 }
 

@@ -284,6 +284,14 @@ where
                     YgError::Runtime(message),
                 )));
             }
+            output
+                .check_depth(&context.config.limits)
+                .map_err(|message| {
+                    E::from(contextualize_runtime_error(
+                        context,
+                        YgError::Runtime(message),
+                    ))
+                })?;
             last = Some(jaq_core::ValT::as_bool(&output));
             visit(output)?;
         }

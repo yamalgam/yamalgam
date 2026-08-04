@@ -209,6 +209,8 @@ impl<'config> Builder<'config> {
             data,
             meta: Some(Rc::new(meta)),
         };
+        node.check_depth(&self.config.limits)
+            .map_err(BuildError::Limit)?;
 
         if let Some(name) = anchor {
             self.anchors.insert(name.into_owned(), node.clone());

@@ -235,6 +235,21 @@ fn builder_enforces_alias_expansion_limit() {
 }
 
 #[test]
+fn builder_enforces_resulting_alias_value_depth() {
+    let mut config = LoaderConfig::unchecked();
+    config.limits.max_depth = Some(3);
+    let document = concat!("a: &a0 [0]\n", "b: &a1 [*a0]\n", "c: &a2 [*a1]\n",);
+
+    let error = parse_str_with_config(document, &config).unwrap_err();
+    let message = error.to_string();
+
+    assert!(
+        matches!(error, BuildError::Limit(message) if message.contains("depth")),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
 fn display_is_compact_flow_yaml() {
     let value = parse_str("a: [1, two]\nb: null\n").unwrap().remove(0);
 

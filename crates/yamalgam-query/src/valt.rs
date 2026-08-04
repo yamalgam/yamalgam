@@ -43,7 +43,11 @@ impl jaq_core::ValT for YamlVal {
             }
             mapping.0.insert(key, value);
         }
-        Ok(yaml_value(Data::Map(Rc::new(mapping))))
+        let value = yaml_value(Data::Map(Rc::new(mapping)));
+        value
+            .check_depth(&crate::runtime_limits::current())
+            .map_err(Error::str)?;
+        Ok(value)
     }
 
     // r[impl filters.iterator]
