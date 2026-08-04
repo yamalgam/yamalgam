@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 21
+  fixed: 22
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 24
+  open: 23
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -475,3 +475,22 @@ The end-to-end test sets a sentinel environment variable, proves default
 access, then proves `--no-env` exits with the filter-compile code without
 printing the sentinel. All 87 `yamalgam` package tests and the workspace
 Clippy gate pass.
+
+---
+
+## 2026-08-04 — Halt exit-code wraparound removed
+
+**Disposition:** fixed
+**Addresses:**
+[halt-exit-code-truncated-to-u8](README.md#halt-exit-code-truncated-to-u8)
+**Commit:** ab1ce0ee026afdfa8377876f0e81d2876df70cbc
+**Author:** Codex
+
+Halt status conversion now preserves values in the POSIX byte range and maps
+every other out-of-range code to generic failure 255. This retains the
+existing `halt(-1)` behavior while preventing nonzero requests such as
+`halt(256)` from modulo-wrapping to silent shell success.
+
+The CLI regression test pins `halt`, `halt(-1)`, and `halt(256)`, including
+their intentionally empty diagnostics. All 87 `yamalgam` package tests and the
+workspace Clippy gate pass.
