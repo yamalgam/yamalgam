@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 4
+  fixed: 5
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 43
+  open: 42
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -91,3 +91,21 @@ Plain and explicitly typed scalar paths consult the allocation-free
 owned `Value::String` that was immediately copied and dropped. A pointer
 identity regression test covers plain, quoted, explicitly string-tagged, and
 failed typed-tag string paths.
+
+---
+
+## 2026-08-03 — Extended control characters escaped
+
+**Disposition:** fixed
+**Addresses:**
+[emitter-omits-c1-control-escapes](README.md#emitter-omits-c1-control-escapes)
+**Commit:** 26c243fcf8c045277e4dbb43c28034c8e93d96b2
+**Author:** Codex
+
+YAML double-quoted output now escapes DEL and the C1 control range as `\xNN`,
+and classifies U+2028/U+2029 for emission as `\L`/`\P`. JSON output mirrors the
+extended-control handling with `\u00NN` escapes.
+
+Regression tests cover both emitters at the control-range boundaries, NEL,
+and the Unicode line and paragraph separators. The full `yamalgam-query` suite
+and clippy gate remain green.
