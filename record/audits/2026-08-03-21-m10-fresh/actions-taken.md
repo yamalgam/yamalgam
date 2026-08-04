@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 15
+  fixed: 16
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 32
+  open: 31
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -309,4 +309,23 @@ and `NodeStyle` API remains available through the crate-root re-exports.
 
 A compile-fail doctest was RED while `value::Data` remained importable and now
 pins the sealed boundary. The doctest, all 103 `yamalgam-query` tests, and the
+workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Query execution state borrowed
+
+**Disposition:** fixed
+**Addresses:**
+[run-records-static-bound-forces-clones](README.md#run-records-static-bound-forces-clones)
+**Commit:** 3dddc26af8b0d3399d4b253a9892caa381e44b10
+**Author:** Codex
+
+`run_records` now accepts a borrowed `RunCtx` and an input iterator with its
+actual lifetime. Deferred inputs borrow the file list, arguments, and loader
+configuration instead of owning clones.
+
+`cmd_query` constructs one run context and reuses it for normal output and
+every in-place file, removing the per-file context allocation and repeated
+configuration and variable clones. All 40 `yg` CLI integration tests and the
 workspace Clippy gate pass.
