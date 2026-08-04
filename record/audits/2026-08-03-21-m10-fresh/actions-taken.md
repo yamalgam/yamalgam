@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 39
+  fixed: 40
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 4
+  open: 3
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -849,3 +849,22 @@ subcommands. It documents `yg -- FILTER` as the positional escape hatch and
 
 Focused regressions pin both the help text and `yg -- doctor` filter parsing.
 Both tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — jaq patch updates admitted
+
+**Disposition:** fixed
+**Addresses:**
+[jaq-exact-pins-block-patch-updates](README.md#jaq-exact-pins-block-patch-updates)
+**Commit:** 7abe27b359088e578587103627d277e322bef66d
+**Author:** Codex
+
+The exact jaq pins are now patch-compatible tilde requirements. Patch and
+security fixes can flow through `cargo update`, while minor releases remain
+review-gated because `YamlVal` directly implements jaq's `ValT` / `DataT`
+surface.
+
+Locked metadata still resolves jaq-core 3.1.0 and jaq-std 3.0.1. All 119
+`yamalgam-query` tests, workspace Clippy, and Cargo Deny pass; Cargo Deny emits
+only the repository's existing policy warnings.
