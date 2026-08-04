@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 27
+  fixed: 28
   mitigated: 1
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 17
+  open: 16
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -606,3 +606,21 @@ collection stack-safety contract.
 
 A focused unit test pins scalar, collection-key, and collection-value path
 selection. All 114 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Substring copies reduced
+
+**Disposition:** fixed
+**Addresses:**
+[substring-values-are-allocated-twice](README.md#substring-values-are-allocated-twice)
+**Commit:** 9eed0ed9f7db566101b89354e1d17f2a14e10b11
+**Author:** Codex
+
+The jaq substring and UTF-8 byte hooks now share a conversion that constructs
+the final `Rc<str>` from the lossy decoder's borrowed string view. Valid UTF-8
+therefore avoids the intermediate owned `String` allocation and copy while
+invalid input retains replacement-character semantics.
+
+A focused test pins both valid and invalid UTF-8 conversion. All 115
+`yamalgam-query` tests and the workspace Clippy gate pass.
