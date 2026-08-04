@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 7
+  fixed: 8
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 40
+  open: 39
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -146,3 +146,22 @@ For jaq's infallible array-construction contract, the runtime now stops at the
 first over-limit item, records a scoped pending error, and makes the engine
 return that violation before accepting output. Tests cover all five growth
 paths under deliberately small limits; all 96 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — `tostring` failures propagated
+
+**Disposition:** fixed
+**Addresses:**
+[into-string-substitutes-error-text-as-data](README.md#into-string-substitutes-error-text-as-data)
+**Commit:** 9de9e1726507a664f9e5709a0f7a5bd5b618c5c0
+**Author:** Codex
+
+`ValT::into_string` now renders with the active invocation's limits and records
+conversion failures in the scoped runtime error channel. The engine rejects
+that pending error before visiting output, so error text can no longer flow
+through a successful filter as ordinary string data.
+
+Regression tests cover duplicate JSON key conversion and an invocation-specific
+depth cap, assert that no output reaches the visitor, and verify a runtime error
+is returned. All 98 query tests and clippy pass.
