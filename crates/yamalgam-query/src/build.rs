@@ -186,7 +186,7 @@ impl<'config> Builder<'config> {
                 meta.alias_of = Some(Rc::from(name.as_ref()));
                 Ok(value)
             }
-            unexpected => Err(BuildError::Limit(format!(
+            unexpected => Err(BuildError::Invariant(format!(
                 "unexpected parser event while building a node: {unexpected:?}"
             ))),
         }
@@ -262,7 +262,7 @@ fn next_event<'input>(
     events: &mut impl Iterator<Item = Result<Event<'input>, yamalgam_parser::ParseError>>,
 ) -> Result<Event<'input>, BuildError> {
     next_optional_event(events)?
-        .ok_or_else(|| BuildError::Limit("unexpected end of parser event stream".into()))
+        .ok_or_else(|| BuildError::Invariant("unexpected end of parser event stream".into()))
 }
 
 pub(crate) fn core_value_to_data(value: Value) -> Data {

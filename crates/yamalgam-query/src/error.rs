@@ -20,6 +20,9 @@ pub enum BuildError {
         /// Location of the alias.
         span: Span,
     },
+    /// The parser event stream violated a builder invariant.
+    #[error("parser/builder invariant violated: {0}")]
+    Invariant(String),
     /// A loader resource limit was exceeded.
     #[error("{0}")]
     Limit(String),
@@ -75,5 +78,21 @@ impl From<crate::emit::EmitError> for YgError {
 impl From<BuildError> for YgError {
     fn from(error: BuildError) -> Self {
         Self::InputParse(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildError;
+
+    #[test]
+    fn invariant_errors_are_distinct_from_resource_limits() {
+        let error = BuildError::Invariant("truncated event stream".into());
+
+        assert_eq!(
+            error.to_string(),
+            "parser/builder invariant violated: truncated event stream"
+        );
+        assert!(!matches!(error, BuildError::Limit(_)));
     }
 }
