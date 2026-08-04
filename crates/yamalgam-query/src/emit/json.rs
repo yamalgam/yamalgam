@@ -1,5 +1,7 @@
 //! JSON output serialization.
 
+use core::fmt::Write as _;
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::emit::{EmitError, EmitFormat, EmitOpts, validate_value};
@@ -27,10 +29,14 @@ fn write_json(
     match &value.data {
         Data::Null => output.push_str("null"),
         Data::Bool(boolean) => output.push_str(if *boolean { "true" } else { "false" }),
-        Data::Int(integer) => output.push_str(&integer.to_string()),
+        Data::Int(integer) => {
+            write!(output, "{integer}").expect("writing to a String cannot fail");
+        }
         Data::Float(float) if !float.is_finite() => output.push_str("null"),
-        Data::Float(float) => output.push_str(&format!("{float:?}")),
-        Data::Str(string) => output.push_str(&json_quote(string)),
+        Data::Float(float) => {
+            write!(output, "{float:?}").expect("writing to a String cannot fail");
+        }
+        Data::Str(string) => write_json_string(output, string),
         Data::Seq(items) if items.is_empty() => output.push_str("[]"),
         Data::Seq(items) => {
             output.push('[');
@@ -58,11 +64,15 @@ fn write_json(
                     output.push(',');
                 }
                 write_indent(output, options, depth + 1);
-                let key = key_string(key);
-                if !keys.insert(key.clone()) {
-                    return Err(EmitError::DuplicateJsonKey(key));
+                let key = match &key.data {
+                    Data::Str(string) => Cow::Borrowed(string.as_ref()),
+                    _ => Cow::Owned(key.to_string()),
+                };
+                if keys.contains(key.as_ref()) {
+                    return Err(EmitError::DuplicateJsonKey(key.into_owned()));
                 }
-                output.push_str(&json_quote(&key));
+                write_json_string(output, key.as_ref());
+                keys.insert(key);
                 output.push(':');
                 if !options.compact {
                     output.push(' ');
@@ -79,28 +89,24 @@ fn write_json(
 fn write_indent(output: &mut String, options: &EmitOpts, depth: usize) {
     if !options.compact {
         output.push('\n');
-        output.push_str(&" ".repeat(options.indent.saturating_mul(depth)));
+        output.extend(core::iter::repeat_n(
+            ' ',
+            options.indent.saturating_mul(depth),
+        ));
     }
 }
 
 fn write_closing_indent(output: &mut String, options: &EmitOpts, depth: usize) {
     if !options.compact {
         output.push('\n');
-        output.push_str(&" ".repeat(options.indent.saturating_mul(depth)));
+        output.extend(core::iter::repeat_n(
+            ' ',
+            options.indent.saturating_mul(depth),
+        ));
     }
 }
 
-fn key_string(key: &YamlVal) -> String {
-    match &key.data {
-        Data::Str(string) => string.to_string(),
-        _ => key.to_string(),
-    }
-}
-
-fn json_quote(string: &str) -> String {
-    use core::fmt::Write as _;
-
-    let mut output = String::with_capacity(string.len() + 2);
+fn write_json_string(output: &mut String, string: &str) {
     output.push('"');
     for character in string.chars() {
         match character {
@@ -119,5 +125,4 @@ fn json_quote(string: &str) -> String {
         }
     }
     output.push('"');
-    output
 }
