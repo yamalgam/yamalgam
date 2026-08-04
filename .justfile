@@ -21,6 +21,16 @@ fix:
 deny:
   cargo deny --all-features --config .config/deny.toml check
 
+# Compiler-derived unsafe census for the shipped yg dependency graph.
+unsafe-census:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  CARGO_TARGET_DIR=target/unsafe-census \
+    CARGO_BUILD_JOBS=1 \
+    RUSTC_WRAPPER= \
+    RUSTFLAGS="--force-warn unsafe-code" \
+    cargo check -p yamalgam --locked --message-format=short
+
 test:
   cargo nextest run --workspace --all-features --cargo-quiet
 

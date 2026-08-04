@@ -107,6 +107,7 @@ let docs: Vec<yamalgam::Value> = yamalgam::Deserializer::from_str("---\na: 1\n--
 ```bash
 just check   # fmt + clippy + deny + nextest + doc-tests
 just bench   # scanner/parser self-benches, comparative, CLI
+just unsafe-census # compiler-derived census for the shipped yg graph
 ```
 
 The roadmap lives in [`docs/plans/README.md`](docs/plans/README.md).

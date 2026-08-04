@@ -44,6 +44,7 @@ information or guidance.
 ## Scope
 
 This security policy applies to:
+
 - The yamalgam CLI tool
 - The yamalgam-core library
 - Official distribution channels (crates.io, GitHub releases)
@@ -55,5 +56,18 @@ When using yamalgam:
 - Keep your installation up to date
 - Verify checksums when downloading releases
 - Report any suspicious behavior
+
+## Unsafe Code Census
+
+Workspace crates deny unsafe code. `just unsafe-census` additionally runs the
+compiler's syntax-aware `unsafe_code` lint across the normal dependency graph
+shipped by `yg`. It excludes benchmark and development-only dependencies, uses
+the lockfile, disables compiler wrappers, caps compilation at one job, and
+keeps its artifacts under `target/unsafe-census`.
+
+Cargo-geiger 0.13 is not used as audit evidence in this repository because it
+can exit successfully after an I/O error without emitting a census. A security
+review must capture the diagnostics from `just unsafe-census`; an empty tool
+report is not coverage.
 
 Thank you for helping keep yamalgam secure!
