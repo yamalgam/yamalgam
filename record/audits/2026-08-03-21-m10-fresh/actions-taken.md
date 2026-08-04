@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 20
+  fixed: 21
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 25
+  open: 24
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -454,3 +454,24 @@ A focused contract test now proves `[range(4)]` under a three-item limit
 returns a collection-size error and invokes the output visitor zero times, so
 the internally truncated placeholder cannot escape as successful data. All
 111 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Environment access made optional
+
+**Disposition:** fixed
+**Addresses:**
+[env-access-always-compiled-in](README.md#env-access-always-compiled-in)
+**Commit:** 5ce4cad5a95d30dfe8e6f89dbac89ed15c27414d
+**Author:** Codex
+
+The CLI now exposes `--no-env`, which selects the query engine's existing
+`CompileOptions::sandboxed()` capability policy before compiling the filter.
+Default invocations retain jq-compatible `env` behavior; restricted
+invocations omit the native entirely and fail at filter compilation rather
+than reading process state.
+
+The end-to-end test sets a sentinel environment variable, proves default
+access, then proves `--no-env` exits with the filter-compile code without
+printing the sentinel. All 87 `yamalgam` package tests and the workspace
+Clippy gate pass.
