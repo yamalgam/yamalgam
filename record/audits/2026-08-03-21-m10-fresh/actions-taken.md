@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 36
+  fixed: 37
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 7
+  open: 6
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -794,3 +794,22 @@ flags are assigned to M11 / Phase 4.
 The section links the existing implementation notes for complete rationale,
 so the future requirements remain intact without appearing shipped. The
 updated specification passes focused Markdown lint.
+
+---
+
+## 2026-08-04 — Resolved type alias explained
+
+**Disposition:** fixed
+**Addresses:**
+[resolved-type-is-an-exact-alias-of-type](README.md#resolved-type-is-an-exact-alias-of-type)
+**Commit:** c72115ebd980e1d252c81f0d41bb2e8fffa6a223
+**Author:** Codex
+
+The `resolved_type` registration now documents that scalars are resolved while
+building `YamlVal`, making the filter an intentional alias of `type` in M10.
+The implementation notes direct draft 02 to remove the alias or define a value
+model capable of representing a distinct result.
+
+A focused regression covers every value kind and values produced by
+`resolve_as`. That test, implementation-notes Markdown lint, and the workspace
+Clippy gate pass.
