@@ -1,4 +1,9 @@
 //! Scoped resource limits for jaq trait methods that do not receive `RunCtx`.
+//!
+//! Jaq's sequence-construction boundary returns a value rather than a
+//! `Result`. Those constructors stop before exceeding the active limit and
+//! record the first violation in `PENDING_ERROR`; the engine drains that slot
+//! before any partially constructed value reaches an output visitor.
 
 use std::cell::{Cell, RefCell};
 

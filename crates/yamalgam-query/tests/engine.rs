@@ -432,6 +432,29 @@ fn runtime_limits_bound_collection_growth() {
 }
 
 #[test]
+fn filter_constructed_arrays_do_not_escape_as_truncated_output() {
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_collection_size = Some(3);
+    let context = RunCtx::new(config);
+    let filter = engine::compile_filter("[range(4)]", &[]).unwrap();
+    let mut outputs = 0;
+
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        core::iter::once(Ok::<_, yamalgam_query::YgError>(YamlVal::null())),
+        |_| {
+            outputs += 1;
+            Ok::<_, yamalgam_query::YgError>(())
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("collection size"));
+    assert_eq!(outputs, 0, "a truncated array reached the output visitor");
+}
+
+#[test]
 fn runtime_limits_bound_constructed_value_depth_before_comparison() {
     let mut config = LoaderConfig::moderate();
     config.limits.max_depth = Some(2);
