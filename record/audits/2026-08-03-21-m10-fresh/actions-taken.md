@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 34
+  fixed: 35
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 9
+  open: 8
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -756,3 +756,22 @@ that `-C` is the global `--chdir` option and points color users to `--color`.
 Focused tests cover both color behavior and the help warning. The updated
 specification passes Markdown lint, both focused CLI tests pass, and the
 workspace Clippy gate is clean.
+
+---
+
+## 2026-08-04 — Sandboxed compilation made discoverable
+
+**Disposition:** fixed
+**Addresses:**
+[sandboxed-compile-options-unreachable-from-cli](README.md#sandboxed-compile-options-unreachable-from-cli)
+**Commit:** 6ae38cd46d55d3b1f6637793181f0a2a9aa69f37
+**Author:** Codex
+
+Draft 01 now specifies the shipped `--no-env` path to
+`CompileOptions::sandboxed()` and distinguishes filter capabilities from the
+input resource limits selected by `--strict`. CLI help carries the same
+distinction, while jq-compatible environment access remains the default.
+
+The existing behavior test proves that `--no-env` removes the `env` filter;
+a focused help test now pins discoverability. Both tests, specification
+Markdown lint, and the workspace Clippy gate pass.
