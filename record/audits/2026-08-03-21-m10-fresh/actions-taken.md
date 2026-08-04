@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 14
+  fixed: 15
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 33
+  open: 32
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -292,3 +292,21 @@ numeric accessor rather than maintaining a second match.
 A compile-failing RED test captured the original method shadow. Focused trait
 and accessor regressions, all 103 `yamalgam-query` tests, and the workspace
 Clippy gate pass after the rename.
+
+---
+
+## 2026-08-03 — Value storage representation sealed
+
+**Disposition:** fixed
+**Addresses:**
+[internal-value-representation-is-public](README.md#internal-value-representation-is-public)
+**Commit:** 7e9d425c13bf2cccbfa27f0e7bee575371ee2cef
+**Author:** Codex
+
+The `value` module is now crate-private, so `Data`, `YgSeq`, `YgMap`, and their
+storage choices cannot be named downstream. The supported `YamlVal`, `Meta`,
+and `NodeStyle` API remains available through the crate-root re-exports.
+
+A compile-fail doctest was RED while `value::Data` remained importable and now
+pins the sealed boundary. The doctest, all 103 `yamalgam-query` tests, and the
+workspace Clippy gate pass.
