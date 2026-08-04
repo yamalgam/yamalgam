@@ -729,6 +729,26 @@ fn double_quoted_unicode_escape() {
 }
 
 #[test]
+fn double_quoted_surrogate_pair_escape() {
+    let tokens = scan("\"\\uD834\\uDD1E\"\n");
+    assert_eq!(tokens[1].1, "𝄞");
+}
+
+#[test]
+fn double_quoted_unpaired_surrogate_errors() {
+    assert!(
+        Scanner::new("\"\\uD834\"")
+            .collect::<Result<Vec<_>, _>>()
+            .is_err()
+    );
+    assert!(
+        Scanner::new("\"\\uDD1E\"")
+            .collect::<Result<Vec<_>, _>>()
+            .is_err()
+    );
+}
+
+#[test]
 fn quoted_in_flow_sequence() {
     let tokens = scan("[\"a\", 'b']\n");
     assert_eq!(tokens[2].1, "a");

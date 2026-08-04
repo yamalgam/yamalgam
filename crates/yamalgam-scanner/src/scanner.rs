@@ -2314,20 +2314,20 @@ impl<'input> Scanner<'input> {
                         }
                         Some('x') => {
                             self.reader.advance();
-                            if let Some(ch) = self.scan_unicode_escape(2) {
-                                result.push(ch);
+                            if !self.push_unicode_escape(&mut result, 2) {
+                                return;
                             }
                         }
                         Some('u') => {
                             self.reader.advance();
-                            if let Some(ch) = self.scan_unicode_escape(4) {
-                                result.push(ch);
+                            if !self.push_unicode_escape(&mut result, 4) {
+                                return;
                             }
                         }
                         Some('U') => {
                             self.reader.advance();
-                            if let Some(ch) = self.scan_unicode_escape(8) {
-                                result.push(ch);
+                            if !self.push_unicode_escape(&mut result, 8) {
+                                return;
                             }
                         }
                         // Escaped line break: \ + newline joins lines,
@@ -2476,17 +2476,63 @@ impl<'input> Scanner<'input> {
         self.push_quoted_scalar(data, ScalarStyle::DoubleQuoted, start_mark, end_mark);
     }
 
-    /// Read `n` hex digits and return the corresponding Unicode character.
+    fn push_unicode_escape(&mut self, output: &mut String, digits: usize) -> bool {
+        match self.scan_unicode_escape(digits) {
+            Ok(character) => {
+                output.push(character);
+                true
+            }
+            Err(message) => {
+                self.error = Some(ScanError {
+                    kind: ScanErrorKind::InvalidEscape,
+                    message,
+                });
+                false
+            }
+        }
+    }
+
+    /// Read a YAML Unicode escape, including JSON-compatible UTF-16 pairs.
     // y[impl char.ns-hex-digit]
-    fn scan_unicode_escape(&mut self, n: usize) -> Option<char> {
-        let mut code: u32 = 0;
-        for _ in 0..n {
-            let c = self.reader.peek()?;
-            let digit = c.to_digit(16)?;
+    fn scan_unicode_escape(&mut self, digits: usize) -> Result<char, String> {
+        let first = self.scan_hex_escape(digits)?;
+        let code = if digits == 4 && (0xd800..=0xdbff).contains(&first) {
+            if self.reader.peek() != Some('\\') {
+                return Err("high surrogate must be followed by a low surrogate escape".into());
+            }
+            self.reader.advance();
+            if self.reader.peek() != Some('u') {
+                return Err("high surrogate must be followed by a low surrogate escape".into());
+            }
+            self.reader.advance();
+            let second = self.scan_hex_escape(4)?;
+            if !(0xdc00..=0xdfff).contains(&second) {
+                return Err("high surrogate must be followed by a low surrogate escape".into());
+            }
+            0x1_0000 + ((first - 0xd800) << 10) + (second - 0xdc00)
+        } else {
+            if (0xdc00..=0xdfff).contains(&first) {
+                return Err("unexpected low surrogate escape".into());
+            }
+            first
+        };
+        char::from_u32(code).ok_or_else(|| "invalid Unicode escape".into())
+    }
+
+    fn scan_hex_escape(&mut self, digits: usize) -> Result<u32, String> {
+        let mut code = 0u32;
+        for _ in 0..digits {
+            let character = self
+                .reader
+                .peek()
+                .ok_or_else(|| "unterminated Unicode escape".to_owned())?;
+            let digit = character
+                .to_digit(16)
+                .ok_or_else(|| "Unicode escape contains a non-hexadecimal digit".to_owned())?;
             code = code * 16 + digit;
             self.reader.advance();
         }
-        char::from_u32(code)
+        Ok(code)
     }
 
     /// Push a quoted scalar to the queue and save a simple key mark.

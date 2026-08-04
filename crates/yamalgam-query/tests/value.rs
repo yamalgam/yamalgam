@@ -234,6 +234,22 @@ fn builder_enforces_alias_expansion_limit() {
 }
 
 #[test]
+fn builder_enforces_collection_size_limit() {
+    let mut config = LoaderConfig::unchecked();
+    config.limits.max_collection_size = Some(1);
+
+    let sequence_error = parse_str_with_config("[1, 2]\n", &config).unwrap_err();
+    assert!(
+        matches!(sequence_error, BuildError::Limit(message) if message.contains("collection size"))
+    );
+
+    let mapping_error = parse_str_with_config("{a: 1, a: 2}\n", &config).unwrap_err();
+    assert!(
+        matches!(mapping_error, BuildError::Limit(message) if message.contains("collection size"))
+    );
+}
+
+#[test]
 fn builder_enforces_resulting_alias_value_depth() {
     let mut config = LoaderConfig::unchecked();
     config.limits.max_depth = Some(3);

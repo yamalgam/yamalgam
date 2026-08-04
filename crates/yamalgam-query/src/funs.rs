@@ -304,56 +304,7 @@ impl YamlVal {
         let Data::Str(source) = &self.data else {
             return Err(Error::typ(self.clone(), "string"));
         };
-        parse_json(source, config).map_err(|error| Error::str(format_args!("fromjson: {error}")))
-    }
-}
-
-pub fn parse_json(source: &str, config: &yamalgam_core::LoaderConfig) -> Result<YamlVal, String> {
-    config.limits.check_input_size(source.len())?;
-    let value = serde_json::from_str(source).map_err(|error| error.to_string())?;
-    json_value(value, &config.limits, 0)
-}
-
-fn json_value(
-    value: serde_json::Value,
-    limits: &yamalgam_core::ResourceLimits,
-    depth: usize,
-) -> Result<YamlVal, String> {
-    limits.check_depth(depth)?;
-    match value {
-        serde_json::Value::Null => Ok(YamlVal::null()),
-        serde_json::Value::Bool(value) => Ok(YamlVal::from(value)),
-        serde_json::Value::Number(value) => value.as_i64().map_or_else(
-            || {
-                value
-                    .as_f64()
-                    .map(YamlVal::float)
-                    .ok_or_else(|| format!("unsupported number {value}"))
-            },
-            |value| Ok(YamlVal::int(value)),
-        ),
-        serde_json::Value::String(value) => {
-            limits.check_scalar_size(value.len())?;
-            Ok(YamlVal::str(value))
-        }
-        serde_json::Value::Array(values) => {
-            limits.check_collection_size(values.len())?;
-            values
-                .into_iter()
-                .map(|value| json_value(value, limits, depth + 1))
-                .collect::<Result<Vec<_>, _>>()
-                .map(YamlVal::seq)
-        }
-        serde_json::Value::Object(values) => {
-            limits.check_collection_size(values.len())?;
-            values
-                .into_iter()
-                .map(|(key, value)| {
-                    limits.check_key_size(key.len())?;
-                    Ok((YamlVal::str(key), json_value(value, limits, depth + 1)?))
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map(YamlVal::map)
-        }
+        crate::json::parse(source, config)
+            .map_err(|error| Error::str(format_args!("fromjson: {error}")))
     }
 }

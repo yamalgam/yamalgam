@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use serde::Deserialize;
 use yamalgam_core::LoaderConfig;
-use yamalgam_query::YamlVal;
 use yamalgam_query::engine::{self, RunCtx};
+use yamalgam_query::{EmitOpts, YamlVal};
 
 #[derive(Deserialize)]
 struct Manual {
@@ -176,4 +176,34 @@ fn jq_manual_examples() {
         "allowlisted programs now have passing examples:\n{unexpected_passes:#?}"
     );
     assert!(stale.is_empty(), "stale allowlist entries:\n{stale:#?}");
+}
+
+#[test]
+fn native_json_matches_serde_across_the_manual_corpus() {
+    let manual: Manual = yamalgam_serde::from_str(include_str!("fixtures/jq-manual.yml"))
+        .expect("vendored jq manual parses through yamalgam");
+    let config = LoaderConfig::moderate();
+    let sources = manual
+        .sections
+        .iter()
+        .flat_map(|section| &section.entries)
+        .flat_map(|entry| &entry.examples)
+        .flat_map(|example| core::iter::once(&example.input).chain(&example.output));
+    let mut compared = 0;
+
+    for source in sources {
+        let expected: serde_json::Value = serde_json::from_str(source)
+            .unwrap_or_else(|error| panic!("manual JSON oracle rejected {source:?}: {error}"));
+        let actual = yamalgam_query::parse_json_with_config(source, &config)
+            .unwrap_or_else(|error| panic!("native JSON rejected {source:?}: {error}"));
+        let emitted = yamalgam_query::emit::to_json(&actual, &EmitOpts::compact())
+            .unwrap_or_else(|error| panic!("native JSON emit failed for {source:?}: {error}"));
+        let actual: serde_json::Value = serde_json::from_str(&emitted)
+            .unwrap_or_else(|error| panic!("native JSON emitted {emitted:?}: {error}"));
+
+        assert_eq!(actual, expected, "JSON value diverged for {source:?}");
+        compared += 1;
+    }
+
+    assert!(compared >= 500, "manual JSON corpus unexpectedly small");
 }

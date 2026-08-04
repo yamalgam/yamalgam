@@ -22,6 +22,7 @@ pub mod emit;
 pub mod engine;
 mod error;
 mod funs;
+pub(crate) mod json;
 mod ops;
 mod runtime_limits;
 mod valt;
@@ -37,5 +38,5 @@ pub fn parse_json_with_config(
     source: &str,
     config: &yamalgam_core::LoaderConfig,
 ) -> Result<YamlVal, YgError> {
-    funs::parse_json(source, config).map_err(YgError::Runtime)
+    json::parse(source, config).map_err(YgError::Runtime)
 }

@@ -119,6 +119,14 @@ impl<'config> Builder<'config> {
                     if matches!(event, Event::SequenceEnd { .. }) {
                         break;
                     }
+                    let size = items
+                        .len()
+                        .checked_add(1)
+                        .ok_or_else(|| BuildError::Limit("sequence entry count overflow".into()))?;
+                    self.config
+                        .limits
+                        .check_collection_size(size)
+                        .map_err(BuildError::Limit)?;
                     items.push(self.node(event, events, depth + 1)?);
                 }
                 self.finish(
@@ -133,11 +141,19 @@ impl<'config> Builder<'config> {
                 anchor, tag, style, ..
             } => {
                 let mut map = YgMap::default();
+                let mut entries = 0usize;
                 loop {
                     let event = next_event(events)?;
                     if matches!(event, Event::MappingEnd { .. }) {
                         break;
                     }
+                    entries = entries
+                        .checked_add(1)
+                        .ok_or_else(|| BuildError::Limit("mapping entry count overflow".into()))?;
+                    self.config
+                        .limits
+                        .check_collection_size(entries)
+                        .map_err(BuildError::Limit)?;
                     let mut key = self.node(event, events, depth + 1)?;
                     self.tag_merge_key(&mut key);
                     let value_event = next_event(events)?;
