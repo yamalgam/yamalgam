@@ -1,8 +1,7 @@
 //! Resolved-value and presentation-metadata semantics for `YamlVal`.
 
 use yamalgam_core::{LoaderConfig, TagResolution};
-use yamalgam_query::value::{Meta, NodeStyle, YamlVal};
-use yamalgam_query::{BuildError, parse_str, parse_str_with_config};
+use yamalgam_query::{BuildError, Meta, NodeStyle, YamlVal, parse_str, parse_str_with_config};
 use yamalgam_scanner::ScalarStyle;
 
 #[test]

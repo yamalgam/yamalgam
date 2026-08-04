@@ -1039,7 +1039,7 @@ impl core::fmt::Display for YamlVal {
 }
 
 /// Return whether a tag can be emitted without changing YAML structure.
-pub(crate) fn is_valid_tag(tag: &str) -> bool {
+pub fn is_valid_tag(tag: &str) -> bool {
     fn is_uri_char(character: char) -> bool {
         character.is_ascii_alphanumeric()
             || "-#;/?:@&=+$,_.!~*'()[]%".contains(character)
@@ -1070,7 +1070,7 @@ pub(crate) fn is_valid_tag(tag: &str) -> bool {
 
 /// Return whether plain YAML emission would change a string's value or syntax.
 // r[impl output.yaml.quoting]
-pub(crate) fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, flow: bool) -> bool {
+pub fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, flow: bool) -> bool {
     use yamalgam_core::TagResolver as _;
 
     if value.is_empty() || !schema.resolves_as_string(value) {
@@ -1099,7 +1099,7 @@ pub(crate) fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, fl
 }
 
 /// Format a float using YAML 1.2 spellings and a round-trippable finite form.
-pub(crate) fn fmt_float(value: f64) -> String {
+pub fn fmt_float(value: f64) -> String {
     if value.is_nan() {
         ".nan".into()
     } else if value == f64::INFINITY {
@@ -1112,7 +1112,7 @@ pub(crate) fn fmt_float(value: f64) -> String {
 }
 
 /// Double-quote a string using YAML-compatible escapes.
-pub(crate) fn quote_double(value: &str) -> String {
+pub fn quote_double(value: &str) -> String {
     let mut output = String::with_capacity(value.len() + 2);
     write_double_quoted(&mut output, value).expect("writing to a String cannot fail");
     output
