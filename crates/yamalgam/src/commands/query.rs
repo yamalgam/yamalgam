@@ -362,9 +362,27 @@ fn preserve_owner(
 ) -> Result<(), YgError> {
     use std::os::unix::fs::MetadataExt as _;
 
-    std::os::unix::fs::chown(temporary, Some(source.uid()), Some(source.gid())).map_err(|error| {
-        YgError::Runtime(format!("failed to preserve ownership for {path}: {error}"))
-    })
+    match std::os::unix::fs::chown(temporary, Some(source.uid()), Some(source.gid())) {
+        Ok(()) => Ok(()),
+        Err(error) => handle_owner_preservation_error(error, path),
+    }
+}
+
+#[cfg(unix)]
+fn handle_owner_preservation_error(
+    error: std::io::Error,
+    path: &camino::Utf8Path,
+) -> Result<(), YgError> {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        eprintln!(
+            "warning: could not preserve ownership for {path}: {error}; replacement will be owned by the current user"
+        );
+        Ok(())
+    } else {
+        Err(YgError::Runtime(format!(
+            "failed to preserve ownership for {path}: {error}"
+        )))
+    }
 }
 
 #[cfg(not(unix))]
@@ -654,4 +672,27 @@ fn halt_exit_code(code: i32) -> u8 {
     // out-of-range request a generic failure instead of modulo-wrapping a
     // nonzero halt code such as 256 to success.
     u8::try_from(code).unwrap_or(u8::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn ownership_permission_denial_warns_but_other_errors_remain_fatal() {
+        let path = camino::Utf8Path::new("config.yml");
+
+        assert!(
+            handle_owner_preservation_error(
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                path,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            handle_owner_preservation_error(std::io::Error::other("device failure"), path),
+            Err(YgError::Runtime(message)) if message.contains("device failure")
+        ));
+    }
 }
