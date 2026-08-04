@@ -96,7 +96,7 @@ pub struct QueryArgs {
     #[arg(short = 'f', long, value_name = "FILE")]
     pub from_file: Option<camino::Utf8PathBuf>,
 
-    /// Disable the jq-compatible `env` filter.
+    /// Disable the `env` filter independently of input resource limits.
     #[arg(long)]
     pub no_env: bool,
 

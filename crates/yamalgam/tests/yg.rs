@@ -208,6 +208,17 @@ fn no_env_disables_environment_filter_access() {
 }
 
 #[test]
+fn no_env_is_documented_as_a_capability_control() {
+    yg().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--no-env"))
+        .stdout(predicate::str::contains(
+            "independently of input resource limits",
+        ));
+}
+
+#[test]
 fn schema_flag_changes_resolution() {
     yg().args(["--schema", "1.1", ".a | type"])
         .write_stdin("a: yes\n")

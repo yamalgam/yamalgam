@@ -534,6 +534,11 @@ r[cli.trusted]
 r[cli.strict]
 `--strict` — use `LoaderConfig::strict()`. Tight resource limits, no external resolution. For CI pipelines processing untrusted input.
 
+r[cli.no-env]
+`--no-env` — compile filters without the jq-compatible `env` capability. This
+flag MUST select sandboxed filter compilation independently of `--strict`,
+which controls resource limits for input processing.
+
 r[cli.allow-includes]
 `--allow-includes[=root]` — enable `!include` resolution. Optionally set the sandbox root directory. Default root is the directory of the input file.
 
