@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 30
+  fixed: 31
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 13
+  open: 12
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -683,3 +683,21 @@ type.
 
 Focused assertions pin insertion order and the non-mapping `None` case. All
 117 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Output format connected to emitter dispatch
+
+**Disposition:** fixed
+**Addresses:**
+[emit-opts-mixes-emitter-specific-options](README.md#emit-opts-mixes-emitter-specific-options)
+**Commit:** e1b50b813f2851716eb3e47232e7ec15f21918f3
+**Author:** Codex
+
+The public `EmitFormat` enum now selects a public `emit` dispatch entry point
+over the focused YAML and JSON functions. The CLI maps its resolved output
+mode to that enum once, making format and options part of one emission call
+instead of leaving the enum caller-invisible.
+
+A focused test pins both dispatch branches. All 206 `yamalgam-query` and
+`yamalgam` tests and the workspace Clippy gate pass.
