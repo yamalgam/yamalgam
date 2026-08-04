@@ -15,6 +15,7 @@ use crate::value::{Data, YamlVal, YgMap};
 
 /// Serialization failure caused by an unsafe or lossy output request.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EmitError {
     /// A configured resource limit was exceeded.
     #[error("{0}")]
@@ -36,6 +37,7 @@ pub enum EmitFormat {
 
 /// Options shared by the YAML and JSON emitters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct EmitOpts {
     /// Number of spaces in each indentation level.
     pub indent: usize,

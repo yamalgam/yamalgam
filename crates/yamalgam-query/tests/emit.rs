@@ -61,10 +61,8 @@ fn json_escapes_strings_and_can_sort_keys() {
     let value = parse_str("b: 'line\\break'\na: \"tab\\tquote\\\"\"\n")
         .unwrap()
         .remove(0);
-    let options = EmitOpts {
-        sort_keys: true,
-        ..EmitOpts::compact()
-    };
+    let mut options = EmitOpts::compact();
+    options.sort_keys = true;
 
     assert_eq!(
         to_json(&value, &options).unwrap(),
@@ -130,10 +128,8 @@ fn yaml_flow_scalars_quote_flow_indicators() {
 #[test]
 fn yaml_scalars_quote_for_active_schema() {
     let value = YamlVal::str("yes");
-    let options = EmitOpts {
-        schema: TagResolution::Yaml11,
-        ..EmitOpts::default()
-    };
+    let mut options = EmitOpts::default();
+    options.schema = TagResolution::Yaml11;
 
     let emitted = to_yaml(&value, &options).unwrap();
     assert_eq!(emitted, "\"yes\"\n");
@@ -179,12 +175,10 @@ fn emitters_bound_materialized_aliases() {
         .unwrap()
         .remove(0);
     let value = document.get_str("c").unwrap();
-    let options = EmitOpts {
-        limits: ResourceLimits {
-            max_alias_expansions: Some(2),
-            ..ResourceLimits::none()
-        },
-        ..EmitOpts::compact()
+    let mut options = EmitOpts::compact();
+    options.limits = ResourceLimits {
+        max_alias_expansions: Some(2),
+        ..ResourceLimits::none()
     };
 
     assert!(
@@ -206,23 +200,19 @@ fn emitters_bound_constructed_depth_and_output_size() {
     let deep = YamlVal::seq(vec![YamlVal::seq(vec![YamlVal::seq(
         vec![YamlVal::null()],
     )])]);
-    let depth_options = EmitOpts {
-        limits: ResourceLimits {
-            max_depth: Some(2),
-            ..ResourceLimits::none()
-        },
-        ..EmitOpts::compact()
+    let mut depth_options = EmitOpts::compact();
+    depth_options.limits = ResourceLimits {
+        max_depth: Some(2),
+        ..ResourceLimits::none()
     };
     assert!(to_json(&deep, &depth_options).is_err());
     assert!(to_yaml(&deep, &depth_options).is_err());
 
     let wide = YamlVal::seq(vec![YamlVal::str("12345"), YamlVal::str("67890")]);
-    let size_options = EmitOpts {
-        limits: ResourceLimits {
-            max_output_bytes: Some(10),
-            ..ResourceLimits::none()
-        },
-        ..EmitOpts::compact()
+    let mut size_options = EmitOpts::compact();
+    size_options.limits = ResourceLimits {
+        max_output_bytes: Some(10),
+        ..ResourceLimits::none()
     };
     assert!(to_json(&wide, &size_options).is_err());
     assert!(to_yaml(&wide, &size_options).is_err());
@@ -301,10 +291,8 @@ fn yaml_omits_tags_that_cannot_be_reemitted_safely() {
 #[test]
 fn yaml_sort_keys_changes_output_not_the_value() {
     let value = parse_str("b: 1\na: 2\n").unwrap().remove(0);
-    let options = EmitOpts {
-        sort_keys: true,
-        ..EmitOpts::default()
-    };
+    let mut options = EmitOpts::default();
+    options.sort_keys = true;
 
     assert_eq!(to_yaml(&value, &options).unwrap(), "a: 2\nb: 1\n");
     assert_eq!(

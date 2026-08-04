@@ -152,14 +152,12 @@ fn run_records<'inputs>(
 
     // r[impl cli.compact]
     // r[impl cli.sort-keys]
-    let options = EmitOpts {
-        compact: args.compact_output,
-        sort_keys: args.sort_keys,
-        color: output_mode.color(),
-        schema: context.config.tag_resolution,
-        limits: context.config.limits.clone(),
-        ..EmitOpts::default()
-    };
+    let mut options = EmitOpts::default();
+    options.compact = args.compact_output;
+    options.sort_keys = args.sort_keys;
+    options.color = output_mode.color();
+    options.schema = context.config.tag_resolution;
+    options.limits = context.config.limits.clone();
     let mut first = true;
     engine::run_filter_with_null_input(
         filter,
@@ -681,6 +679,7 @@ fn exit_for(error: &YgError) -> ExitCode {
         YgError::InputParse(_) | YgError::Runtime(_) => ExitCode::from(5),
         YgError::Halt(code) => ExitCode::from(halt_exit_code(*code)),
         YgError::BrokenPipe => ExitCode::SUCCESS,
+        _ => ExitCode::from(5),
     }
 }
 

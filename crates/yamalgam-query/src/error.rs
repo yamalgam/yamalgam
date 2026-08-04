@@ -4,6 +4,7 @@ use yamalgam_core::Span;
 
 /// Error building a YAML value tree from parser events.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BuildError {
     /// Underlying YAML parse error.
     #[error(transparent)]
@@ -30,6 +31,7 @@ pub enum BuildError {
 
 /// Query-engine errors partitioned by their CLI exit-code class.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum YgError {
     /// Command-line arguments were invalid.
     #[error("{0}")]
