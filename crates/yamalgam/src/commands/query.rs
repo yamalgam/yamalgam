@@ -644,7 +644,14 @@ fn exit_for(error: &YgError) -> ExitCode {
         YgError::FilterCompile(_) => ExitCode::from(3),
         YgError::InputRead(_) => ExitCode::from(2),
         YgError::InputParse(_) | YgError::Runtime(_) => ExitCode::from(5),
-        YgError::Halt(code) => ExitCode::from(*code as u8),
+        YgError::Halt(code) => ExitCode::from(halt_exit_code(*code)),
         YgError::BrokenPipe => ExitCode::SUCCESS,
     }
+}
+
+fn halt_exit_code(code: i32) -> u8 {
+    // Shell status is one byte. Preserve valid jq/POSIX values, but make every
+    // out-of-range request a generic failure instead of modulo-wrapping a
+    // nonzero halt code such as 256 to success.
+    u8::try_from(code).unwrap_or(u8::MAX)
 }

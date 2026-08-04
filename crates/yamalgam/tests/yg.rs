@@ -314,6 +314,11 @@ fn halt_uses_posix_exit_codes_without_diagnostics() {
         .code(255)
         .stdout("")
         .stderr("");
+    yg().args(["-n", "halt(256)"])
+        .assert()
+        .code(255)
+        .stdout("")
+        .stderr("");
 }
 
 #[test]
