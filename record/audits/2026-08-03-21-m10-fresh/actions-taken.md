@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 31
+  fixed: 32
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 12
+  open: 11
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -701,3 +701,21 @@ instead of leaving the enum caller-invisible.
 
 A focused test pins both dispatch branches. All 206 `yamalgam-query` and
 `yamalgam` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Public query API made non-exhaustive
+
+**Disposition:** fixed
+**Addresses:**
+[public-enums-lack-non-exhaustive](README.md#public-enums-lack-non-exhaustive)
+**Commit:** 9362fa058d9c7c9cb5fe4009819d58d7947df09a
+**Author:** Codex
+
+`BuildError`, `YgError`, `EmitError`, and `EmitOpts` are now non-exhaustive
+before publication. External option construction starts from the provided
+defaults, and the CLI assigns future unknown query errors the runtime failure
+exit class instead of requiring an exhaustive downstream match.
+
+All 206 `yamalgam-query` and `yamalgam` tests and the workspace Clippy gate
+pass.
