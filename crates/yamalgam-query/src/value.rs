@@ -4,7 +4,7 @@ use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::{Equivalent, IndexMap, IndexSet};
 use yamalgam_parser::CollectionStyle;
 use yamalgam_scanner::ScalarStyle;
 
@@ -37,6 +37,9 @@ pub struct Meta {
 // r[impl comparison.resolved.collection]
 #[derive(Clone, Debug, Default)]
 pub struct YgMap(pub(crate) IndexMap<YamlVal, YamlVal>);
+
+/// Allocation-free `IndexMap` probe for a string-valued [`YamlVal`] key.
+struct StrKey<'key>(&'key str);
 
 /// YAML sequence storage with iterative destruction for deeply nested values.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -140,6 +143,24 @@ impl core::ops::DerefMut for YgSeq {
 impl YgMap {
     pub(crate) fn into_entries(mut self) -> IndexMap<YamlVal, YamlVal> {
         core::mem::take(&mut self.0)
+    }
+
+    pub(crate) fn get_str(&self, key: &str) -> Option<&YamlVal> {
+        self.0.get(&StrKey(key))
+    }
+}
+
+impl Hash for StrKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Keep this identical to the `Data::Str` arm of `YamlVal::hash`.
+        state.write_u8(3);
+        self.0.hash(state);
+    }
+}
+
+impl Equivalent<YamlVal> for StrKey<'_> {
+    fn equivalent(&self, key: &YamlVal) -> bool {
+        matches!(&key.data, Data::Str(value) if value.as_ref() == self.0)
     }
 }
 
@@ -672,7 +693,7 @@ impl YamlVal {
     #[must_use]
     pub fn get_str(&self, key: &str) -> Option<&Self> {
         match &self.data {
-            Data::Map(map) => map.0.get(&Self::str(key)),
+            Data::Map(map) => map.get_str(key),
             _ => None,
         }
     }
@@ -1208,5 +1229,16 @@ mod tests {
         assert!(entries_are_shallow(mapping(&scalar)));
         assert!(!entries_are_shallow(mapping(&nested_value)));
         assert!(!entries_are_shallow(mapping(&nested_key)));
+    }
+
+    #[test]
+    fn borrowed_string_lookup_matches_only_string_keys() {
+        let value = YamlVal::map(vec![
+            (YamlVal::int(1), YamlVal::str("integer")),
+            (YamlVal::str("1"), YamlVal::str("string")),
+        ]);
+
+        assert_eq!(mapping(&value).get_str("1"), Some(&YamlVal::str("string")));
+        assert_eq!(mapping(&value).get_str("missing"), None);
     }
 }

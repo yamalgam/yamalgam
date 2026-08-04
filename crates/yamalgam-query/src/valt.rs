@@ -104,8 +104,8 @@ impl jaq_core::ValT for YamlVal {
         if matches!(&self.data, Data::Seq(_) | Data::Str(_))
             && let Data::Map(range) = &index.data
         {
-            let start = range.0.get(&Self::str("start"));
-            let end = range.0.get(&Self::str("end"));
+            let start = range.get_str("start");
+            let end = range.get_str("end");
             return self.range(start..end);
         }
 
@@ -219,8 +219,8 @@ impl jaq_core::ValT for YamlVal {
         if matches!(&self.data, Data::Seq(_) | Data::Str(_))
             && let Data::Map(range) = &index.data
         {
-            let start = range.0.get(&Self::str("start"));
-            let end = range.0.get(&Self::str("end"));
+            let start = range.get_str("start");
+            let end = range.get_str("end");
             return self.map_range(start..end, opt, f);
         }
 
