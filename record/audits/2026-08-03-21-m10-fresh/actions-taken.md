@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 8
+  fixed: 9
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 39
+  open: 38
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -165,3 +165,23 @@ through a successful filter as ordinary string data.
 Regression tests cover duplicate JSON key conversion and an invocation-specific
 depth cap, assert that no output reaches the visitor, and verify a runtime error
 is returned. All 98 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — Input error classes preserved
+
+**Disposition:** fixed
+**Addresses:**
+[input-error-class-flattened-through-string](README.md#input-error-class-flattened-through-string)
+**Commit:** 80fe53bbc81781ec3a3f50ec84990a29b592f876
+**Author:** Codex
+
+The jaq input adapter now pairs its required string error with the original
+typed `YgError` and restores that variant when the outer driver or native
+`input`/`inputs` path surfaces the matching failure. `InputRead` therefore
+retains its distinct CLI exit class instead of becoming parse/runtime failure.
+
+The generic `From<String> for YgError` conversion was removed so future call
+sites must choose a class explicitly. Tests cover driver and native-input
+paths plus a caught input error followed by an unrelated runtime error. All
+100 query tests and clippy pass.
