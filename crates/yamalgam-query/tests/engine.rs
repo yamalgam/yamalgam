@@ -12,7 +12,7 @@ fn eval(filter: &str, input: &str) -> Vec<String> {
     engine::run_filter(
         &compiled,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |value| {
             output.push(value.to_string());
             Ok::<(), yamalgam_query::YgError>(())
@@ -30,7 +30,7 @@ fn eval_yaml(filter: &str, input: &str) -> Vec<String> {
     engine::run_filter(
         &compiled,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |value| {
             output.push(
                 yamalgam_query::emit::to_yaml(&value, &yamalgam_query::EmitOpts::compact())
@@ -154,6 +154,53 @@ fn run_filter_accepts_borrowed_iterators_and_typed_input_errors() {
         result,
         Err(yamalgam_query::YgError::InputParse(_))
     ));
+
+    let result = engine::run_filter(
+        &filter,
+        &context,
+        std::iter::once(Err(yamalgam_query::YgError::InputRead(
+            "cannot read input".into(),
+        ))),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    );
+    assert!(matches!(result, Err(yamalgam_query::YgError::InputRead(_))));
+}
+
+#[test]
+fn native_input_filter_preserves_typed_input_errors() {
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let filter = engine::compile_filter("input", &[]).unwrap();
+    let result = engine::run_filter_with_null_input(
+        &filter,
+        &context,
+        std::iter::once(Err(yamalgam_query::YgError::InputRead(
+            "cannot read native input".into(),
+        ))),
+        true,
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    );
+
+    assert!(matches!(result, Err(yamalgam_query::YgError::InputRead(_))));
+}
+
+#[test]
+fn caught_input_errors_do_not_reclassify_unrelated_runtime_errors() {
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let filter = engine::compile_filter(r#"try input catch error("other")"#, &[]).unwrap();
+    let result = engine::run_filter_with_null_input(
+        &filter,
+        &context,
+        std::iter::once(Err(yamalgam_query::YgError::InputRead(
+            "cannot read native input".into(),
+        ))),
+        true,
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    );
+
+    assert!(matches!(
+        result,
+        Err(yamalgam_query::YgError::Runtime(message)) if message.contains("other")
+    ));
 }
 
 #[test]
@@ -219,7 +266,7 @@ fn raw_rejects_collections() {
     let result = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     );
 
@@ -291,7 +338,7 @@ fn explode_aliases_obeys_alias_expansion_limit() {
     let error = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     )
     .unwrap_err();
@@ -311,7 +358,7 @@ fn explode_aliases_obeys_materialized_entry_budget() {
     let error = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     )
     .unwrap_err();
@@ -332,7 +379,7 @@ fn explode_aliases_obeys_depth_limit() {
     let error = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     )
     .unwrap_err();
@@ -346,7 +393,7 @@ fn runtime_limit_error(filter_source: &str, config: LoaderConfig) -> String {
     engine::run_filter(
         &filter,
         &context,
-        core::iter::once(Ok::<_, String>(YamlVal::null())),
+        core::iter::once(Ok::<_, yamalgam_query::YgError>(YamlVal::null())),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     )
     .unwrap_err()
@@ -392,7 +439,7 @@ fn tostring_error(input: &str, config: LoaderConfig) -> (String, usize) {
     let error = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| {
             outputs += 1;
             Ok::<_, yamalgam_query::YgError>(())
@@ -441,7 +488,7 @@ fn runtime_error_display_obeys_output_limit() {
     let error = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     )
     .unwrap_err();
@@ -467,7 +514,7 @@ fn runtime_error_display_obeys_depth_limit() {
     let error = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     )
     .unwrap_err();
@@ -528,7 +575,7 @@ fn assignment_preserves_untouched_sibling_metadata() {
     engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |value| {
             output.push(value);
             Ok::<_, yamalgam_query::YgError>(())
@@ -588,7 +635,7 @@ fn set_style_rejects_node_kind_mismatches() {
     let result = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     );
     assert!(result.is_err());
@@ -602,7 +649,7 @@ fn set_anchor_rejects_invalid_names() {
     let result = engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |_| Ok::<_, yamalgam_query::YgError>(()),
     );
     assert!(result.is_err());
@@ -622,7 +669,7 @@ fn set_tag_rejects_tags_that_cannot_be_emitted_safely() {
         let result = engine::run_filter(
             &filter,
             &context,
-            documents.into_iter().map(Ok::<_, String>),
+            documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
             |_| Ok::<_, yamalgam_query::YgError>(()),
         );
 

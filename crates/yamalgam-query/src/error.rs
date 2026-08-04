@@ -77,9 +77,3 @@ impl From<BuildError> for YgError {
         Self::InputParse(error.to_string())
     }
 }
-
-impl From<String> for YgError {
-    fn from(error: String) -> Self {
-        Self::InputParse(error)
-    }
-}

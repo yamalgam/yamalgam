@@ -225,7 +225,20 @@ where
     IE: Into<YgError> + 'a,
 {
     let _limit_guard = crate::runtime_limits::activate(&context.config.limits);
-    let inputs = inputs.map(|result| result.map_err(|error| error.into().to_string()));
+    let pending_input_error = Rc::new(RefCell::new(None));
+    let captured_input_error = Rc::clone(&pending_input_error);
+    let inputs = inputs.map(move |result| match result {
+        Ok(value) => {
+            captured_input_error.borrow_mut().take();
+            Ok(value)
+        }
+        Err(error) => {
+            let error = error.into();
+            let message = error.to_string();
+            *captured_input_error.borrow_mut() = Some((message.clone(), error));
+            Err(message)
+        }
+    });
     let inputs: Box<dyn Iterator<Item = Result<YamlVal, String>> + 'a> = Box::new(inputs);
     let inputs = RcIter::new(inputs);
     let data = YgData {
@@ -243,14 +256,27 @@ where
     };
 
     for input in &mut driver {
-        let input = input.map_err(|error| E::from(YgError::InputParse(error)))?;
+        let input = input.map_err(|message| {
+            E::from(
+                take_input_error(&pending_input_error, &message)
+                    .unwrap_or(YgError::InputParse(message)),
+            )
+        })?;
         context.activate_pending_input_meta();
         for output in filter.id.run((jaq_context.clone(), input)) {
-            let output: YamlVal = output.map_err(|error| {
-                E::from(contextualize_runtime_error(
+            let output: YamlVal = output.map_err(|error| match error.get_err() {
+                Ok(error) => {
+                    let message = error.to_string();
+                    E::from(
+                        take_input_error(&pending_input_error, &message).unwrap_or_else(|| {
+                            contextualize_runtime_error(context, YgError::Runtime(message))
+                        }),
+                    )
+                }
+                Err(exception) => E::from(contextualize_runtime_error(
                     context,
-                    YgError::runtime(error),
-                ))
+                    YgError::runtime(exception),
+                )),
             })?;
             if let Some(message) = crate::runtime_limits::take_error() {
                 return Err(E::from(contextualize_runtime_error(
@@ -269,6 +295,21 @@ where
         }
     }
     Ok(last)
+}
+
+fn take_input_error(
+    pending: &RefCell<Option<(String, YgError)>>,
+    message: &str,
+) -> Option<YgError> {
+    let mut pending = pending.borrow_mut();
+    if pending
+        .as_ref()
+        .is_some_and(|(pending_message, _)| pending_message == message)
+    {
+        pending.take().map(|(_, error)| error)
+    } else {
+        None
+    }
 }
 
 fn contextualize_runtime_error(context: &RunCtx, error: YgError) -> YgError {

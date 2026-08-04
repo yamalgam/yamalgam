@@ -62,7 +62,7 @@ fn evaluate(program: &str, input: &str) -> Result<Vec<YamlVal>, String> {
     engine::run_filter(
         &filter,
         &context,
-        documents.into_iter().map(Ok::<_, String>),
+        documents.into_iter().map(Ok::<_, yamalgam_query::YgError>),
         |value| {
             output.push(value);
             Ok::<_, yamalgam_query::YgError>(())
