@@ -28,7 +28,10 @@ pub use yamalgam_serde::{
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
-const ENV_HELP: &str = "\
+const AFTER_HELP: &str = "\
+COLOR:
+    Use --color auto|always|never. -C is --chdir, not a color flag.
+
 ENVIRONMENT VARIABLES:
     RUST_LOG             Log filter (e.g., debug, yamalgam=trace)
     YAMALGAM_LOG_PATH    Log file path (rotated daily)
@@ -41,7 +44,7 @@ ENVIRONMENT VARIABLES:
 #[command(name = "yg")]
 #[command(about = "YAML-native jq-style query tool", long_about = None)]
 #[command(version)]
-#[command(after_help = ENV_HELP)]
+#[command(after_help = AFTER_HELP)]
 #[command(disable_help_flag = true)]
 pub struct Cli {
     /// Common flags (`-q`, `-v`, `--format`, `--color`, `-C`, `--version-only`).

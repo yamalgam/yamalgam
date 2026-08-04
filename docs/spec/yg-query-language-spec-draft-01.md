@@ -518,7 +518,10 @@ r[cli.sort-keys]
 `-S` / `--sort-keys` — output mappings with sorted keys.
 
 r[cli.color]
-`-C` / `--color-output` and `-M` / `--monochrome-output` — control colorized output.
+`--color=<when>` controls colorized output. `when` MUST be one of `auto`
+(detect terminal capabilities, the default), `always`, or `never`. `-C` is
+reserved for the global `--chdir` option and MUST NOT be interpreted as a color
+flag.
 
 ### 8.4 Schema and Security Flags
 

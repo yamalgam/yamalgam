@@ -430,6 +430,16 @@ fn librebar_color_flags_are_canonical() {
 }
 
 #[test]
+fn help_explains_color_and_chdir_collision() {
+    yg().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Use --color auto|always|never. -C is --chdir, not a color flag.",
+        ));
+}
+
+#[test]
 fn in_place_edits_file_and_preserves_sibling_style() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("config.yml");
