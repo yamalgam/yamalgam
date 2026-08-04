@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 17
+  fixed: 18
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 30
+  open: 29
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -348,3 +348,22 @@ The typed output mode is resolved once in `main` and threaded through in-place
 and record execution, removing the repeated positional boolean pairs and the
 `color && !json_output` invariant. All 40 `yg` CLI integration tests and the
 workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Librebar features explicitly scoped
+
+**Disposition:** fixed
+**Addresses:**
+[librebar-default-features-not-disabled](README.md#librebar-default-features-not-disabled)
+**Commit:** 57e207a2122d71b8982e6deb945d24c770033f48
+**Author:** Codex
+
+The librebar dependency now disables default features and explicitly enables
+only the four modules yamalgam uses: `cli`, `config`, `logging`, and
+`diagnostics`. The resolved graph no longer enables librebar `default`,
+`cache`, or `crash`; its unused `base64` and `tempfile` edges left the lockfile
+entry.
+
+All 86 `yamalgam` package tests and the workspace Clippy and Cargo-deny gates
+pass. Cargo-deny reports only its existing policy warnings.
