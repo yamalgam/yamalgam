@@ -16,6 +16,10 @@ pub fn activate(limits: &ResourceLimits) -> Guard {
     Guard(previous)
 }
 
+pub fn current() -> ResourceLimits {
+    ACTIVE.with(|active| active.borrow().clone())
+}
+
 pub fn check_collection_size(size: usize) -> Result<(), String> {
     ACTIVE.with(|active| active.borrow().check_collection_size(size))
 }

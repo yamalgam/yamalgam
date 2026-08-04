@@ -341,6 +341,59 @@ fn explode_aliases_obeys_depth_limit() {
 }
 
 #[test]
+fn runtime_error_display_obeys_output_limit() {
+    let document = concat!(
+        "a: &a [1234567890]\n",
+        "b: &b [*a, *a, *a]\n",
+        "c: &c [*b, *b, *b]\n",
+        "d: [*c, *c, *c]\n",
+    );
+    let filter = engine::compile_filter(".d | merge", &[]).unwrap();
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_alias_expansions = None;
+    config.limits.max_collection_size = None;
+    config.limits.max_output_bytes = Some(48);
+    let context = RunCtx::new(config);
+    let documents = yamalgam_query::parse_str(document).unwrap();
+
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    )
+    .unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("..."), "untruncated error: {message}");
+    assert!(
+        message.len() <= 96,
+        "oversized error: {} bytes",
+        message.len()
+    );
+}
+
+#[test]
+fn runtime_error_display_obeys_depth_limit() {
+    let filter = engine::compile_filter("merge", &[]).unwrap();
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_depth = Some(2);
+    config.limits.max_output_bytes = None;
+    let context = RunCtx::new(config);
+    let documents = yamalgam_query::parse_str("[[[[1]]]]\n").unwrap();
+
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("[[[...]]]"));
+}
+
+#[test]
 fn alias_audit_includes_mapping_keys() {
     let document = "first:\n  ? &k key\n  : one\nsecond:\n  ? *k\n  : two\n";
 

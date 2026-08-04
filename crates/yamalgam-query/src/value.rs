@@ -867,40 +867,126 @@ impl FromIterator<(YamlVal, YamlVal)> for YgMap {
     }
 }
 
-impl core::fmt::Display for YamlVal {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+struct DisplayBuffer {
+    output: String,
+    max_bytes: Option<usize>,
+    truncated: bool,
+}
+
+impl DisplayBuffer {
+    const fn new(max_bytes: Option<usize>) -> Self {
+        Self {
+            output: String::new(),
+            max_bytes,
+            truncated: false,
+        }
+    }
+}
+
+impl core::fmt::Write for DisplayBuffer {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        if self.truncated {
+            return Ok(());
+        }
+        let Some(max_bytes) = self.max_bytes else {
+            self.output.push_str(text);
+            return Ok(());
+        };
+        let remaining = max_bytes.saturating_sub(self.output.len());
+        if text.len() <= remaining {
+            self.output.push_str(text);
+            return Ok(());
+        }
+
+        let marker = "...";
+        let marker_len = max_bytes.min(marker.len());
+        let content_limit = max_bytes.saturating_sub(marker_len);
+        while self.output.len() > content_limit {
+            self.output.pop();
+        }
+        let content_budget = content_limit.saturating_sub(self.output.len());
+        let mut end = content_budget.min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.output.push_str(&text[..end]);
+        self.output.push_str(&marker[..marker_len]);
+        self.truncated = true;
+        Ok(())
+    }
+}
+
+impl YamlVal {
+    fn fmt_bounded(
+        &self,
+        output: &mut DisplayBuffer,
+        limits: &yamalgam_core::ResourceLimits,
+        depth: usize,
+    ) -> core::fmt::Result {
+        use core::fmt::Write as _;
+
+        if output.truncated {
+            return Ok(());
+        }
+        if limits.check_depth(depth).is_err() {
+            return output.write_str("...");
+        }
+
         match &self.data {
-            Data::Null => formatter.write_str("null"),
-            Data::Bool(value) => write!(formatter, "{value}"),
-            Data::Int(value) => write!(formatter, "{value}"),
-            Data::Float(value) => formatter.write_str(&fmt_float(*value)),
+            Data::Null => output.write_str("null"),
+            Data::Bool(value) => write!(output, "{value}"),
+            Data::Int(value) => write!(output, "{value}"),
+            Data::Float(value) => output.write_str(&fmt_float(*value)),
             Data::Str(value)
                 if needs_quotes(value, yamalgam_core::TagResolution::Yaml12, false) =>
             {
-                formatter.write_str(&quote_double(value))
+                write_double_quoted(output, value)
             }
-            Data::Str(value) => formatter.write_str(value),
+            Data::Str(value) => output.write_str(value),
             Data::Seq(items) => {
-                formatter.write_str("[")?;
+                output.write_str("[")?;
                 for (index, item) in items.iter().enumerate() {
-                    if index > 0 {
-                        formatter.write_str(", ")?;
+                    if output.truncated {
+                        break;
                     }
-                    write!(formatter, "{item}")?;
+                    if index > 0 {
+                        output.write_str(", ")?;
+                    }
+                    item.fmt_bounded(output, limits, depth.saturating_add(1))?;
                 }
-                formatter.write_str("]")
+                if !output.truncated {
+                    output.write_str("]")?;
+                }
+                Ok(())
             }
             Data::Map(map) => {
-                formatter.write_str("{")?;
+                output.write_str("{")?;
                 for (index, (key, value)) in map.0.iter().enumerate() {
-                    if index > 0 {
-                        formatter.write_str(", ")?;
+                    if output.truncated {
+                        break;
                     }
-                    write!(formatter, "{key}: {value}")?;
+                    if index > 0 {
+                        output.write_str(", ")?;
+                    }
+                    key.fmt_bounded(output, limits, depth.saturating_add(1))?;
+                    output.write_str(": ")?;
+                    value.fmt_bounded(output, limits, depth.saturating_add(1))?;
                 }
-                formatter.write_str("}")
+                if !output.truncated {
+                    output.write_str("}")?;
+                }
+                Ok(())
             }
         }
+    }
+}
+
+impl core::fmt::Display for YamlVal {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let limits = crate::runtime_limits::current();
+        let mut output = DisplayBuffer::new(limits.max_output_bytes);
+        self.fmt_bounded(&mut output, &limits, 0)?;
+        formatter.write_str(&output.output)
     }
 }
 
@@ -970,27 +1056,28 @@ pub(crate) fn fmt_float(value: f64) -> String {
 
 /// Double-quote a string using YAML-compatible escapes.
 pub(crate) fn quote_double(value: &str) -> String {
-    use core::fmt::Write as _;
-
     let mut output = String::with_capacity(value.len() + 2);
-    output.push('"');
+    write_double_quoted(&mut output, value).expect("writing to a String cannot fail");
+    output
+}
+
+fn write_double_quoted(output: &mut impl core::fmt::Write, value: &str) -> core::fmt::Result {
+    output.write_char('"')?;
     for character in value.chars() {
         match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\t' => output.push_str("\\t"),
-            '\r' => output.push_str("\\r"),
-            '\0' => output.push_str("\\0"),
+            '"' => output.write_str("\\\"")?,
+            '\\' => output.write_str("\\\\")?,
+            '\n' => output.write_str("\\n")?,
+            '\t' => output.write_str("\\t")?,
+            '\r' => output.write_str("\\r")?,
+            '\0' => output.write_str("\\0")?,
             control if (control as u32) < 0x20 => {
-                write!(output, "\\x{:02x}", control as u32)
-                    .expect("writing to a String cannot fail");
+                write!(output, "\\x{:02x}", control as u32)?;
             }
-            other => output.push(other),
+            other => output.write_char(other)?,
         }
     }
-    output.push('"');
-    output
+    output.write_char('"')
 }
 
 const fn data_rank(data: &Data) -> u8 {
