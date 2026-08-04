@@ -713,11 +713,11 @@ impl YamlVal {
         }
     }
 
-    /// Iterate mapping keys in insertion order, or return an empty iterator.
-    pub fn keys(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
+    /// Iterate mapping keys in insertion order.
+    pub fn keys(&self) -> Option<impl ExactSizeIterator<Item = &Self>> {
         match &self.data {
-            Data::Map(map) => Box::new(map.0.keys()),
-            _ => Box::new(core::iter::empty()),
+            Data::Map(map) => Some(map.0.keys()),
+            _ => None,
         }
     }
 

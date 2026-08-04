@@ -199,8 +199,9 @@ fn merge_keys_are_preserved_instead_of_expanded() {
     let child = docs[0].get_str("child").unwrap();
 
     assert!(child.get_str("x").is_none());
-    let merge_key = child.keys().next().unwrap();
+    let merge_key = child.keys().unwrap().next().unwrap();
     assert_eq!(merge_key.tag_shorthand().as_deref(), Some("!!merge"));
+    assert!(YamlVal::str("not a mapping").keys().is_none());
 }
 
 #[test]

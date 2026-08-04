@@ -293,7 +293,7 @@ fn yaml_sort_keys_changes_output_not_the_value() {
 
     assert_eq!(to_yaml(&value, &options).unwrap(), "a: 2\nb: 1\n");
     assert_eq!(
-        value.keys().cloned().collect::<Vec<_>>(),
+        value.keys().unwrap().cloned().collect::<Vec<_>>(),
         vec![YamlVal::str("b"), YamlVal::str("a")]
     );
 }
