@@ -9,6 +9,7 @@ pub use json::to_json;
 pub use yaml::to_yaml;
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use crate::value::{Data, YamlVal, YgMap};
 
@@ -133,8 +134,8 @@ fn validate_value(
                     .limits
                     .check_alias_expansions(expanded_aliases)
                     .map_err(EmitError::Limit)?;
-            } else if let Some(anchor) = metadata.anchor.as_deref() {
-                anchors.insert(anchor.to_owned());
+            } else if let Some(anchor) = metadata.anchor.as_ref() {
+                anchors.insert(Rc::clone(anchor));
             }
         }
 
