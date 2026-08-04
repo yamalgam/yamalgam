@@ -1,13 +1,13 @@
 ---
 audit: 2026-08-03-21-m10-fresh
-last_updated: 2026-08-03
+last_updated: 2026-08-04
 status:
   fixed: 18
   mitigated: 0
-  accepted: 0
+  accepted: 1
   disputed: 0
   deferred: 1
-  open: 28
+  open: 27
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -387,3 +387,25 @@ Mutating Just dependency updates now restore `serde-saphyr` and
 `granit-parser` to the audited 1.0.0 versions. Moving either pin requires an
 explicit edit and review. The ADR passes bito completeness and readability at
 grade 9.8, and Just and Cargo dry-runs confirm the update guard and pins.
+
+---
+
+## 2026-08-04 — Jaq time cost explicitly accepted
+
+**Disposition:** accepted
+**Addresses:**
+[jaq-std-time-feature-bundles-tzdb](README.md#jaq-std-time-feature-bundles-tzdb)
+**Commit:** 3d6eab9be30e026275a05726147429907846961b
+**Author:** Codex
+
+Disabling `jaq-std`'s `time` feature made `yamalgam-query` fail to compile:
+jaq-std 3.0.1 exposes its aggregate `funs()` registry only when all six
+supplementary features are active, and its non-time registries are private.
+Using only `base_funs()` would remove the format, log, math, and regex filters
+that yg already exposes and tests.
+
+The manifest now disables Cargo defaults and names the complete six-feature
+set explicitly. ADR 0009 records the measured `jiff` cost and the revisit
+condition rather than forking or copying upstream internals. All 103 query
+tests and the workspace Clippy and Cargo-deny gates pass; Cargo-deny reports
+only its existing policy warnings.
