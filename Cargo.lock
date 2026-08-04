@@ -721,7 +721,6 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eb9f3e5c760e0b24065f5be9acc9fa1e4786f3f49ca43f4eb203d64f68c7ebb9"
 dependencies = [
- "base64 0.23.0",
  "camino",
  "clap",
  "clap_complete",
@@ -735,7 +734,6 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "tar",
- "tempfile",
  "thiserror",
  "toml",
  "tracing",
