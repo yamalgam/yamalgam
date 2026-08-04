@@ -22,15 +22,44 @@ struct BoundVariables {
     values: Vec<YamlVal>,
 }
 
+/// Resolved query output format and its format-specific settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputMode {
+    /// YAML output, optionally ANSI-colored.
+    Yaml {
+        /// Wrap supported scalar classes in ANSI color escapes.
+        color: bool,
+    },
+    /// JSON output without YAML presentation or color.
+    Json,
+}
+
+impl OutputMode {
+    const fn is_json(self) -> bool {
+        matches!(self, Self::Json)
+    }
+
+    const fn color(self) -> bool {
+        match self {
+            Self::Yaml { color } => color,
+            Self::Json => false,
+        }
+    }
+}
+
+/// Resolved settings for one query command invocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunOptions {
+    /// Output format and its format-specific settings.
+    pub output: OutputMode,
+    /// Suppress non-error diagnostics.
+    pub quiet: bool,
+}
+
 /// Execute yg's default query mode.
-pub fn cmd_query(
-    args: &QueryArgs,
-    json_output: bool,
-    color: bool,
-    quiet: bool,
-) -> anyhow::Result<ExitCode> {
+pub fn cmd_query(args: &QueryArgs, options: RunOptions) -> anyhow::Result<ExitCode> {
     let config = loader_config(args);
-    if args.schema == SchemaArg::Yaml11 && !quiet {
+    if args.schema == SchemaArg::Yaml11 && !options.quiet {
         eprintln!("warning: YAML 1.1 schema compatibility mode resolves yes/no/on/off as booleans");
     }
 
@@ -38,7 +67,7 @@ pub fn cmd_query(
         Ok(parts) => parts,
         Err(error) => return Ok(report(error)),
     };
-    if args.in_place && json_output {
+    if args.in_place && options.output.is_json() {
         eprintln!("yg: -i/--in-place cannot be combined with JSON output");
         return Ok(ExitCode::from(2));
     }
@@ -58,7 +87,7 @@ pub fn cmd_query(
             return Ok(ExitCode::from(2));
         }
         return Ok(
-            match run_in_place(&filter, &files, args, json_output, &context) {
+            match run_in_place(&filter, &files, args, options.output, &context) {
                 Err(error) => report(error),
                 Ok(last) => exit_status(last, args.exit_status),
             },
@@ -78,8 +107,7 @@ pub fn cmd_query(
         &context,
         records,
         args,
-        json_output,
-        color,
+        options.output,
         &mut output,
     )
     .and_then(|last| {
@@ -98,8 +126,7 @@ fn run_records<'inputs>(
     context: &'inputs RunCtx,
     records: impl Iterator<Item = InputRecord> + 'inputs,
     args: &QueryArgs,
-    json_output: bool,
-    color: bool,
+    output_mode: OutputMode,
     output: &mut dyn Write,
 ) -> Result<Option<bool>, YgError> {
     let inputs = records.map(move |record| {
@@ -112,7 +139,7 @@ fn run_records<'inputs>(
     let options = EmitOpts {
         compact: args.compact_output,
         sort_keys: args.sort_keys,
-        color: color && !json_output,
+        color: output_mode.color(),
         schema: context.config.tag_resolution,
         limits: context.config.limits.clone(),
         ..EmitOpts::default()
@@ -128,7 +155,7 @@ fn run_records<'inputs>(
             // r[impl cli.raw-output]
             // r[impl output.multidoc]
             // r[impl output.multidoc.suppress]
-            if json_output {
+            if output_mode.is_json() {
                 writeln!(output, "{}", to_json(&value, &options)?).map_err(output_error)?;
             } else if args.raw_output && value.is_string() {
                 writeln!(output, "{}", value.as_str_content().unwrap_or_default())
@@ -165,7 +192,7 @@ fn run_in_place(
     filter: &CompiledFilter,
     files: &[camino::Utf8PathBuf],
     args: &QueryArgs,
-    json_output: bool,
+    output_mode: OutputMode,
     context: &RunCtx,
 ) -> Result<Option<bool>, YgError> {
     struct StagedEdit {
@@ -207,8 +234,7 @@ fn run_in_place(
                 context,
                 records.into_iter(),
                 args,
-                json_output,
-                false,
+                output_mode,
                 &mut output,
             )?
             .ok_or_else(|| {

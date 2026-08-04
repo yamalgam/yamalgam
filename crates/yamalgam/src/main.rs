@@ -93,20 +93,30 @@ fn run() -> Result<ExitCode, MainError> {
         None => {
             // Query output is YAML-native in auto mode, including in pipelines.
             // r[impl cli.json-output]
-            let json_output = cli.query.json_output
+            let output = if cli.query.json_output
                 || matches!(
                     cli.common.output_format_for(true),
                     ResolvedOutputFormat::Json
-                );
-            // Librebar 0.4 exposes color as --color auto|always|never.
-            // r[impl cli.color]
-            let color = match cli.common.color {
-                ColorChoice::Always => true,
-                ColorChoice::Never => false,
-                ColorChoice::Auto => std::io::stdout().is_terminal(),
+                ) {
+                commands::query::OutputMode::Json
+            } else {
+                // Librebar 0.4 exposes color as --color auto|always|never.
+                // r[impl cli.color]
+                let color = match cli.common.color {
+                    ColorChoice::Always => true,
+                    ColorChoice::Never => false,
+                    ColorChoice::Auto => std::io::stdout().is_terminal(),
+                };
+                commands::query::OutputMode::Yaml { color }
             };
-            commands::query::cmd_query(&cli.query, json_output, color, cli.common.quiet)
-                .map_err(MainError::runtime)
+            commands::query::cmd_query(
+                &cli.query,
+                commands::query::RunOptions {
+                    output,
+                    quiet: cli.common.quiet,
+                },
+            )
+            .map_err(MainError::runtime)
         }
     }
 }
