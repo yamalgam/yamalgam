@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 13
+  fixed: 14
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 34
+  open: 33
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -273,3 +273,22 @@ output still creates the required wrapped value.
 
 All 14 focused YAML emitter tests, the CLI color regression, all 103
 `yamalgam-query` tests, and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — YAML boolean extraction distinguished
+
+**Disposition:** fixed
+**Addresses:**
+[as-bool-inherent-shadows-jaq-truthiness](README.md#as-bool-inherent-shadows-jaq-truthiness)
+**Commit:** b330d75ab54e5c8105b378dc3dff77723a6be39f
+**Author:** Codex
+
+The resolved YAML boolean extractor is now `as_boolean`, leaving natural
+`.as_bool()` syntax to select `jaq_core::ValT` truthiness when that trait is in
+scope. The `jaq_std::ValT::as_f64` implementation delegates to the inherent
+numeric accessor rather than maintaining a second match.
+
+A compile-failing RED test captured the original method shadow. Focused trait
+and accessor regressions, all 103 `yamalgam-query` tests, and the workspace
+Clippy gate pass after the rename.
