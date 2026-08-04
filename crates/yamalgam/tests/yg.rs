@@ -139,6 +139,24 @@ fn input_context_tracks_files_and_documents() {
 }
 
 #[test]
+fn input_lookahead_does_not_replace_current_document_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.yml");
+    let second = dir.path().join("second.yml");
+    std::fs::write(&first, "1\n").unwrap();
+    std::fs::write(&second, "2\n").unwrap();
+    let expected = format!("[{}, 2, {}]\n", first.display(), first.display());
+
+    yg().arg("-c")
+        .arg("[filename, input, filename]")
+        .arg(first)
+        .arg(second)
+        .assert()
+        .success()
+        .stdout(expected);
+}
+
+#[test]
 fn filter_from_file() {
     let dir = tempfile::tempdir().unwrap();
     let program = dir.path().join("prog.jq");
@@ -150,6 +168,25 @@ fn filter_from_file() {
         .assert()
         .success()
         .stdout("5\n");
+}
+
+#[test]
+fn arguments_bind_strings_and_json_without_filter_interpolation() {
+    yg().args(["-n", "-r", "--arg", "name", "Ada Lovelace", "$name"])
+        .assert()
+        .success()
+        .stdout("Ada Lovelace\n");
+
+    yg().args([
+        "-n",
+        "--argjson",
+        "payload",
+        r#"{"count": 2}"#,
+        "$payload.count + 1",
+    ])
+    .assert()
+    .success()
+    .stdout("3\n");
 }
 
 #[test]

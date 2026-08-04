@@ -107,13 +107,34 @@ filters exist, so they are deferred with external resolution. `--trusted` and
 [`r[cli.allow-refs]`](yg-query-language-spec-draft-01.md#84-schema-and-security-flags),
 [`r[phases.resolution]`](yg-query-language-spec-draft-01.md#phase-4-external-resolution)).
 
-## 11. Library paths and variable arguments are deferred
+## 11. Library paths remain deferred; variable arguments ship
 
-`-L`, `--arg`, and `--argjson` are outside draft 01's CLI surface and do not
-ship in M10. The engine already accepts named global variables, so later CLI
-bindings do not require an engine redesign
+`-L` remains outside the M10 CLI surface. `--arg NAME VALUE` and
+`--argjson NAME JSON` now bind data through jaq globals rather than requiring
+shell interpolation into filter source. The JSON form uses strict JSON parsing
+under the active resource limits
 ([`r[cli]`](yg-query-language-spec-draft-01.md#8-cli-interface),
 [`r[overview.jaq-foundation]`](yg-query-language-spec-draft-01.md#1-overview)).
+
+## 12. Regex syntax is the regex-bites subset
+
+jaq-std 3.0.1 implements regex filters with `regex-bites`, not jq's Oniguruma
+engine. Common jq patterns, named captures, and flags work, but lookaround,
+backreferences, atomic groups, and possessive quantifiers are unsupported.
+Draft 02 should replace the draft-01 "PCRE-compatible" promise with this
+finite-automata constraint
+([`r[filters.regex]`](yg-query-language-spec-draft-01.md#45-regular-expressions)).
+
+## 13. Normal file input is lazy per file, not per document
+
+Normal multi-file queries read, parse, evaluate, and release one file at a
+time. `-s` intentionally materializes the unified input sequence, and `-i`
+stages every rendered file before replacement. Within one file, the scanner's
+borrowed-input architecture still requires the complete decoded file and the
+query builder currently constructs all of its documents before evaluation;
+an unterminated standard-input stream therefore does not produce incremental
+documents. Full document streaming requires an incremental scanner input
+source and remains a post-M10 pipeline change.
 
 ## Additional implementation-driven changes
 

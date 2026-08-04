@@ -14,7 +14,12 @@ use crate::{QueryArgs, SchemaArg};
 
 struct InputRecord {
     metadata: InputMeta,
-    value: Result<YamlVal, String>,
+    value: Result<YamlVal, YgError>,
+}
+
+struct BoundVariables {
+    names: Vec<String>,
+    values: Vec<YamlVal>,
 }
 
 /// Execute yg's default query mode.
@@ -37,7 +42,11 @@ pub fn cmd_query(
         eprintln!("yg: -i/--in-place cannot be combined with JSON output");
         return Ok(ExitCode::from(2));
     }
-    let filter = match engine::compile_filter(&filter_source, &[]) {
+    let variables = match bound_variables(args, &config) {
+        Ok(variables) => variables,
+        Err(error) => return Ok(report(error)),
+    };
+    let filter = match engine::compile_filter(&filter_source, &variables.names) {
         Ok(filter) => filter,
         Err(error) => return Ok(report(error)),
     };
@@ -48,7 +57,14 @@ pub fn cmd_query(
             return Ok(ExitCode::from(2));
         }
         return Ok(
-            match run_in_place(&filter, &files, args, json_output, &config) {
+            match run_in_place(
+                &filter,
+                &files,
+                args,
+                json_output,
+                &config,
+                &variables.values,
+            ) {
                 Err(error) => report(error),
                 Ok(last) => exit_status(last, args.exit_status),
             },
@@ -61,7 +77,7 @@ pub fn cmd_query(
         return Ok(report(error));
     }
     let records = deferred_inputs(files, args.clone(), config.clone());
-    let context = Rc::new(RunCtx::new(config));
+    let context = Rc::new(RunCtx::new(config).with_variables(variables.values));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
     let result = run_records(
@@ -95,7 +111,7 @@ fn run_records(
 ) -> Result<Option<bool>, YgError> {
     let iterator_context = Rc::clone(&context);
     let inputs = records.map(move |record| {
-        *iterator_context.input_meta.borrow_mut() = record.metadata;
+        iterator_context.stage_input_meta(record.metadata);
         record.value
     });
 
@@ -159,6 +175,7 @@ fn run_in_place(
     args: &QueryArgs,
     json_output: bool,
     config: &LoaderConfig,
+    variables: &[YamlVal],
 ) -> Result<Option<bool>, YgError> {
     struct StagedEdit {
         path: camino::Utf8PathBuf,
@@ -194,7 +211,7 @@ fn run_in_place(
             })?;
         let file_last = run_records(
             filter,
-            Rc::new(RunCtx::new(config.clone())),
+            Rc::new(RunCtx::new(config.clone()).with_variables(variables.iter().cloned())),
             records.into_iter(),
             args,
             json_output,
@@ -251,6 +268,44 @@ fn run_in_place(
     }
 
     Ok(last)
+}
+
+fn bound_variables(args: &QueryArgs, config: &LoaderConfig) -> Result<BoundVariables, YgError> {
+    let mut names = Vec::new();
+    let mut values = Vec::new();
+
+    for pair in args.string_args.chunks_exact(2) {
+        push_variable(
+            &mut names,
+            &mut values,
+            &pair[0],
+            YamlVal::str(pair[1].as_str()),
+        )?;
+    }
+    for pair in args.json_args.chunks_exact(2) {
+        let value = yamalgam_query::parse_json_with_config(&pair[1], config).map_err(|error| {
+            YgError::Usage(format!("invalid JSON for --argjson {}: {error}", pair[0]))
+        })?;
+        push_variable(&mut names, &mut values, &pair[0], value)?;
+    }
+
+    Ok(BoundVariables { names, values })
+}
+
+fn push_variable(
+    names: &mut Vec<String>,
+    values: &mut Vec<YamlVal>,
+    name: &str,
+    value: YamlVal,
+) -> Result<(), YgError> {
+    if names.iter().any(|existing| existing == name) {
+        return Err(YgError::Usage(format!(
+            "variable ${name} was supplied more than once"
+        )));
+    }
+    names.push(name.to_owned());
+    values.push(value);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -313,27 +368,73 @@ fn deferred_inputs(
     args: QueryArgs,
     config: LoaderConfig,
 ) -> impl Iterator<Item = InputRecord> {
-    let mut loaded = false;
+    let mut next_file = 0;
+    let mut loaded_stdin = false;
+    let mut loaded_slurp = false;
     let mut records = VecDeque::new();
 
     std::iter::from_fn(move || {
-        if !loaded {
-            loaded = true;
-            match collect_inputs(&files, &args, &config) {
-                Ok(inputs) => records.extend(inputs),
+        loop {
+            if let Some(record) = records.pop_front() {
+                return Some(record);
+            }
+
+            if args.slurp {
+                if loaded_slurp {
+                    return None;
+                }
+                loaded_slurp = true;
+                match collect_inputs(&files, &args, &config) {
+                    Ok(inputs) => records.extend(inputs),
+                    Err(error) => records.push_back(InputRecord {
+                        metadata: InputMeta::default(),
+                        value: Err(error),
+                    }),
+                }
+                continue;
+            }
+
+            if files.is_empty() {
+                if loaded_stdin {
+                    return None;
+                }
+                loaded_stdin = true;
+                match collect_inputs(&[], &args, &config) {
+                    Ok(inputs) => records.extend(inputs),
+                    Err(error) => records.push_back(InputRecord {
+                        metadata: InputMeta::default(),
+                        value: Err(error),
+                    }),
+                }
+                continue;
+            }
+
+            let path = files.get(next_file)?;
+            let file_index = next_file;
+            next_file += 1;
+            match collect_inputs(std::slice::from_ref(path), &args, &config) {
+                Ok(mut inputs) => {
+                    for input in &mut inputs {
+                        input.metadata.file_index = file_index;
+                    }
+                    records.extend(inputs);
+                }
                 Err(error) => records.push_back(InputRecord {
-                    metadata: InputMeta::default(),
-                    value: Err(error.to_string()),
+                    metadata: InputMeta {
+                        filename: (path != "-").then(|| Rc::<str>::from(path.as_str())),
+                        file_index,
+                        document_index: 0,
+                    },
+                    value: Err(error),
                 }),
             }
         }
-        records.pop_front()
     })
 }
 
 fn validate_input_paths(files: &[camino::Utf8PathBuf]) -> Result<(), YgError> {
     for path in files.iter().filter(|path| path.as_str() != "-") {
-        std::fs::File::open(path)
+        std::fs::metadata(path)
             .map_err(|error| YgError::InputRead(format!("failed to read {path}: {error}")))?;
     }
     Ok(())
@@ -388,8 +489,7 @@ fn collect_inputs(
         let values = records
             .into_iter()
             .map(|record| record.value)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(YgError::InputParse)?;
+            .collect::<Result<Vec<_>, _>>()?;
         let value = if args.raw_input {
             YamlVal::str(
                 values
@@ -460,10 +560,10 @@ fn append_input(
                 file_index,
                 document_index: 0,
             },
-            value: Err(filename.map_or_else(
+            value: Err(YgError::InputParse(filename.map_or_else(
                 || error.to_string(),
                 |filename| format!("{filename}: {error}"),
-            )),
+            ))),
         }),
     }
 }
@@ -509,7 +609,7 @@ fn output_error(error: std::io::Error) -> YgError {
 // r[impl cli.exit.runtime]
 fn exit_for(error: &YgError) -> ExitCode {
     match error {
-        YgError::FilterSyntax(_) => ExitCode::from(2),
+        YgError::Usage(_) | YgError::FilterSyntax(_) => ExitCode::from(2),
         YgError::FilterCompile(_) => ExitCode::from(3),
         YgError::InputRead(_) => ExitCode::from(2),
         YgError::InputParse(_) | YgError::Runtime(_) => ExitCode::from(5),

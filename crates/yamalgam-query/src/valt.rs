@@ -93,11 +93,16 @@ impl jaq_core::ValT for YamlVal {
             return self.range(start..end);
         }
 
+        if let Data::Seq(items) = &self.data
+            && let Some(position) = index.as_index()
+        {
+            return Ok(abs_index(position, items.len())
+                .and_then(|position| items.get(position).cloned())
+                .unwrap_or_default());
+        }
+
         match (&self.data, &index.data) {
             (Data::Null, _) => Ok(Self::null()),
-            (Data::Seq(items), Data::Int(position)) => Ok(abs_index(*position, items.len())
-                .and_then(|position| items.get(position).cloned())
-                .unwrap_or_default()),
             (Data::Seq(_), Data::Seq(needle)) if needle.is_empty() => Ok(Self::seq(Vec::new())),
             (Data::Seq(items), Data::Seq(needle)) => Ok(items
                 .windows(needle.len())
@@ -184,7 +189,7 @@ impl jaq_core::ValT for YamlVal {
             let Some(replacement) = replacement else {
                 return Ok(self);
             };
-            let data = match index.as_int() {
+            let data = match index.as_index() {
                 Some(position) if position >= 0 => {
                     let Ok(position) = usize::try_from(position) else {
                         let error = Error::str(format_args!("index {index} out of bounds"));
@@ -239,7 +244,7 @@ impl jaq_core::ValT for YamlVal {
                 Ok(self)
             }
             Data::Seq(items) => {
-                let Some(requested) = index.as_int() else {
+                let Some(requested) = index.as_index() else {
                     let error = Error::str(format_args!("index {index} out of bounds"));
                     return opt.fail(self, |_| Exn::from(error));
                 };
@@ -352,9 +357,17 @@ impl jaq_core::ValT for YamlVal {
 }
 
 impl YamlVal {
-    const fn as_int(&self) -> Option<i64> {
+    pub(crate) fn as_index(&self) -> Option<i64> {
         match self.data {
             Data::Int(number) => Some(number),
+            Data::Float(number)
+                if number.is_finite()
+                    && number.fract() == 0.0
+                    && number >= i64::MIN as f64
+                    && number < -(i64::MIN as f64) =>
+            {
+                Some(number as i64)
+            }
             _ => None,
         }
     }
@@ -377,7 +390,7 @@ fn range_bounds(range: Range<&YamlVal>) -> ValR<(Option<i64>, Option<i64>), Yaml
             .filter(|value| !matches!(&value.data, Data::Null))
             .map(|value| {
                 value
-                    .as_int()
+                    .as_index()
                     .ok_or_else(|| Error::typ(value.clone(), "integer"))
             })
             .transpose()
@@ -423,14 +436,14 @@ impl jaq_std::ValT for YamlVal {
     }
 
     fn is_int(&self) -> bool {
-        matches!(&self.data, Data::Int(_))
+        matches!(self.data, Data::Int(_))
     }
 
     fn as_isize(&self) -> Option<isize> {
-        match &self.data {
-            Data::Int(number) => isize::try_from(*number).ok(),
-            _ => None,
-        }
+        let Data::Int(number) = self.data else {
+            return None;
+        };
+        isize::try_from(number).ok()
     }
 
     fn as_f64(&self) -> Option<f64> {
@@ -598,9 +611,9 @@ mod tests {
 
     #[test]
     fn jq_truthiness_and_interpolation_are_supported() {
-        assert!(!YamlVal::null().as_bool());
-        assert!(!YamlVal::from(false).as_bool());
-        assert!(YamlVal::int(0).as_bool());
+        assert!(!jaq_core::ValT::as_bool(&YamlVal::null()));
+        assert!(!jaq_core::ValT::as_bool(&YamlVal::from(false)));
+        assert!(jaq_core::ValT::as_bool(&YamlVal::int(0)));
         assert_eq!(YamlVal::int(3).into_string(), YamlVal::str("3"));
         assert_eq!(
             YamlVal::seq(vec![YamlVal::str("foo")]).into_string(),

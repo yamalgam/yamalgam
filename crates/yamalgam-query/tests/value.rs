@@ -18,6 +18,22 @@ fn kind_names_follow_yaml_terms() {
 }
 
 #[test]
+fn public_accessors_expose_resolved_values() {
+    assert_eq!(YamlVal::from(true).as_bool(), Some(true));
+    assert_eq!(YamlVal::int(7).as_i64(), Some(7));
+    assert_eq!(YamlVal::float(2.5).as_f64(), Some(2.5));
+
+    let sequence = YamlVal::seq(vec![YamlVal::int(1), YamlVal::int(2)]);
+    assert_eq!(sequence.as_sequence().unwrap().len(), 2);
+
+    let mapping = YamlVal::map(vec![(YamlVal::str("answer"), YamlVal::int(42))]);
+    let entries = mapping.entries().unwrap().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, &YamlVal::str("answer"));
+    assert_eq!(entries[0].1, &YamlVal::int(42));
+}
+
+#[test]
 fn kind_is_structure_not_resolution() {
     // r[ext.kind]
     assert_eq!(YamlVal::int(3).kind_name(), "scalar");

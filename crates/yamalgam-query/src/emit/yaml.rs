@@ -1,5 +1,8 @@
 //! YAML output serialization.
 
+use std::collections::HashSet;
+use std::rc::Rc;
+
 use yamalgam_parser::CollectionStyle;
 use yamalgam_scanner::ScalarStyle;
 
@@ -16,7 +19,8 @@ pub fn to_yaml(value: &YamlVal, options: &EmitOpts) -> Result<String, EmitError>
     let mut output = String::new();
     let mut context = Context {
         options,
-        anchors_emitted: Vec::new(),
+        anchors_emitted: HashSet::new(),
+        indentation: String::new(),
     };
     context.node(&mut output, value, 0, Position::Root);
     if !output.ends_with('\n') {
@@ -44,14 +48,15 @@ enum Rendered {
 
 struct Context<'options> {
     options: &'options EmitOpts,
-    anchors_emitted: Vec<String>,
+    anchors_emitted: HashSet<Rc<str>>,
+    indentation: String,
 }
 
 impl Context<'_> {
     fn node(&mut self, output: &mut String, value: &YamlVal, depth: usize, position: Position) {
         if self.alias_is_emittable(value) || !self.is_block_collection(value, position) {
             match &value.data {
-                Data::Seq(_) | Data::Map(_) => output.push_str(&self.inline(value)),
+                Data::Seq(_) | Data::Map(_) => self.inline(output, value),
                 _ => self.scalar_node(output, value, depth, position),
             }
             return;
@@ -116,7 +121,7 @@ impl Context<'_> {
     }
 
     fn mapping_entry(&mut self, output: &mut String, key: &YamlVal, value: &YamlVal, depth: usize) {
-        output.push_str(&self.inline(key));
+        self.inline(output, key);
         if self.key_needs_colon_space(key) {
             output.push_str(" :");
         } else {
@@ -146,7 +151,7 @@ impl Context<'_> {
         position: Position,
     ) {
         if self.alias_is_emittable(value) || matches!(&value.data, Data::Seq(_) | Data::Map(_)) {
-            output.push_str(&self.inline(value));
+            self.inline(output, value);
             output.push('\n');
             return;
         }
@@ -175,7 +180,7 @@ impl Context<'_> {
         position: Position,
     ) {
         if self.alias_is_emittable(value) {
-            output.push_str(&self.inline(value));
+            self.inline(output, value);
             return;
         }
 
@@ -192,12 +197,13 @@ impl Context<'_> {
         }
     }
 
-    fn inline(&mut self, value: &YamlVal) -> String {
+    fn inline(&mut self, output: &mut String, value: &YamlVal) {
         if let Some(alias) = self.alias_text(value) {
-            return alias;
+            output.push_str(&alias);
+            return;
         }
 
-        let mut output = self.properties(value);
+        output.push_str(&self.properties(value));
         self.record_anchor(value);
         match &value.data {
             Data::Seq(items) => {
@@ -206,7 +212,7 @@ impl Context<'_> {
                     if index > 0 {
                         output.push_str(", ");
                     }
-                    output.push_str(&self.inline(item));
+                    self.inline(output, item);
                 }
                 output.push(']');
             }
@@ -216,13 +222,13 @@ impl Context<'_> {
                     if index > 0 {
                         output.push_str(", ");
                     }
-                    output.push_str(&self.inline(key));
+                    self.inline(output, key);
                     if self.key_needs_colon_space(key) {
                         output.push_str(" : ");
                     } else {
                         output.push_str(": ");
                     }
-                    output.push_str(&self.inline(value));
+                    self.inline(output, value);
                 }
                 output.push('}');
             }
@@ -231,7 +237,6 @@ impl Context<'_> {
                 Rendered::Literal(_) => unreachable!("flow scalars cannot be literal blocks"),
             },
         }
-        output
     }
 
     fn scalar(&self, value: &YamlVal, position: Position) -> Rendered {
@@ -332,14 +337,13 @@ impl Context<'_> {
         value
             .meta()
             .and_then(|meta| meta.alias_of.as_deref())
-            .is_some_and(|alias| self.anchors_emitted.iter().any(|anchor| anchor == alias))
+            .is_some_and(|alias| self.anchors_emitted.contains(alias))
     }
 
     fn alias_text(&self, value: &YamlVal) -> Option<String> {
         let alias = value.meta()?.alias_of.as_deref()?;
         self.anchors_emitted
-            .iter()
-            .any(|anchor| anchor == alias)
+            .contains(alias)
             .then(|| self.paint(&format!("*{alias}"), "35"))
     }
 
@@ -369,14 +373,12 @@ impl Context<'_> {
     }
 
     fn record_anchor(&mut self, value: &YamlVal) {
-        if let Some(anchor) = value.meta().and_then(|metadata| metadata.anchor.as_deref())
-            && !self.anchors_emitted.iter().any(|emitted| emitted == anchor)
-        {
-            self.anchors_emitted.push(anchor.to_owned());
+        if let Some(anchor) = value.meta().and_then(|metadata| metadata.anchor.as_ref()) {
+            self.anchors_emitted.insert(Rc::clone(anchor));
         }
     }
 
-    fn literal_content(&self, output: &mut String, string: &str, depth: usize) {
+    fn literal_content(&mut self, output: &mut String, string: &str, depth: usize) {
         let content = string.strip_suffix('\n').unwrap_or(string);
         for line in content.split('\n') {
             self.indent(output, depth);
@@ -397,8 +399,15 @@ impl Context<'_> {
         }
     }
 
-    fn indent(&self, output: &mut String, depth: usize) {
-        output.push_str(&" ".repeat(self.options.indent.saturating_mul(depth)));
+    fn indent(&mut self, output: &mut String, depth: usize) {
+        let width = self.options.indent.saturating_mul(depth);
+        if self.indentation.len() < width {
+            self.indentation.extend(core::iter::repeat_n(
+                ' ',
+                width.saturating_sub(self.indentation.len()),
+            ));
+        }
+        output.push_str(&self.indentation[..width]);
     }
 
     fn paint(&self, text: &str, ansi_code: &str) -> String {

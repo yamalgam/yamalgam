@@ -176,7 +176,7 @@ release-check:
     # Security/license check
     echo ""
     echo "🔐 Running cargo-deny..."
-    cargo deny check
+    cargo deny --all-features --config .config/deny.toml check
     echo "✅ Dependencies OK"
     # Build release
     echo ""

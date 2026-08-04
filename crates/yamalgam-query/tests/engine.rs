@@ -2,7 +2,7 @@
 
 use yamalgam_core::LoaderConfig;
 use yamalgam_query::YamlVal;
-use yamalgam_query::engine::{self, RunCtx};
+use yamalgam_query::engine::{self, InputMeta, RunCtx};
 
 fn eval(filter: &str, input: &str) -> Vec<String> {
     let context = RunCtx::new(LoaderConfig::moderate());
@@ -51,6 +51,14 @@ fn identity_and_field_access_work() {
     assert_eq!(eval(".a", "a: 1\n"), vec!["1"]);
     assert_eq!(eval(".a.b", "a: {b: 2}\n"), vec!["2"]);
     assert_eq!(eval(".missing", "a: 1\n"), vec!["null"]);
+}
+
+#[test]
+fn integral_float_indices_match_equal_integer_indices() {
+    assert_eq!(eval(".[1.0]", "[1, 2, 3]\n"), vec!["2"]);
+    assert_eq!(eval(".[1.0] = 9", "[1, 2, 3]\n"), vec!["[1, 9, 3]"]);
+    assert_eq!(eval(".[1.0:3.0]", "[1, 2, 3, 4]\n"), vec!["[2, 3]"]);
+    assert_eq!(eval("has(1.0)", "[1, 2, 3]\n"), vec!["true"]);
 }
 
 #[test]
@@ -104,6 +112,48 @@ fn syntax_and_compile_errors_are_distinct() {
         .err()
         .expect("undefined filter must fail");
     assert!(matches!(compile, yamalgam_query::YgError::FilterCompile(_)));
+}
+
+#[test]
+fn sandboxed_compilation_omits_environment_access() {
+    let error =
+        engine::compile_filter_with_options("env", &[], engine::CompileOptions::sandboxed())
+            .err()
+            .expect("sandboxed filters must not expose env");
+
+    assert!(matches!(error, yamalgam_query::YgError::FilterCompile(_)));
+}
+
+#[test]
+fn run_filter_accepts_borrowed_iterators_and_typed_input_errors() {
+    let context = RunCtx::new(LoaderConfig::moderate());
+    let filter = engine::compile_filter(".", &[]).unwrap();
+    let documents = yamalgam_query::parse_str("1\n").unwrap();
+    let mut output = Vec::new();
+
+    engine::run_filter(
+        &filter,
+        &context,
+        documents
+            .iter()
+            .cloned()
+            .map(Ok::<_, yamalgam_query::BuildError>),
+        |value| {
+            output.push(value);
+            Ok::<_, yamalgam_query::YgError>(())
+        },
+    )
+    .unwrap();
+    assert_eq!(output, vec![YamlVal::int(1)]);
+
+    let error = yamalgam_query::parse_str("a: *missing\n").unwrap_err();
+    let result = engine::run_filter(&filter, &context, std::iter::once(Err(error)), |_| {
+        Ok::<_, yamalgam_query::YgError>(())
+    });
+    assert!(matches!(
+        result,
+        Err(yamalgam_query::YgError::InputParse(_))
+    ));
 }
 
 #[test]
@@ -191,18 +241,17 @@ fn schema_filters_reresolve_scalar_text_explicitly() {
 #[test]
 fn input_context_filters_read_run_metadata() {
     let context = RunCtx::new(LoaderConfig::moderate());
-    {
-        let mut metadata = context.input_meta.borrow_mut();
-        metadata.filename = Some("test.yml".into());
-        metadata.document_index = 2;
-        metadata.file_index = 3;
-    }
+    context.stage_input_meta(InputMeta {
+        filename: Some("test.yml".into()),
+        document_index: 2,
+        file_index: 3,
+    });
     let filter = engine::compile_filter("[filename, document_index, file_index]", &[]).unwrap();
     let mut output = Vec::new();
     engine::run_filter(
         &filter,
         &context,
-        std::iter::once(Ok(YamlVal::null())),
+        std::iter::once(Ok::<_, yamalgam_query::YgError>(YamlVal::null())),
         |value| {
             output.push(value.to_string());
             Ok::<_, yamalgam_query::YgError>(())
@@ -227,6 +276,17 @@ fn alias_audit_filters_report_and_strip_identity() {
         eval("explode_aliases | .a | anchor", document),
         vec!["null"]
     );
+}
+
+#[test]
+fn alias_audit_includes_mapping_keys() {
+    let document = "first:\n  ? &k key\n  : one\nsecond:\n  ? *k\n  : two\n";
+
+    assert_eq!(
+        eval("aliases", document),
+        vec!["{k: [[second, {$key: key}]]}"]
+    );
+    assert_eq!(eval("orphan_anchors", document), vec!["[]"]);
 }
 
 #[test]

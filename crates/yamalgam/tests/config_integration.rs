@@ -13,7 +13,7 @@ use tempfile::TempDir;
 /// Returns a Command configured to run our binary.
 #[allow(deprecated)]
 fn cmd() -> Command {
-    Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap()
+    Command::cargo_bin("yg").unwrap()
 }
 
 /// Run `info --json` from a directory and parse the JSON output.
@@ -258,7 +258,7 @@ fn invalid_toml_config_shows_error() {
     cmd()
         .args(["-C", tmp.path().to_str().unwrap(), "info"])
         .assert()
-        .failure()
+        .code(2)
         .stderr(predicate::str::contains("configuration").or(predicate::str::contains("config")));
 }
 

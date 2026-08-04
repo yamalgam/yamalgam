@@ -146,6 +146,42 @@ impl TagResolver for Yaml12TagResolver {
     fn resolve_scalar(&self, value: &str) -> Value {
         resolve_plain_scalar(value)
     }
+
+    fn resolves_as_string(&self, value: &str) -> bool {
+        plain_scalar_is_string(value)
+    }
+}
+
+fn plain_scalar_is_string(value: &str) -> bool {
+    if value.is_empty()
+        || matches!(
+            value,
+            "~" | "null"
+                | "Null"
+                | "NULL"
+                | "true"
+                | "True"
+                | "TRUE"
+                | "false"
+                | "False"
+                | "FALSE"
+                | ".inf"
+                | ".Inf"
+                | ".INF"
+                | "+.inf"
+                | "+.Inf"
+                | "+.INF"
+                | "-.inf"
+                | "-.Inf"
+                | "-.INF"
+                | ".nan"
+                | ".NaN"
+                | ".NAN"
+        )
+    {
+        return false;
+    }
+    try_integer(value).is_none() && !(looks_like_float(value) && value.parse::<f64>().is_ok())
 }
 
 // ---------------------------------------------------------------------------

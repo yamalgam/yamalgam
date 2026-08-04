@@ -1,0 +1,286 @@
+---
+# Reviewer verdicts for record/audits/2026-08-03-18-m10-query-yg/findings.yaml
+# Reviewed at commit 27cf03716d12a1170691b4bcb1108f0a3d25c257 (branch m10-yg-cli).
+# Evidence blocks judged verbatim after uniform de-dent (leading indentation common
+# to the whole block stripped, relative indentation inside preserved) — per the
+# audit's documented convention.
+# The three defects fixed by the author before this review (emitter-anchor-table
+# evidence, yaml-inline-emitter line range, summary counts) were re-read and are
+# confirmed correct in the current file.
+
+status: DONE
+summary: >
+  Evidence fidelity is high: after the author's three corrections, all 36 evidence
+  blocks match their cited source, and every one of the 14 embedded shell transcripts
+  reproduces against target/debug/yg at 27cf037 — including all four criticals, each
+  of which is correctly levelled. No finding is invalid. The remaining corrections are
+  two off-by-N line ranges, six overstated or mis-stated magnitudes in mechanism prose
+  (an order-of-magnitude slip in the YAML-bomb projection, a wrong signal name for the
+  stack-overflow abort, a wrong loader byte cap, a wrong locked jaq-core version), one
+  remediation that cannot compile against jaq-std's private API, and two concern levels
+  that read inflated relative to the audit's own narrative text.
+
+verdicts:
+  - slug: flow-context-plain-scalar-injection
+    verdict: confirmed
+    note: ""
+
+  - slug: alias-metadata-survives-mutation-dropping-edits
+    verdict: adjusted
+    note: >
+      Finding holds and critical is justified — evidence, markers, every secondary line
+      reference (valt.rs:129/159/265, value.rs:305-310, value.rs:397-402,
+      emit/yaml.rs:321/328) and the -i behaviour all verify. One transcript line is not
+      literal: `yg --json '.b.p = 2' al.yml` prints 8 lines of pretty JSON, not
+      `{ "a": { "p": 1 }, "b": { "p": 2 } }` on one line. Either paste the real output or
+      add -c to the reproduced command.
+
+  - slug: emitter-quoting-ignores-active-schema
+    verdict: confirmed
+    note: ""
+
+  - slug: json-nonstring-keys-collide
+    verdict: confirmed
+    note: ""
+
+  - slug: plain-scalar-control-characters
+    verdict: adjusted
+    note: >
+      end_line should be 726, not 727. The evidence block is 9 lines (value.rs:717-726);
+      line 727 is needs_quotes's closing brace and is not shown. Markers and mechanism are
+      correct; both the CR and the ESC pass-through were confirmed with od -c.
+
+  - slug: stale-raw-metadata-after-string-splice
+    verdict: confirmed
+    note: ""
+
+  - slug: in-place-empty-output-truncates-file
+    verdict: confirmed
+    note: ""
+
+  - slug: in-place-replaces-symlinks-and-drops-ownership
+    verdict: confirmed
+    note: ""
+
+  - slug: in-place-multi-file-partial-application
+    verdict: confirmed
+    note: ""
+
+  - slug: slurp-silently-per-file-under-in-place
+    verdict: confirmed
+    note: ""
+
+  - slug: in-place-with-from-file-rejected-by-clap
+    verdict: adjusted
+    note: >
+      Finding holds exactly. The transcript silently elides clap's trailing output; actual
+      stderr continues past `<FILE>...` with a blank line, then
+      "Usage: yg --in-place --from-file <FILE> <FILTER> <FILE>...", a blank line, and
+      "For more information, try '--help'.". Add the elided lines or an explicit ellipsis
+      so the transcript diffs clean.
+
+  - slug: yaml-bomb-materialized-by-emitters
+    verdict: adjusted
+    note: >
+      Two corrections to the mechanism prose; the finding and its critical level stand.
+      (1) "a seventh line reaches ~1.2 GB and an eighth exhausts memory" is off by one
+      level and contradicts the paragraph's own 9x rule. Measured on this machine: 7 alias
+      levels / 272 bytes produces 143 MB of JSON, 8 levels / 307 bytes produces 1.41 GB.
+      Change to "a seventh line reaches ~120 MB and an eighth ~1.2 GB". (2) The --sort-keys
+      claim needs a condition: with the bomb's keys already in a..g definition order,
+      `yg -S . bomb.yml` emits 328 bytes, identical to unsorted. Rewriting the document so
+      sorting moves aliases ahead of their anchors gives 39 MB from 272 bytes — so the
+      sentence should read "when sorting moves an alias ahead of its anchor". Independently
+      confirmed: --strict exits 0, and the subtree case (`yg '.g' bomb.yml`) yields 34 MB
+      of YAML with anchors_emitted empty.
+
+  - slug: filter-constructed-values-recurse-without-depth-bound
+    verdict: adjusted
+    note: >
+      "Stack exhaustion aborts with SIGSEGV — not a catchable panic — so there is no
+      message" is wrong on both the signal and the message. Measured:
+      `yg -n 'reduce range(100000) as $i (null; [.]) | 1'` prints
+      "thread 'main' (…) has overflowed its stack" and
+      "fatal runtime error: stack overflow, aborting", then dies on SIGABRT (shell exit
+      134). The substantive claims are unaffected and reproduce — not a catchable panic,
+      exit code outside the documented set, no filename or document context — and the `| 1`
+      variant independently confirms the recursive-drop path, since it aborts without ever
+      emitting the deep value.
+
+  - slug: map-index-allocates-directly-from-untrusted-index
+    verdict: adjusted
+    note: >
+      The allocation-outcome claim does not match observed behaviour. Both
+      `yg -n '.[1000000000000] = 1'` and `yg -n '"a" * 1000000000000'` hang indefinitely
+      (killed at 60s) with no panic and no abort; str::repeat raises capacity overflow only
+      when len*n overflows usize, which 1e12 on a 1-byte string does not. Replace "Vec
+      allocation either raises a capacity-overflow panic or calls handle_alloc_error, which
+      aborts" with the observed shape: the process wedges allocating and zeroing the
+      request and, under overcommit, drives the OOM killer. Evidence, marker, and both
+      secondary sites (valt.rs:240 resize, ops.rs:126 repeat) are correct, and the
+      remediation is honest that the limit fields must be added.
+
+  - slug: fromjson-ignores-configured-limits
+    verdict: adjusted
+    note: >
+      "a 10 MB input cap" is wrong. LoaderConfig::moderate() sets max_input_bytes = 256 MB
+      (crates/yamalgam-core/src/loader.rs:59-64); depth 256 and 10,000 alias expansions are
+      correct as stated. Evidence, markers, the resolve comparison at funs.rs:154, and the
+      remediation all check out — RunCtx.config is a Clone LoaderConfig and
+      with_tag_resolution exists, and the note that fromjson's signature must grow cv is
+      accurate.
+
+  - slug: null-input-still-blocks-on-stdin
+    verdict: confirmed
+    note: ""
+
+  - slug: stdout-epipe-becomes-runtime-error
+    verdict: confirmed
+    note: ""
+
+  - slug: exit-code-mapping-diverges-from-spec
+    verdict: confirmed
+    note: ""
+
+  - slug: halt-prints-a-spurious-error-line
+    verdict: confirmed
+    note: ""
+
+  - slug: runtime-errors-drop-document-and-file-identity
+    verdict: confirmed
+    note: ""
+
+  - slug: no-argument-binding-forces-filter-concatenation
+    verdict: confirmed
+    note: ""
+
+  - slug: env-filter-registered-unconditionally
+    verdict: adjusted
+    note: >
+      The remediation cannot be implemented as written. In jaq-std 3.0.1, std(), format(),
+      math(), regex(), time() and log() are all private (src/lib.rs:460, 482, 518, 612,
+      625, 663); only funs(), base_funs() and extra_funs() are pub. "assembled from
+      base_funs plus the individual format/math/regex groups" is therefore unreachable from
+      outside the crate. The implementable options are base_funs() alone (which drops
+      format/math/regex/time/log wholesale), filtering the all_funs() iterator by Fun name
+      to remove env and now, or patching jaq-std. Recommend the name-filter approach and
+      revise effort_notes, which currently names only std() as the unexposed item. Evidence,
+      marker, the funs() = base_funs().chain(extra_funs()) composition, and the
+      `SECRET=hunter2 yg -n 'env.SECRET'` transcript are all correct, as is the note that
+      jaq's module loader is left at its rejecting default (verified at
+      jaq-core-3.1.0/src/load/mod.rs:194).
+
+  - slug: no-public-read-access-to-yamlval
+    verdict: adjusted
+    note: >
+      Concern is inflated: significant should be advisory. Every factual claim verifies —
+      exactly the nine public read accessors listed, seven public constructors, Data pub at
+      value.rs:44 and YgMap pub at value.rs:39 with neither re-exported from lib.rs:24-27,
+      and YamlVal.data pub(crate) so no external caller can reach a variant. But there is no
+      runtime risk of any kind, and the narrative's own verdict says "Nothing here is broken
+      today", which is the advisory definition ("not a vulnerability, but limits future
+      safety") rather than significant ("meaningful risk under realistic conditions"). The
+      argument for fixing it before M11 is sound and survives the relabel.
+
+  - slug: input-meta-refcell-races-with-input-lookahead
+    verdict: confirmed
+    note: ""
+
+  - slug: integer-only-indexing-diverges-from-equal-float-values
+    verdict: adjusted
+    note: >
+      Two corrections. (1) "every numeric-position API routes through as_int … ValT::index
+      (valt.rs:90)" — line 90 does not call as_int; it pattern-matches
+      `(Data::Seq(items), Data::Int(position))` inline. as_int is reached at valt.rs:178 and
+      224, and at 356 via range_bounds. Cite line 90 as a second, independent encoding of
+      the same rule, which strengthens the "duplicated with no shared helper" point.
+      (2) The `.[0:(length/2)]` example does not demonstrate the integral-float gap: on
+      odd-length input the bound is 1.5, and the proposed fix (accept Data::Float where
+      f.fract() == 0.0) would still reject it — jq passes only because it truncates. Either
+      drop the example or extend the remediation to truncate non-integral finite floats.
+      The core claim reproduces cleanly: `.[1.0]` gives "cannot index [1, 2, 3] with 1.0"
+      while `.[1]` works, and value.rs:582-584 / 644-645 do make the two indistinguishable
+      as keys.
+
+  - slug: run-filter-signature-overconstrains-callers
+    verdict: confirmed
+    note: ""
+
+  - slug: rc-makes-value-model-non-send
+    verdict: confirmed
+    note: ""
+
+  - slug: yaml-inline-emitter-string-per-node
+    verdict: adjusted
+    note: >
+      Line range and the added fn inline location are now correct — re-read and verified
+      against emit/yaml.rs:191 and 390-392, and the quoted signature
+      `fn inline(&mut self, value: &YamlVal) -> String` matches source exactly. The
+      remaining objection is concern only: significant should be moderate. The narrative's
+      own verdict says "None of the findings here affect correctness, and for typical CLI
+      documents none are user-visible", and the two sibling performance findings in the same
+      narrative (needs-quotes-copies, emitter-anchor-table) are moderate and trivial-effort.
+      Nothing else to change.
+
+  - slug: needs-quotes-copies-every-scalar-it-inspects
+    verdict: confirmed
+    note: ""
+
+  - slug: emitter-anchor-table-is-a-linear-scanned-vec
+    verdict: confirmed
+    note: ""
+
+  - slug: query-cli-materializes-all-inputs-before-filtering
+    verdict: confirmed
+    note: ""
+
+  - slug: alias-audit-skips-mapping-keys
+    verdict: confirmed
+    note: ""
+
+  - slug: regex-is-not-pcre
+    verdict: confirmed
+    note: ""
+
+  - slug: release-check-runs-cargo-deny-without-config
+    verdict: adjusted
+    note: >
+      The failure is real and was reproduced independently — bare `cargo deny check` exits 4
+      with "advisories ok, bans ok, licenses FAILED, sources ok" while the --config form
+      passes clean. The structural problem is that the finding declares two locations and
+      the evidence block covers only the first (.justfile:21-22). A reader diffing location
+      two (.justfile:178-179) finds `echo "🔐 Running cargo-deny..."` / `cargo deny check`,
+      which appears nowhere in the evidence. Either show both hunks or drop the second
+      location — the mechanism prose already states .justfile:179 correctly.
+
+  - slug: jaq-trait-coupling-outruns-version-constraint
+    verdict: adjusted
+    note: >
+      "3.0.1 is what the lockfile pins" is wrong for jaq-core: Cargo.lock:614-615 pins
+      jaq-core 3.1.0; only jaq-std is 3.0.1 (Cargo.lock:624-626). This strengthens the
+      finding rather than weakening it — a minor bump has already been taken under the
+      caret — so the "the risk is not to CI but to the first cargo update" framing should
+      become "a minor bump has already happened once under this range". Both trait impls are
+      confirmed present (jaq_core::ValT at valt.rs:22, jaq_std::ValT at valt.rs:395).
+
+  - slug: unused-dev-dep-pretty-assertions
+    verdict: adjusted
+    note: >
+      Line range is off by one: the evidence block is Cargo.toml:20-22 ([dev-dependencies] /
+      pretty_assertions / serde), not 21-23. Line 23 is
+      `yamalgam-serde = { path = "../yamalgam-serde" }` and does not appear in the evidence.
+      The claim itself verifies — the only occurrence of pretty_assertions anywhere under
+      crates/yamalgam-query/ is the Cargo.toml declaration.
+
+counts: {confirmed: 22, adjusted: 14, disputed: 0}
+
+# Concern-level changes recommended (2, both downgrades):
+#   no-public-read-access-to-yamlval    significant -> advisory
+#   yaml-inline-emitter-string-per-node significant -> moderate
+# Adopting both makes the summary counts 4 / 5 / 22 / 4 / 1.
+#
+# All four criticals confirmed at level, each reproduced independently:
+#   flow-context-plain-scalar-injection          2-element list -> 3 on disk, exit 0
+#   alias-metadata-survives-mutation-dropping-edits  edit discarded, exit 0
+#   in-place-empty-output-truncates-file         44 bytes -> 0 bytes, exit 0
+#   yaml-bomb-materialized-by-emitters           272 bytes -> 1.41 GB, --strict exit 0

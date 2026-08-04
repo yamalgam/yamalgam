@@ -12,20 +12,46 @@ use tracing::debug;
 use yamalgam::config::Config;
 use yamalgam::{Cli, Commands, commands};
 
-fn main() -> anyhow::Result<ExitCode> {
+struct MainError {
+    code: u8,
+    source: anyhow::Error,
+}
+
+impl MainError {
+    const fn usage(source: anyhow::Error) -> Self {
+        Self { code: 2, source }
+    }
+
+    const fn runtime(source: anyhow::Error) -> Self {
+        Self { code: 5, source }
+    }
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("yg: {:#}", error.source);
+            ExitCode::from(error.code)
+        }
+    }
+}
+
+fn run() -> Result<ExitCode, MainError> {
     let cli = Cli::from_arg_matches(&yamalgam::command().get_matches())
         .expect("clap mismatch between Cli derive and command()");
 
     if cli
         .common
         .apply(env!("CARGO_PKG_VERSION"))
-        .context("failed to apply global CLI options")?
+        .context("failed to apply global CLI options")
+        .map_err(MainError::usage)?
         .is_exit()
     {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let (config, config_sources) = load_config(cli.config.as_deref())?;
+    let (config, config_sources) = load_config(cli.config.as_deref()).map_err(MainError::usage)?;
 
     let log_cfg = librebar::logging::LoggingConfig::from_app_name(env!("CARGO_PKG_NAME"))
         .with_log_dir(
@@ -40,7 +66,8 @@ fn main() -> anyhow::Result<ExitCode> {
         config.log_level.as_str(),
     );
     let _guard = librebar::logging::init(&log_cfg, filter)
-        .context("failed to initialize logging/tracing")?;
+        .context("failed to initialize logging/tracing")
+        .map_err(MainError::runtime)?;
     let subcommand_json = matches!(cli.common.output_format(), ResolvedOutputFormat::Json);
 
     debug!(
@@ -54,11 +81,13 @@ fn main() -> anyhow::Result<ExitCode> {
 
     match cli.command {
         Some(Commands::Doctor(args)) => {
-            commands::doctor::cmd_doctor(args, subcommand_json, &config_sources)?;
+            commands::doctor::cmd_doctor(args, subcommand_json, &config_sources)
+                .map_err(MainError::runtime)?;
             Ok(ExitCode::SUCCESS)
         }
         Some(Commands::Info(args)) => {
-            commands::info::cmd_info(args, subcommand_json, &config, &config_sources)?;
+            commands::info::cmd_info(args, subcommand_json, &config, &config_sources)
+                .map_err(MainError::runtime)?;
             Ok(ExitCode::SUCCESS)
         }
         None => {
@@ -77,6 +106,7 @@ fn main() -> anyhow::Result<ExitCode> {
                 ColorChoice::Auto => std::io::stdout().is_terminal(),
             };
             commands::query::cmd_query(&cli.query, json_output, color, cli.common.quiet)
+                .map_err(MainError::runtime)
         }
     }
 }

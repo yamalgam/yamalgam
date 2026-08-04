@@ -93,6 +93,14 @@ pub struct QueryArgs {
     #[arg(short = 'f', long, value_name = "FILE")]
     pub from_file: Option<camino::Utf8PathBuf>,
 
+    /// Bind VALUE to $NAME as a string without filter interpolation.
+    #[arg(long = "arg", value_names = ["NAME", "VALUE"], num_args = 2)]
+    pub string_args: Vec<String>,
+
+    /// Bind JSON to $NAME as a parsed JSON value without filter interpolation.
+    #[arg(long = "argjson", value_names = ["NAME", "JSON"], num_args = 2)]
+    pub json_args: Vec<String>,
+
     /// Output JSON, expanding YAML aliases.
     // r[impl cli.json-output]
     #[arg(short = 'j', long)]

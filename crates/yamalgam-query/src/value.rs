@@ -4,7 +4,7 @@ use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use yamalgam_parser::CollectionStyle;
 use yamalgam_scanner::ScalarStyle;
 
@@ -71,6 +71,10 @@ pub enum Data {
 }
 
 /// Resolved YAML data plus optional source presentation metadata.
+///
+/// Values use [`Rc`] for cheap cloning during jaq evaluation and are therefore
+/// intentionally neither `Send` nor `Sync`. Parse and evaluate them on the
+/// thread where they will be consumed.
 // r[impl datamodel]
 #[derive(Clone, Debug, Default)]
 pub struct YamlVal {
@@ -202,6 +206,51 @@ impl YamlVal {
     #[must_use]
     pub fn meta(&self) -> Option<&Meta> {
         self.meta.as_deref()
+    }
+
+    /// Return the resolved boolean value.
+    #[must_use]
+    pub const fn as_bool(&self) -> Option<bool> {
+        match self.data {
+            Data::Bool(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Return the resolved signed integer value.
+    #[must_use]
+    pub const fn as_i64(&self) -> Option<i64> {
+        match self.data {
+            Data::Int(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Return the resolved numeric value as an `f64`.
+    #[must_use]
+    pub const fn as_f64(&self) -> Option<f64> {
+        match self.data {
+            Data::Int(value) => Some(value as f64),
+            Data::Float(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Return the resolved sequence contents.
+    #[must_use]
+    pub fn as_sequence(&self) -> Option<&[Self]> {
+        match &self.data {
+            Data::Seq(values) => Some(values.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Iterate over resolved mapping entries in insertion order.
+    pub fn entries(&self) -> Option<impl ExactSizeIterator<Item = (&Self, &Self)>> {
+        match &self.data {
+            Data::Map(mapping) => Some(mapping.0.iter()),
+            _ => None,
+        }
     }
 
     /// Return mutable metadata, creating an empty metadata record on demand.
@@ -500,7 +549,7 @@ impl YamlVal {
             inventory
                 .anchors
                 .into_iter()
-                .filter(|anchor| !inventory.aliases.contains_key(anchor))
+                .filter(|anchor| !inventory.aliases.contains_key(anchor.as_ref()))
                 .map(Self::str)
                 .collect(),
         )
@@ -548,14 +597,14 @@ impl YamlVal {
 }
 
 struct IdentityInventory {
-    anchors: Vec<String>,
+    anchors: IndexSet<Rc<str>>,
     aliases: IndexMap<String, Vec<Vec<YamlVal>>>,
 }
 
 impl IdentityInventory {
     fn collect(value: &YamlVal) -> Self {
         let mut inventory = Self {
-            anchors: Vec::new(),
+            anchors: IndexSet::new(),
             aliases: IndexMap::new(),
         };
         inventory.visit(value, &mut Vec::new());
@@ -573,10 +622,8 @@ impl IdentityInventory {
                 .push(path.clone());
             return;
         }
-        if let Some(anchor) = value.meta().and_then(|metadata| metadata.anchor.as_deref())
-            && !self.anchors.iter().any(|known| known == anchor)
-        {
-            self.anchors.push(anchor.to_owned());
+        if let Some(anchor) = value.meta().and_then(|metadata| metadata.anchor.as_ref()) {
+            self.anchors.insert(Rc::clone(anchor));
         }
 
         match &value.data {
@@ -589,6 +636,9 @@ impl IdentityInventory {
             }
             Data::Map(mapping) => {
                 for (key, value) in &mapping.0 {
+                    path.push(YamlVal::map(vec![(YamlVal::str("$key"), key.clone())]));
+                    self.visit(key, path);
+                    path.pop();
                     path.push(key.clone());
                     self.visit(value, path);
                     path.pop();
@@ -780,9 +830,9 @@ impl core::fmt::Display for YamlVal {
 /// Return whether plain YAML emission would change a string's value or syntax.
 // r[impl output.yaml.quoting]
 pub(crate) fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, flow: bool) -> bool {
-    use yamalgam_core::{TagResolver as _, Value};
+    use yamalgam_core::TagResolver as _;
 
-    if value.is_empty() || !matches!(schema.resolve_scalar(value), Value::String(_)) {
+    if value.is_empty() || !schema.resolves_as_string(value) {
         return true;
     }
 

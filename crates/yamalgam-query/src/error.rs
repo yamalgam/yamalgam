@@ -28,6 +28,9 @@ pub enum BuildError {
 /// Query-engine errors partitioned by their CLI exit-code class.
 #[derive(Debug, thiserror::Error)]
 pub enum YgError {
+    /// Command-line arguments were invalid.
+    #[error("{0}")]
+    Usage(String),
     /// Filter lexing or parsing failed.
     #[error("{0}")]
     FilterSyntax(String),
@@ -66,5 +69,17 @@ impl YgError {
 impl From<crate::emit::EmitError> for YgError {
     fn from(error: crate::emit::EmitError) -> Self {
         Self::Runtime(error.to_string())
+    }
+}
+
+impl From<BuildError> for YgError {
+    fn from(error: BuildError) -> Self {
+        Self::InputParse(error.to_string())
+    }
+}
+
+impl From<String> for YgError {
+    fn from(error: String) -> Self {
+        Self::InputParse(error)
     }
 }

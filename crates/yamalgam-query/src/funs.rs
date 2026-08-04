@@ -8,10 +8,10 @@ use crate::value::{Data, YamlVal};
 
 /// Return all native functions available to yg filters.
 // r[impl filters.regex]
-pub fn all_funs() -> impl Iterator<Item = Fun<YgKind>> {
+pub fn all_funs(allow_env: bool) -> impl Iterator<Item = Fun<YgKind>> {
     let run = run::<YgKind>;
     jaq_core::funs::<YgKind>()
-        .chain(jaq_std::funs::<YgKind>())
+        .chain(jaq_std::funs::<YgKind>().filter(move |(name, _, _)| allow_env || *name != "env"))
         .chain(
             jaq_std::input::funs::<YgKind>()
                 .into_vec()
@@ -170,36 +170,17 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
         }),
         // r[impl ext.document-index]
         ("document_index", v(0), |context_value| {
-            let index = context_value
-                .0
-                .data()
-                .context
-                .input_meta
-                .borrow()
-                .document_index;
+            let index = context_value.0.data().context.input_meta().document_index;
             bome(Ok(YamlVal::from(index)))
         }),
         // r[impl ext.file-index]
         ("file_index", v(0), |context_value| {
-            let index = context_value
-                .0
-                .data()
-                .context
-                .input_meta
-                .borrow()
-                .file_index;
+            let index = context_value.0.data().context.input_meta().file_index;
             bome(Ok(YamlVal::from(index)))
         }),
         // r[impl ext.filename]
         ("filename", v(0), |context_value| {
-            let filename = context_value
-                .0
-                .data()
-                .context
-                .input_meta
-                .borrow()
-                .filename
-                .clone();
+            let filename = context_value.0.data().context.input_meta().filename.clone();
             bome(Ok(filename.map_or_else(YamlVal::null, YamlVal::str)))
         }),
         // r[impl ext.explode]
@@ -249,9 +230,10 @@ impl YamlVal {
 
     fn has(&self, key: &Self) -> Result<bool, Error<Self>> {
         match (&self.data, &key.data) {
-            (Data::Seq(items), Data::Int(index)) => {
-                Ok(usize::try_from(*index).is_ok_and(|index| index < items.len()))
-            }
+            (Data::Seq(items), _) => Ok(key
+                .as_index()
+                .and_then(|index| usize::try_from(index).ok())
+                .is_some_and(|index| index < items.len())),
             (Data::Map(mapping), _) => Ok(mapping.0.contains_key(key)),
             _ => Err(Error::index(self.clone(), key.clone())),
         }
@@ -321,24 +303,22 @@ impl YamlVal {
         let Data::Str(source) = &self.data else {
             return Err(Error::typ(self.clone(), "string"));
         };
-        config
-            .limits
-            .check_input_size(source.len())
-            .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
-        let value = serde_json::from_str(source)
-            .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
-        json_value(value, &config.limits, 0)
+        parse_json(source, config).map_err(|error| Error::str(format_args!("fromjson: {error}")))
     }
+}
+
+pub fn parse_json(source: &str, config: &yamalgam_core::LoaderConfig) -> Result<YamlVal, String> {
+    config.limits.check_input_size(source.len())?;
+    let value = serde_json::from_str(source).map_err(|error| error.to_string())?;
+    json_value(value, &config.limits, 0)
 }
 
 fn json_value(
     value: serde_json::Value,
     limits: &yamalgam_core::ResourceLimits,
     depth: usize,
-) -> ValR<YamlVal> {
-    limits
-        .check_depth(depth)
-        .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+) -> Result<YamlVal, String> {
+    limits.check_depth(depth)?;
     match value {
         serde_json::Value::Null => Ok(YamlVal::null()),
         serde_json::Value::Bool(value) => Ok(YamlVal::from(value)),
@@ -347,20 +327,16 @@ fn json_value(
                 value
                     .as_f64()
                     .map(YamlVal::float)
-                    .ok_or_else(|| Error::str(format_args!("fromjson: unsupported number {value}")))
+                    .ok_or_else(|| format!("unsupported number {value}"))
             },
             |value| Ok(YamlVal::int(value)),
         ),
         serde_json::Value::String(value) => {
-            limits
-                .check_scalar_size(value.len())
-                .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+            limits.check_scalar_size(value.len())?;
             Ok(YamlVal::str(value))
         }
         serde_json::Value::Array(values) => {
-            limits
-                .check_collection_size(values.len())
-                .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+            limits.check_collection_size(values.len())?;
             values
                 .into_iter()
                 .map(|value| json_value(value, limits, depth + 1))
@@ -368,15 +344,11 @@ fn json_value(
                 .map(YamlVal::seq)
         }
         serde_json::Value::Object(values) => {
-            limits
-                .check_collection_size(values.len())
-                .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+            limits.check_collection_size(values.len())?;
             values
                 .into_iter()
                 .map(|(key, value)| {
-                    limits
-                        .check_key_size(key.len())
-                        .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+                    limits.check_key_size(key.len())?;
                     Ok((YamlVal::str(key), json_value(value, limits, depth + 1)?))
                 })
                 .collect::<Result<Vec<_>, _>>()

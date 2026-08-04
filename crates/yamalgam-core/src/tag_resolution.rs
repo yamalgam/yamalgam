@@ -20,6 +20,11 @@ use crate::Value;
 pub trait TagResolver {
     /// Resolve a plain scalar string to a typed Value.
     fn resolve_scalar(&self, value: &str) -> Value;
+
+    /// Return whether a plain scalar resolves as a string.
+    fn resolves_as_string(&self, value: &str) -> bool {
+        matches!(self.resolve_scalar(value), Value::String(_))
+    }
 }
 
 /// Tag resolution scheme selector.
@@ -53,6 +58,10 @@ impl TagResolver for FailsafeTagResolver {
     fn resolve_scalar(&self, value: &str) -> Value {
         Value::String(value.to_owned())
     }
+
+    fn resolves_as_string(&self, _value: &str) -> bool {
+        true
+    }
 }
 
 /// YAML 1.2 JSON Schema (§10.2) — strict JSON-compatible type resolution.
@@ -79,6 +88,10 @@ impl TagResolver for JsonTagResolver {
             "false" => Value::Bool(false),
             _ => try_json_number(value).unwrap_or_else(|| Value::String(value.to_owned())),
         }
+    }
+
+    fn resolves_as_string(&self, value: &str) -> bool {
+        !matches!(value, "null" | "true" | "false") && try_json_number(value).is_none()
     }
 }
 
@@ -130,6 +143,15 @@ impl TagResolver for TagResolution {
             Self::Json => JsonTagResolver.resolve_scalar(value),
             Self::Yaml12 => Yaml12TagResolver.resolve_scalar(value),
             Self::Yaml11 => Yaml11TagResolver.resolve_scalar(value),
+        }
+    }
+
+    fn resolves_as_string(&self, value: &str) -> bool {
+        match self {
+            Self::Failsafe => FailsafeTagResolver.resolves_as_string(value),
+            Self::Json => JsonTagResolver.resolves_as_string(value),
+            Self::Yaml12 => Yaml12TagResolver.resolves_as_string(value),
+            Self::Yaml11 => Yaml11TagResolver.resolves_as_string(value),
         }
     }
 }
@@ -187,6 +209,54 @@ impl TagResolver for Yaml11TagResolver {
 
         // Fallback: string
         Value::String(value.to_owned())
+    }
+
+    fn resolves_as_string(&self, value: &str) -> bool {
+        if value.is_empty()
+            || matches!(
+                value,
+                "~" | "null"
+                    | "Null"
+                    | "NULL"
+                    | "true"
+                    | "True"
+                    | "TRUE"
+                    | "yes"
+                    | "Yes"
+                    | "YES"
+                    | "on"
+                    | "On"
+                    | "ON"
+                    | "y"
+                    | "Y"
+                    | "false"
+                    | "False"
+                    | "FALSE"
+                    | "no"
+                    | "No"
+                    | "NO"
+                    | "off"
+                    | "Off"
+                    | "OFF"
+                    | "n"
+                    | "N"
+                    | ".inf"
+                    | ".Inf"
+                    | ".INF"
+                    | "+.inf"
+                    | "+.Inf"
+                    | "+.INF"
+                    | "-.inf"
+                    | "-.Inf"
+                    | "-.INF"
+                    | ".nan"
+                    | ".NaN"
+                    | ".NAN"
+            )
+        {
+            return false;
+        }
+        try_yaml11_number(value).is_none()
     }
 }
 
@@ -308,6 +378,25 @@ fn try_yaml11_number(s: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_as_string_matches_full_resolution() {
+        let samples = ["", "null", "true", "yes", "42", "1.5", ".inf", "plain text"];
+        for resolver in [
+            TagResolution::Failsafe,
+            TagResolution::Json,
+            TagResolution::Yaml12,
+            TagResolution::Yaml11,
+        ] {
+            for sample in samples {
+                assert_eq!(
+                    resolver.resolves_as_string(sample),
+                    matches!(resolver.resolve_scalar(sample), Value::String(_)),
+                    "resolver {resolver:?} disagreed for {sample:?}"
+                );
+            }
+        }
+    }
     use crate::Value;
 
     #[test]

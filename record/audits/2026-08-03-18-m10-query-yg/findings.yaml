@@ -1,0 +1,2398 @@
+---
+audit_date: 2026-08-03
+scope: "M10 surface — the yamalgam-query crate and the yg binary, as introduced across main...m10-yg-cli (21 commits, ~5k lines of new src, ~1.3k lines of tests)"
+commit: 27cf03716d12a1170691b4bcb1108f0a3d25c257
+assessment: |
+  M10 is a large, disciplined piece of work: a YAML-native jq engine built on jaq 3.0,
+  a metadata-carrying value model, two emitters, twelve native filters, a jq-manual
+  conformance corpus with an explicitly reasoned allowlist, and a CLI. The engineering
+  underneath is good. YamlVal clone is genuinely O(1) — Data holds Rc<Vec>, Rc<YgMap>,
+  Rc<str> — so jaq's constant cloning costs refcount bumps, not deep copies. The
+  arithmetic and ordering semantics are jq-faithful and mutually consistent. The
+  dependency tree is clean: no CVEs, no yanked crates, licenses inside policy, lockfile
+  committed, toolchain pinned, one new build script and zero new proc-macro crates
+  across the whole M10 subtree. jaq's module loader is left at its default rejecting
+  stub, so include/import cannot touch the filesystem. Every one of the eleven
+  deviations in the implementation-notes ledger was checked against the code and every
+  one is accurate.
+
+  The defects cluster in one place, and it is not the engine. It is the round trip back
+  to YAML text. Three separate confirmed data-loss paths all share the shape "the
+  in-memory value is right, the emitted text is wrong": a scalar containing a comma is
+  emitted unquoted inside a flow collection and re-parses as two values; a node mutated
+  through an alias keeps its alias_of and is re-emitted as *anchor, discarding the edit;
+  a string emitted under --schema 1.1 comes back as a boolean. Each was reproduced
+  against the built binary. Separately, --in-place persists its temporary file without
+  ever checking that anything was written to it, so a filter yielding no output
+  truncates the user's file to zero bytes and exits 0 — also reproduced. --in-place is
+  the amplifier throughout: it takes emitter bugs that would otherwise be visible
+  glitches on a terminal and writes them silently over the user's files.
+
+  One resource bound is missing rather than wrong. The alias-expansion limit counts
+  parser events, and the builder shares subtrees by Rc, so a YAML bomb is linear in
+  memory and passes every limit — then both emitters walk that DAG as a tree. A
+  216-byte input produced 13.2 MB of JSON in testing, and --strict did not stop it.
+
+  Nothing here is architectural. The value model, the jaq wiring, the conformance
+  discipline, and the dependency hygiene are all sound and worth keeping as-is. The
+  remediation list is a set of localized fixes concentrated in the emitter and in
+  run_in_place, plus one decision about whether the public API should be readable
+  before M11 starts consuming it.
+
+narratives:
+  - slug: yaml-round-trip
+    title: "The YAML Round-Trip Surface"
+    thesis: "The query engine computes the right value and the emitter then writes text that does not mean that value — three independent paths where a scalar's content is re-read as document structure or as a different type."
+    verdict: "This is the surface that matters most and it is the least finished. The emitter was built as an M10 stopgap ahead of the real serializer in M13, and it shows: quoting is decided by a context-free predicate that cannot see flow position or the active schema, and identity metadata is trusted over content after mutation. All three failures were reproduced against the built binary. None require an adversarial filter — the identity filter plus ordinary input is enough for two of them. The fixes are localized (a Position parameter, a schema field on EmitOpts, a mutation funnel that clears stale provenance) but they are not cosmetic, because -i writes the result to disk."
+
+    flow:
+      - id: parse
+        label: "Parse YAML to YamlVal"
+        type: start
+      - id: filter
+        label: "Run jaq filter"
+        type: process
+      - id: mutated
+        label: "Node mutated?"
+        type: decision
+        no: emit-decide
+      - id: meta-stale
+        label: "meta kept as-is"
+        type: process
+        findings:
+          - slug: alias-metadata-survives-mutation-dropping-edits
+            label: "Edit discarded"
+          - slug: stale-raw-metadata-after-string-splice
+            label: "Stale raw"
+      - id: emit-decide
+        label: "needs_quotes(&str)"
+        type: decision
+        no: emit-plain
+      - id: emit-quoted
+        label: "Quote scalar"
+        type: process
+      - id: output
+        label: "Write YAML text"
+        type: end
+      - id: emit-plain
+        label: "Emit bare scalar"
+        type: process
+        spine: false
+        next: output
+        findings:
+          - slug: flow-context-plain-scalar-injection
+            label: "Comma splits"
+          - slug: emitter-quoting-ignores-active-schema
+            label: "1.1 retypes"
+          - slug: plain-scalar-control-characters
+            label: "CR splits"
+
+    findings:
+      - slug: flow-context-plain-scalar-injection
+        title: "Quoting ignores flow context, so a scalar containing a comma splits into two values on re-parse"
+        concern: critical
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 705
+            end_line: 727
+        evidence: |
+          pub(crate) fn needs_quotes(value: &str) -> bool {
+              use yamalgam_core::{TagResolution, TagResolver as _, Value};
+
+              if value.is_empty()
+                  || !matches!(
+                      TagResolution::Yaml12.resolve_scalar(value),
+                      Value::String(_)
+                  )
+              {
+                  return true;
+              }
+
+              let first = value.chars().next().unwrap_or(' ');
+              let syntactic_first = "!&*-?:,[]{}#|>@`\"'%".contains(first);
+              value.starts_with(' ')
+                  || value.ends_with(' ')
+                  || syntactic_first
+                  || value.contains(": ")
+                  || value.ends_with(':')
+                  || value.contains(" #")
+                  || value.contains('\n')
+                  || value.contains('\t')
+          }
+        evidence_markers:
+          - lines: "14"
+            type: mark
+            label: "flow indicators , [ ] { } are tested at position 0 only"
+          - lines: "15-22"
+            type: del
+            label: "no interior flow-indicator test, and no flow/block context parameter at all"
+        mechanism: |
+          needs_quotes takes only a &str, so it cannot know whether the scalar will land inside
+          a flow collection. emit/yaml.rs::string has the Position in hand but consults it only
+          to decide whether a literal block is allowed, never for the quoting decision. Inside
+          a flow collection, `,` `[` `]` `{` `}` are structural, so a bare scalar containing any
+          of them changes the document's shape when it is read back.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ printf 'tags: [alpha, beta]\n' > t.yml
+            $ yg -i '.tags[0] = "x,y"' t.yml ; echo $?
+            0
+            $ cat t.yml
+            tags: [x,y, beta]
+            $ yg --json '.tags | length' t.yml
+            3
+
+          A two-element list became a three-element list on disk, with exit 0 and no
+          diagnostic. The value jaq computed was correct — `yg --json '.tags[0] = "x,y"'`
+          renders `["x,y","beta"]` — so the defect is entirely in the text.
+
+          Flow position is reached two ways. Input-preserved flow style is one, as above. The
+          other is `-c/--compact-output`, which forces every collection to flow, so an ordinary
+          block-style document becomes injectable the moment a filter constructs a scalar
+          (filter-constructed values carry meta: None, so no source style protects them).
+        remediation: |
+          Give the predicate the context it needs: change the signature to
+          needs_quotes(value: &str, flow: bool) — or thread Position through — and when flow is
+          true, additionally require quoting for any value containing `,` `[` `]` `{` `}`. Have
+          emit/yaml.rs::string pass matches!(position, Position::Flow). Separately, tighten the
+          SingleQuoted arm, whose guard is `!string.contains('\'')`: when the value does contain
+          an apostrophe it currently falls through to a bare plain scalar rather than
+          single-quoting with `''` escaping. The corpus round-trip test at tests/emit.rs:190
+          only exercises EmitOpts::default(), so neither the compact nor the flow-nesting path
+          has any round-trip coverage — extend it to run each fixture through
+          EmitOpts::compact() and sort_keys: true as well.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: [in-place-empty-output-truncates-file]
+          enabled_by: []
+          related: [plain-scalar-control-characters, emitter-quoting-ignores-active-schema]
+        effort: small
+        effort_notes: "Signature change plus one call site; the single-quote escaping fix is separate and also small"
+
+      - slug: alias-metadata-survives-mutation-dropping-edits
+        title: "Mutating through an alias keeps alias_of, and the emitter re-emits *anchor, silently discarding the edit"
+        concern: critical
+        locations:
+          - path: crates/yamalgam-query/src/valt.rs
+            start_line: 199
+            end_line: 205
+        evidence: |
+          match &mut self.data {
+              Data::Map(mapping) => {
+                  use indexmap::map::Entry::{Occupied, Vacant};
+
+                  match Rc::make_mut(mapping).0.entry(index.clone()) {
+                      Occupied(mut entry) => {
+                          let previous = core::mem::take(entry.get_mut());
+        evidence_markers:
+          - lines: "1"
+            type: del
+            label: "only self.data is rebuilt — self.meta.alias_of survives the edit unchanged"
+          - lines: "5"
+            type: mark
+            label: "Rc::make_mut clones the contents, so the node no longer equals its anchor"
+        mechanism: |
+          Meta.alias_of is documented as "referenced anchor name when this node came from an
+          alias", but nothing binds it to the node's contents. All three in-place mutation paths
+          in jaq_core::ValT — map_index (valt.rs:159), map_values (valt.rs:129), and map_range
+          (valt.rs:265) — rewrite self.data and leave self.meta untouched. The YAML emitter then
+          treats alias_of as authoritative: Context::alias_is_emittable (emit/yaml.rs:321)
+          returns true once the anchor has been written, and Context::alias_text
+          (emit/yaml.rs:328) emits *name in place of the node's actual contents.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ printf 'a: &x {p: 1}\nb: *x\n' > al.yml
+            $ yg --json '.b.p = 2' al.yml
+            {
+              "a": {
+                "p": 1
+              },
+              "b": {
+                "p": 2
+              }
+            }
+            $ yg -i '.b.p = 2' al.yml ; echo $?
+            0
+            $ cat al.yml
+            a: &x {p: 1}
+            b: *x
+
+          The engine computed the mutation correctly — --json proves it — and the YAML emitter
+          threw it away. Under -i that is what gets persisted, so the user's edit vanishes with
+          a success exit and no output.
+
+          The author already knows the invariant: YamlVal::set_anchor (value.rs:305-310) clears
+          alias_of when an anchor is set, and explode_aliases (value.rs:397-402) clears both.
+          Those are two ad-hoc enforcement sites for a rule the type does not encode, and the
+          mutation paths honour neither.
+        remediation: |
+          Make identity metadata impossible to desynchronize from content rather than adding a
+          third clearing site. Preferred: split identity out of Meta — keep presentation-only
+          fields (tag, style, raw) there and move anchor/alias_of into the Data layer, e.g. a
+          Data::Alias { of: Rc<str>, value: Rc<YamlVal> } variant — so any mutation that rebuilds
+          data structurally cannot leave a stale alias behind, and alias_of on a mutated map
+          becomes unrepresentable. If the flat shape must stay, funnel every write through a
+          single YamlVal::data_mut() that clears meta.anchor and meta.alias_of before handing out
+          &mut Data, and make the field unreachable any other way inside the crate. Add a
+          regression test asserting `.b.p = 2` over `a: &x {p: 1}` / `b: *x` round-trips through
+          to_yaml with the mutation intact.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: [in-place-empty-output-truncates-file]
+          enabled_by: []
+          related: [stale-raw-metadata-after-string-splice, no-public-read-access-to-yamlval]
+        effort: medium
+        effort_notes: "The Data::Alias reshape touches build.rs, valt.rs and both emitters; the data_mut() funnel is small but leaves the invalid state representable"
+
+      - slug: emitter-quoting-ignores-active-schema
+        title: "Output quoting is hard-wired to the 1.2 core schema, so a string emitted under --schema 1.1 re-reads as a boolean"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 705
+            end_line: 713
+        evidence: |
+          pub(crate) fn needs_quotes(value: &str) -> bool {
+              use yamalgam_core::{TagResolution, TagResolver as _, Value};
+
+              if value.is_empty()
+                  || !matches!(
+                      TagResolution::Yaml12.resolve_scalar(value),
+                      Value::String(_)
+                  )
+              {
+        evidence_markers:
+          - lines: "6"
+            type: del
+            label: "always the 1.2 core resolver, never the schema the run actually selected"
+        mechanism: |
+          The spec's r[output.yaml.quoting] is a MUST: "yg MUST NOT produce output that is
+          ambiguous under the active schema." The emitter has no way to honour it. EmitOpts
+          (emit/mod.rs:22-32) carries indent, compact, sort_keys and color — but no schema — and
+          needs_quotes hard-codes TagResolution::Yaml12. Under --schema 1.1 the loader resolves
+          yes/no/on/off/y/n as booleans on the way in, while the emitter decides quoting with 1.2
+          rules on the way out, where those words are ordinary strings.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ printf 'a: "YES"\n' > s.yml
+            $ yg --schema 1.1 '.a |= ascii_downcase' s.yml > s2.yml
+            $ cat s2.yml
+            a: yes
+            $ yg --schema 1.1 '.a | type' s2.yml
+            boolean
+
+          A string became a boolean across one round trip. yg does print a warning whenever 1.1
+          mode is active, which is a partial mitigation — the user is told the mode is dangerous
+          — but the warning fires on every 1.1 invocation and says nothing about this specific
+          transformation, so it does not distinguish a safe run from a lossy one. With -i the
+          retyped document is written to the user's file. This is not in the deviations ledger;
+          note 8 defers only the `# yg-schema:` pragma, not schema-aware emission.
+        remediation: |
+          Add the active TagResolution to EmitOpts, thread it from commands/query.rs::loader_config
+          into to_yaml, and have needs_quotes resolve with that schema instead of the Yaml12
+          constant. Add an emit test asserting that a string "yes" emitted under the 1.1 schema
+          comes back as a string. Failsafe and json schemas are safe in the other direction (they
+          only over-quote), so 1.1 is the case that needs the fix.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: [in-place-empty-output-truncates-file]
+          enabled_by: []
+          related: [flow-context-plain-scalar-injection]
+        effort: small
+        effort_notes: "One field on EmitOpts, one thread-through, one predicate change"
+
+      - slug: json-nonstring-keys-collide
+        title: "JSON emission stringifies non-string mapping keys via Display, silently colliding with real string keys"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/emit/json.rs
+            start_line: 76
+            end_line: 81
+        evidence: |
+          fn key_string(key: &YamlVal) -> String {
+              match &key.data {
+                  Data::Str(string) => string.to_string(),
+                  _ => key.to_string(),
+              }
+          }
+        evidence_markers:
+          - lines: "4"
+            type: del
+            label: "Display collapses distinct YAML keys onto one JSON key with no collision check"
+        mechanism: |
+          YAML mappings admit any resolved value as a key, and YamlVal's PartialEq and Hash keep
+          Data::Int(1) and Data::Str("1") distinct (different hash tags at value.rs:644 and
+          value.rs:646), so the IndexMap stores both. The JSON emitter flattens both to the same
+          object key with no detection.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ printf '{1: alpha, "1": beta}\n' > k.yml
+            $ yg --json . k.yml
+            {
+              "1": "alpha",
+              "1": "beta"
+            }
+
+          RFC 8259 permits duplicate names, but every mainstream parser keeps the last, so
+          `alpha` is gone the moment anything consumes this. The same collapse hits true/"true",
+          null/"null", and 1.0/"1.0". It is not confined to --json: to_json also implements the
+          tojson native filter (funs.rs:78) and ValT::into_string (valt.rs:322), which backs jq
+          string interpolation, so `"\(.)"` over such a mapping is equally lossy. Collection keys
+          go through Display and emit `{a: b}`, indistinguishable from a string key whose content
+          is literally that text. tests/emit.rs:10 exercises this function but only for the
+          non-colliding case.
+        remediation: |
+          Detect the collision instead of allowing it. Build the key strings first and, on a
+          duplicate, either return an error (to_json would become fallible, matching how jq
+          rejects non-string keys under -j) or disambiguate non-string keys with a reserved
+          encoding the caller can round-trip. At minimum, warn on stderr from commands/query.rs
+          when --json is asked to render a mapping with non-string keys, so silent loss becomes
+          visible.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: small
+        effort_notes: "A HashSet check in write_json's map arm; the error-vs-warn choice needs a decision"
+
+      - slug: plain-scalar-control-characters
+        title: "needs_quotes treats only LF and TAB as unsafe, so CR and other control characters reach plain scalars"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 717
+            end_line: 726
+        evidence: |
+          let first = value.chars().next().unwrap_or(' ');
+          let syntactic_first = "!&*-?:,[]{}#|>@`\"'%".contains(first);
+          value.starts_with(' ')
+              || value.ends_with(' ')
+              || syntactic_first
+              || value.contains(": ")
+              || value.ends_with(':')
+              || value.contains(" #")
+              || value.contains('\n')
+              || value.contains('\t')
+        evidence_markers:
+          - lines: "8-9"
+            type: del
+            label: "LF and TAB only; CR, DEL, C0/C1 controls, NEL and U+2028/U+2029 all pass"
+        mechanism: |
+          A string with no source style metadata is emitted plain whenever needs_quotes returns
+          false, and that predicate rejects only \n and \t in the control range.
+          yamalgam-scanner/src/reader.rs:70 documents that a bare \r is normalized to a newline,
+          so a carriage return inside a plain scalar becomes a line break on re-parse.
+
+          Confirmed reachable: `printf 'a\rb\n' | yg -R .` emits the CR byte literally (verified
+          with od -c). -R builds values through YamlVal::str with meta: None, so no style
+          preservation can intervene. The same gap applies to any filter-produced string, since
+          arithmetic (ops.rs::value), resolve/resolve_as (value.rs:250) and the jaq constructors
+          all return meta: None.
+
+          Two further consequences. \x1b reaches an interactive terminal unescaped, so ANSI/OSC
+          sequences in untrusted input become terminal control — quote_double would have escaped
+          them, the plain path does not. And needs_quotes does not flag U+0085 (NEL) or
+          U+2028/U+2029, which are line breaks under YAML 1.1; yg ships a --schema 1.1 mode
+          advertising interop with exactly those consumers. quote_double itself escapes only
+          below 0x20, leaving DEL and the C1 range literal even in the quoted path.
+        remediation: |
+          In needs_quotes, replace the two trailing contains checks with a single scan:
+          value.chars().any(|c| c.is_control() || c == '\u{85}' || c == '\u{2028}' || c == '\u{2029}').
+          Keep the \n special case ahead of it so literal blocks are still chosen for
+          newline-only strings. In quote_double, widen the escape arm to
+          `c if c.is_control() || ('\u{7f}'..='\u{9f}').contains(&c)` using \uXXXX, since \xNN
+          cannot encode above 0xff. Add round-trip tests for CR and ESC.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [flow-context-plain-scalar-injection]
+        effort: small
+        effort_notes: "Two predicate changes in one file, plus round-trip tests"
+
+      - slug: stale-raw-metadata-after-string-splice
+        title: "String slice assignment rewrites content but leaves Meta.raw holding the pre-edit source text"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/valt.rs
+            start_line: 300
+            end_line: 307
+        evidence: |
+          let mut updated = String::with_capacity(
+              string.len() - (end_byte - start_byte) + replacement.len(),
+          );
+          updated.push_str(&string[..start_byte]);
+          updated.push_str(&replacement);
+          updated.push_str(&string[end_byte..]);
+          *string = Rc::from(updated);
+          Ok(self)
+        evidence_markers:
+          - lines: "7"
+            type: del
+            label: "content replaced in place"
+          - lines: "8"
+            type: mark
+            label: "returns self with meta.raw still pointing at the original scalar text"
+        mechanism: |
+          Meta.raw is documented as "raw scalar text before schema resolution" and the builder
+          populates it from the source event (build.rs:202). map_range on a Data::Str splices new
+          content in and returns self with meta untouched — the test at valt.rs:560-573 asserts
+          precisely that metadata survives, so this is intentional for style and incidental for
+          raw.
+
+          Two public behaviours then read stale text. YamlVal::raw_text (value.rs:212) prefers
+          meta.raw over the string content, so after `.a[0:1] = "J"` on `a: 'hello'`, the raw
+          filter returns "hello" for a node whose value is "Jello". YamlVal::resolve_with
+          (value.rs:239-249) also prefers meta.raw, so resolve and resolve_as re-resolve the
+          original scalar rather than the edited one — a spliced "5" that now reads "true" still
+          resolves as the old text.
+
+          Full replacement (`.a = "true"`) is unaffected, because it installs a fresh YamlVal
+          with meta: None. Only in-place edits desynchronize, which keeps this narrow — but it is
+          the same root cause as the alias finding: Meta describes source provenance and nothing
+          invalidates it when the value stops coming from that source.
+        remediation: |
+          Clear meta.raw (and meta.tag, which likewise describes the source scalar) whenever a
+          scalar's content is rewritten. If the data_mut() funnel proposed for the alias finding
+          is adopted, this falls out for free. Alternatively drop the meta.raw preference from
+          resolve_with so resolution always runs over current content.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [alias-metadata-survives-mutation-dropping-edits]
+        effort: small
+        effort_notes: "One-line clear at the mutation site, or fold into the shared mutation helper"
+
+  - slug: in-place-editing
+    title: "The In-Place Editing Surface"
+    thesis: "run_in_place is correctly atomic against crashes and correctly rolls back on error, but it never checks that the filter produced anything before renaming the temporary file over the user's document."
+    verdict: "The hard part was done right — temp file beside the target, flush, fsync, permission copy, atomic rename, and a ? that drops the temp file so the original survives any error. The gap is the success path, which has no floor: zero output is not an error, so zero bytes get persisted. That single missing check turns -i into a data-loss primitive, and it is the same flag that converts every emitter bug in the previous narrative into an on-disk corruption. The remaining findings here are smaller but share a theme: -i's behaviour under composition (multiple files, -s, -f, symlinks) was not thought through as carefully as its behaviour on the single happy path, which is the case the tests cover."
+
+    flow:
+      - id: start
+        label: "yg -i FILTER files"
+        type: start
+      - id: stat
+        label: "stat(path)"
+        type: process
+        findings:
+          - slug: in-place-replaces-symlinks-and-drops-ownership
+            label: "Follows link"
+      - id: temp
+        label: "Create temp beside path"
+        type: process
+      - id: run
+        label: "Run filter into temp"
+        type: process
+      - id: erred
+        label: "Error?"
+        type: decision
+        no: persist
+      - id: rollback
+        label: "Drop temp, original safe"
+        type: process
+        spine: false
+        findings:
+          - slug: in-place-multi-file-partial-application
+            label: "Prior files kept"
+      - id: persist
+        label: "flush, fsync, chmod, rename"
+        type: process
+        findings:
+          - slug: in-place-empty-output-truncates-file
+            label: "No output check"
+      - id: done
+        label: "Next file / exit 0"
+        type: end
+
+    findings:
+      - slug: in-place-empty-output-truncates-file
+        title: "yg -i persists the temporary file unconditionally, so a filter yielding no output truncates the input to zero bytes"
+        concern: critical
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 172
+            end_line: 203
+        evidence: |
+          let file_last = run_records(
+              filter,
+              Rc::new(RunCtx::new(config.clone())),
+              records,
+              args,
+              json_output,
+              false,
+              temporary.as_file_mut(),
+          )?;
+          temporary
+              .as_file_mut()
+              .flush()
+              .and_then(|()| temporary.as_file().sync_all())
+              .map_err(|error| {
+                  YgError::Runtime(format!(
+                      "failed to finish temporary output for {path}: {error}"
+                  ))
+              })?;
+          temporary
+              .as_file()
+              .set_permissions(source_metadata.permissions())
+              .map_err(|error| {
+                  YgError::Runtime(format!(
+                      "failed to preserve permissions for {path}: {error}"
+                  ))
+              })?;
+          temporary.persist(path).map_err(|error| {
+              YgError::Runtime(format!(
+                  "failed to replace {path} atomically: {}",
+                  error.error
+              ))
+          })?;
+        evidence_markers:
+          - lines: "1"
+            type: mark
+            label: "file_last is None when the filter produced zero outputs"
+          - lines: "27"
+            type: del
+            label: "persists unconditionally — nothing between the run and here inspects file_last"
+        mechanism: |
+          run_records writes only from inside its visit closure, which the engine calls once per
+          filter output. A filter that produces no output for a document writes nothing, and that
+          is not an error — run_records returns Ok(None). Nothing between the run and the persist
+          inspects file_last or the temp file's length, so the empty file is flushed, synced,
+          chmod'd and renamed over the user's document. file_last.is_some() is checked, but only
+          after the persist has already happened.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ printf 'enabled: false\nname: production\nreplicas: 3\n' > config.yml
+            $ wc -c < config.yml
+            44
+            $ yg -i 'select(.enabled)' config.yml ; echo $?
+            0
+            $ wc -c < config.yml
+            0
+
+          select() is the ordinary jq idiom for conditional output; it yields nothing whenever
+          the predicate is false. So this is document-driven, not merely operator error: a
+          pipeline running `yg -i '.[] | select(.enabled)' services.yaml` destroys the file
+          whenever the input happens to contain no enabled entry. The filter is correct; the
+          input decides whether the file survives. The content is unrecoverable — the rename is
+          the last step and there is no backup.
+
+          -i also composes with flags that discard the input entirely. in_place is declared
+          requires = "files" but conflicts with nothing, so `yg -i -n '{}' config.yaml`
+          overwrites every named file with the null-input result, and `yg -i --json .` silently
+          rewrites a .yaml file as JSON. tests/yg.rs:234-300 covers in-place success, permission
+          preservation, multi-document input and hard-failure rollback — every case except zero
+          output.
+        remediation: |
+          Track whether the visit closure ever fired for the current file (run_records already
+          threads a `first` flag for exactly this shape) and refuse to persist when it did not:
+          drop the temporary, leave the original untouched, and exit non-zero with a message.
+          If truncation is ever legitimate, gate it behind an explicit --allow-empty rather than
+          making it the silent default. Add conflicts_with = "null_input" to the in_place arg.
+          Consider also skipping the rename when the output is byte-identical to the input, so
+          -i becomes a no-op instead of a rewrite that discards comments.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: [flow-context-plain-scalar-injection, alias-metadata-survives-mutation-dropping-edits, emitter-quoting-ignores-active-schema]
+          related: [in-place-multi-file-partial-application, in-place-replaces-symlinks-and-drops-ownership]
+        effort: small
+        effort_notes: "One boolean out of run_records plus a guard before persist, and one clap conflicts_with"
+
+      - slug: in-place-replaces-symlinks-and-drops-ownership
+        title: "Atomic replace renames over the path, so symlinks are replaced and hard links broken; only mode is preserved"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 190
+            end_line: 203
+        evidence: |
+          temporary
+              .as_file()
+              .set_permissions(source_metadata.permissions())
+              .map_err(|error| {
+                  YgError::Runtime(format!(
+                      "failed to preserve permissions for {path}: {error}"
+                  ))
+              })?;
+          temporary.persist(path).map_err(|error| {
+              YgError::Runtime(format!(
+                  "failed to replace {path} atomically: {}",
+                  error.error
+              ))
+          })?;
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "mode only — uid/gid, ACLs and xattrs are not carried over"
+          - lines: "9"
+            type: del
+            label: "rename() over the path replaces a symlink rather than writing through it"
+        mechanism: |
+          std::fs::metadata(path) at query.rs:155 follows symlinks, so source_metadata describes
+          the link's target — but temporary.persist(path) is a rename(2) onto the link path
+          itself, which replaces the symlink with a new regular file and leaves the target
+          untouched.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ printf 'a: 1\n' > shared/real.yml && ln -sf shared/real.yml link.yml
+            $ yg -i '.a = 2' link.yml ; echo $?
+            0
+            $ test -L link.yml || echo "symlink was replaced by a regular file"
+            symlink was replaced by a regular file
+            $ cat shared/real.yml
+            a: 1
+
+          The edit landed on a new file at the link's path; the file the user believed they were
+          editing is unchanged. Symlinked config trees are a common layout (overlay directories,
+          Kubernetes manifest trees, /etc conventions). The same applies to hard links: every
+          other name for the inode keeps the pre-edit content.
+
+          The direction here is defensive against the classic symlink attack — yg does not write
+          through an attacker-planted link into a privileged path — so the exposure is silent
+          breakage of intentional links, not privilege escalation. Ownership is the second half:
+          set_permissions carries mode bits only and the temp file is owned by the invoking user,
+          so a root process running yg -i over a user's checkout leaves root-owned files behind.
+          tests/yg.rs:277 covers the mode case only.
+        remediation: |
+          Call std::fs::symlink_metadata(path) first. If it reports a symlink, either resolve
+          with canonicalize() and edit the target (documenting that choice) or refuse with a
+          clear message — do not silently replace the link. On Unix, follow set_permissions with
+          a chown to the source's uid/gid when the process has the privilege, and warn when it
+          does not. Detect nlink > 1 and warn that the edit will break the hard link.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [in-place-empty-output-truncates-file]
+        effort: small
+        effort_notes: "symlink_metadata check plus an optional chown, both localized to run_in_place"
+
+      - slug: in-place-multi-file-partial-application
+        title: "A mid-stream failure during yg -i leaves earlier files rewritten with no rollback and no report"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 152
+            end_line: 157
+        evidence: |
+          let mut last = None;
+
+          for (file_index, path) in files.iter().enumerate() {
+              let source_metadata = std::fs::metadata(path)
+                  .map_err(|error| YgError::InputParse(format!("failed to inspect {path}: {error}")))?;
+              let mut records = collect_inputs(std::slice::from_ref(path), args, config)?;
+        evidence_markers:
+          - lines: "4-6"
+            type: mark
+            label: "? aborts the whole command after earlier files were already persisted"
+        mechanism: |
+          run_in_place rewrites files one at a time, persisting each before moving on. Every
+          fallible step inside the loop propagates with ?, so a failure on file N aborts with
+          files 1..N-1 already replaced and N+1.. untouched.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ printf 'n: 1\n' > f1.yml ; printf 'n: [bad\n' > f2.yml ; printf 'n: 3\n' > f3.yml
+            $ yg -i '.n = 99' f1.yml f2.yml f3.yml ; echo $?
+            yg: f2.yml: unexpected StreamEnd, expected FlowEntry (,) or FlowSequenceEnd (]) in flow sequence
+            5
+            $ cat f1.yml ; cat f3.yml
+            n: 99
+            n: 3
+
+          The message names only the file that failed. Nothing tells the user that a prefix of
+          their argument list was already modified, so the natural response — fix f2 and re-run
+          the same command — re-applies the filter to f1. For a non-idempotent filter such as
+          `.count |= . + 1`, that double-applies silently. tests/yg.rs:293-300 covers the
+          single-file case, where the guarantee does hold.
+        remediation: |
+          Either stage every file into a temporary first and persist only after all files
+          succeed (a two-phase commit, which the tempfile-per-file structure already nearly
+          supports), or keep the streaming behaviour and make the partial state explicit: on
+          failure, report which paths were modified and which were skipped.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [in-place-empty-output-truncates-file]
+        effort: medium
+        effort_notes: "Two-phase commit is a restructure; the reporting-only fix is small"
+
+      - slug: slurp-silently-per-file-under-in-place
+        title: "--slurp silently degrades to per-file slurping under -i, diverging from a MUST NOT clause"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 154
+            end_line: 157
+        evidence: |
+          for (file_index, path) in files.iter().enumerate() {
+              let source_metadata = std::fs::metadata(path)
+                  .map_err(|error| YgError::InputParse(format!("failed to inspect {path}: {error}")))?;
+              let mut records = collect_inputs(std::slice::from_ref(path), args, config)?;
+        evidence_markers:
+          - lines: "4"
+            type: del
+            label: "collect_inputs applies --slurp to a single-file slice, once per file"
+        mechanism: |
+          The spec's r[cli.slurp] says -s reads all documents from all files into a single
+          sequence and runs the filter once, and adds "The meaning of this flag MUST NOT diverge
+          from jq." In the normal path that holds — collect_inputs receives the full file list.
+          In the in-place path each file is passed to collect_inputs on its own, so
+          `yg -i -s '<filter>' a.yml b.yml` runs the filter twice, once per file, each time over
+          a one-file sequence. Each file is then rewritten with the result of a filter that
+          silently saw different input than requested, with no warning.
+
+          The author knows about this — it is item 2 of the Landmines section in
+          .handoffs/2026-08-02-2342-m10-yg-cli-complete.md — but it is absent from
+          docs/spec/yg-spec-draft-01-implementation-notes.md, from README.md and from --help. A
+          handoff note is not a user-visible document, so this is drift beyond what the
+          deviations ledger admits. The slurped record also resets InputMeta to default
+          (query.rs:292-295) before run_in_place patches filename/file_index back in, so
+          document_index is always 0 in this mode.
+        remediation: |
+          Either reject -i combined with -s with a usage error (exit 2, matching the existing -i
+          without files check), or document the per-file semantics in the implementation-notes
+          ledger and in the -s help text. Whichever is chosen, record it in the ledger so the
+          deviation is owned somewhere a user will read.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 1
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,1]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [in-place-empty-output-truncates-file]
+        effort: trivial
+        effort_notes: "One conflicts_with, or one ledger entry plus a help-text line"
+
+      - slug: in-place-with-from-file-rejected-by-clap
+        title: "requires = \"files\" makes -i unusable with -f, and duplicates a runtime check that is more accurate"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/lib.rs
+            start_line: 111
+            end_line: 114
+        evidence: |
+          /// Edit files atomically; reserialization loses comments until CST editing lands.
+          // r[impl cli.inplace]
+          #[arg(short = 'i', long, requires = "files")]
+          pub in_place: bool,
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "requires the second positional, which -f leaves empty"
+        mechanism: |
+          With -f, the first positional binds to `filter` and `files` collects only the
+          remainder, so `yg -i -f prog.jq data.yaml` leaves `files` empty. clap's requires tests
+          presence of the referenced argument, and a multi-value positional with zero occurrences
+          is absent, so clap rejects the invocation before cmd_query runs.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ yg -i -f prog.jq d.yml
+            error: the following required arguments were not provided:
+              <FILE>...
+
+            Usage: yg --in-place --from-file <FILE> <FILTER> <FILE>...
+
+            For more information, try '--help'.
+
+          filter_and_files (query.rs:213-229) explicitly handles this shape — it moves
+          args.filter into the file list when from_file is set — which shows the combination is
+          intended to work. The runtime guard at query.rs:41-44 already produces the correct
+          diagnostic and exit 2 for the genuinely file-less case. So the declarative constraint
+          blocks a supported invocation while duplicating a check implemented more accurately a
+          few lines away. tests/yg.rs:268-273 passes either way, because both the clap rejection
+          and the runtime guard exit 2 — so the regression is invisible to the suite.
+        remediation: |
+          Drop requires = "files" and let the runtime guard in cmd_query own the validation,
+          since it sees the post-normalization file list. Add a test for
+          `yg -i -f prog.jq file.yaml` to pin the supported combination, and one asserting the
+          guard's message text so the two paths stay distinguishable.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-08-02
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [in-place-empty-output-truncates-file]
+        effort: trivial
+        effort_notes: "Remove one attribute argument, add two tests"
+
+  - slug: resource-bounds
+    title: "The Resource Bounds Surface"
+    thesis: "The loader's limits are enforced where the document is built and nowhere else, so a bounded in-memory graph becomes an unbounded walk at emit time and an unbounded allocation at mutation time."
+    verdict: "The limit vocabulary already exists and is correctly wired into the builder — LoaderConfig carries depth, size, alias-expansion and anchor-count caps, and build.rs charges against all four. The problem is that those limits describe the input, and nothing describes the output or the filter's own constructions. Because the builder shares subtrees by Rc, a YAML bomb is genuinely cheap in memory and genuinely passes every check; the cost only materializes when an emitter walks the DAG as a tree. Fixing this does not need a new mechanism, only the existing one threaded to the places that currently allocate without asking."
+
+    flow:
+      - id: input
+        label: "Untrusted YAML"
+        type: start
+      - id: build
+        label: "Builder::node"
+        type: process
+      - id: limits
+        label: "check depth/size/aliases"
+        type: decision
+        no: reject
+      - id: dag
+        label: "YamlVal DAG (shared Rc)"
+        type: process
+        findings:
+          - slug: yaml-bomb-materialized-by-emitters
+            label: "Counts events"
+      - id: filter
+        label: "Filter mutates/constructs"
+        type: process
+        findings:
+          - slug: map-index-allocates-directly-from-untrusted-index
+            label: "Unbounded alloc"
+      - id: emit
+        label: "Walk DAG as a tree"
+        type: process
+        findings:
+          - slug: filter-constructed-values-recurse-without-depth-bound
+            label: "Unbounded depth"
+      - id: out
+        label: "Output"
+        type: end
+      - id: reject
+        label: "BuildError::Limit"
+        type: process
+        spine: false
+
+    findings:
+      - slug: yaml-bomb-materialized-by-emitters
+        title: "The alias-expansion limit counts parser events, not materialized nodes, so both emitters expand the shared DAG unbounded"
+        concern: critical
+        locations:
+          - path: crates/yamalgam-query/src/build.rs
+            start_line: 154
+            end_line: 171
+        evidence: |
+          Event::Alias { name, span } => {
+              self.alias_expansions += 1;
+              self.config
+                  .limits
+                  .check_alias_expansions(self.alias_expansions)
+                  .map_err(BuildError::Limit)?;
+
+              let mut value = self.anchors.get(name.as_ref()).cloned().ok_or_else(|| {
+                  BuildError::UnknownAlias {
+                      name: name.to_string(),
+                      span,
+                  }
+              })?;
+              let meta = value.meta_mut();
+              meta.anchor = None;
+              meta.alias_of = Some(Rc::from(name.as_ref()));
+              Ok(value)
+          }
+        evidence_markers:
+          - lines: "2-6"
+            type: mark
+            label: "the counter increments once per alias TOKEN in the source text"
+          - lines: "8"
+            type: del
+            label: "Rc clone shares the subtree — the graph is a DAG, so the counter never observes expansion"
+        mechanism: |
+          Builder::node charges one unit against max_alias_expansions (10,000 under moderate, the
+          CLI default) per Event::Alias, then resolves the alias by Rc-cloning the anchored node.
+          The resulting graph is a DAG with shared subtrees, so a classic billion-laughs document
+          costs O(source length), not O(expanded size), and passes every limit. Both emitters then
+          walk that DAG as if it were a tree. emit/json.rs::write_json has no alias branch at all
+          — it matches only on Data, so every alias is materialized unconditionally.
+          emit/yaml.rs::alias_is_emittable emits *name only when the anchor was already written
+          during this same emission; when it was not, the full expansion is inlined.
+
+          Reproduced against the built binary at 27cf037, with a 216-byte input and six levels of
+          9-way aliasing:
+
+            $ wc -c < bomb.yml
+            216
+            $ yg --json . bomb.yml | wc -c
+            13227921
+            $ yg --strict --json . bomb.yml > /dev/null ; echo $?
+            0
+
+          That is roughly 61,000x amplification, and --strict does not stop it — the strict
+          profile tightens depth and alias-expansion caps, neither of which this trips. Each
+          additional nesting level multiplies output by 9: measured on the same machine, seven
+          levels (272 bytes) produces 143 MB and eight levels (307 bytes) produces 1.41 GB. The
+          failure mode is OOM-kill of the process, which on a CI runner is a denial of service
+          from a few hundred bytes of attacker-supplied YAML.
+
+          Default YAML output is not safe either: `yg '.g' bomb.yml` selects a subtree whose
+          descendants alias anchors defined outside it, so anchors_emitted stays empty and every
+          level expands — 34 MB of YAML from the 272-byte input. --sort-keys breaks it a third
+          way whenever sorting moves an alias ahead of its anchor; on a bomb whose keys are
+          already in definition order `-S` changes nothing (328 bytes either way), but on one
+          where sorting reverses that relationship it yields 39 MB from 272 bytes. The one safe
+          case is the bare identity filter with YAML output over a whole document, where source
+          order guarantees anchors come first — which is exactly the case the round-trip corpus
+          test exercises.
+        remediation: |
+          Bound emission, not just parsing. Two changes, best applied together. (1) Give to_yaml
+          and to_json an output budget — node count or byte count — threaded from
+          LoaderConfig::limits, and fail with a Limit error rather than allocating past it.
+          (2) Make to_json alias-aware the way to_yaml is: track visited Rc identities via
+          Rc::as_ptr during the walk and error, or emit a repeat marker, when the same shared
+          node is reached more times than a threshold. Identity tracking also fixes the
+          --sort-keys and subtree-selection cases in to_yaml, which the current anchors_emitted
+          name list cannot see.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: [fromjson-ignores-configured-limits]
+          related: [filter-constructed-values-recurse-without-depth-bound]
+        effort: medium
+        effort_notes: "An emit-time budget plus Rc-identity tracking in two emitters; the limits plumbing already exists on LoaderConfig"
+
+      - slug: filter-constructed-values-recurse-without-depth-bound
+        title: "Emitters, Display, Hash and drop glue recurse over filter-constructed values with no depth limit"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/emit/json.rs
+            start_line: 24
+            end_line: 35
+        evidence: |
+          Data::Seq(items) => {
+              output.push('[');
+              for (index, item) in items.iter().enumerate() {
+                  if index > 0 {
+                      output.push(',');
+                  }
+                  write_indent(output, options, depth + 1);
+                  write_json(output, item, options, depth + 1);
+              }
+              write_closing_indent(output, options, depth);
+              output.push(']');
+          }
+        evidence_markers:
+          - lines: "8"
+            type: del
+            label: "recursive descent; depth is threaded for indentation only, never checked"
+        mechanism: |
+          Input documents are depth-limited during construction — Builder::node calls
+          limits.check_depth (build.rs:93-96), and LoaderConfig caps depth at 64/256/1024 for
+          strict/moderate/trusted. No such bound exists for values the filter itself builds. jaq
+          evaluates reduce and foreach iteratively, so
+          `yg -n 'reduce range(100000) as $i (null; [.])'` constructs a 100k-deep sequence without
+          overflowing during evaluation.
+
+          Every consumer of that value then recurses once per level with no limit: write_json
+          here, Context::node -> block_collection -> sequence -> node in emit/yaml.rs:47-100 (the
+          default output path, several frames per level), Display::fmt in value.rs:670-701, Hash
+          in value.rs:636-662, Ord in value.rs:619-634, and deep_merge in ops.rs:29-46. Even a
+          filter that never emits the value hits the recursive drop glue for Rc<Vec<YamlVal>> when
+          it is released.
+
+          Measured against the built binary at 27cf037:
+
+            $ yg -n 'reduce range(100000) as $i (null; [.]) | 1'
+            thread 'main' (...) has overflowed its stack
+            fatal runtime error: stack overflow, aborting
+            $ echo $?
+            134
+
+          Exit 134 is SIGABRT — the runtime detects the overflow and aborts rather than
+          segfaulting, so there is a message, but it is a runtime abort and not a catchable
+          panic: no YgError, no exit code from the documented set, and no filename or document
+          context. The `| 1` on the end matters — it discards the deep value, so the filter never
+          emits it, and the abort still happens. That isolates the recursive drop glue as an
+          independent path from the emitters. The filter program is untrusted input for any
+          wrapper that accepts a user-supplied query.
+        remediation: |
+          Thread a depth counter through write_json, Context::node, Display, Hash and Ord and
+          return a typed error (or a truncation marker for Display) past a ceiling derived from
+          LoaderConfig.limits, so overly deep results surface as YgError::Runtime with exit 5
+          rather than an abort. Deep drop needs a manual Drop for the collection variants that
+          pops children onto an explicit worklist. If the full fix is too large for M10, bound
+          the emitters at minimum — those are the paths reached on every successful run.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [map-index-allocates-directly-from-untrusted-index, yaml-bomb-materialized-by-emitters]
+        effort: medium
+        effort_notes: "Depth threading is mechanical; the iterative Drop impl needs care"
+
+      - slug: map-index-allocates-directly-from-untrusted-index
+        title: "Assignment to a large sequence index allocates from the filter-supplied integer with no ceiling"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/valt.rs
+            start_line: 178
+            end_line: 187
+        evidence: |
+          self.data = match index.as_int() {
+              Some(position) if position >= 0 => {
+                  let Ok(position) = usize::try_from(position) else {
+                      let error = Error::str(format_args!("index {index} out of bounds"));
+                      return opt.fail(self, |_| Exn::from(error));
+                  };
+                  let mut items = vec![Self::null(); position];
+                  items.push(replacement);
+                  Data::Seq(Rc::new(items))
+              }
+        evidence_markers:
+          - lines: "7"
+            type: del
+            label: "allocation size is the untrusted index, checked only against usize range"
+        mechanism: |
+          The only validation on position is that it fits in usize, which admits every
+          non-negative i64. `yg -n '.[1000000000000] = 1'` requests a Vec of 10^12 YamlVal — at 32
+          bytes each, roughly 32 TB.
+
+          Measured against the built binary at 27cf037: both `yg -n '.[1000000000000] = 1'` and
+          `yg -n '"a" * 1000000000000'` hang indefinitely (killed at 60s) with no panic and no
+          abort. The process wedges allocating and zeroing the request, and under overcommit that
+          drives the OOM killer rather than producing an error. Note this is not a
+          capacity-overflow panic: str::repeat raises that only when len * n overflows usize,
+          which 10^12 on a one-byte string does not. An unbounded hang is arguably worse than a
+          panic — it consumes the machine rather than failing fast, and gives the operator
+          nothing to act on.
+
+          The pattern repeats twice more, both reachable from filter text alone with no input
+          document: valt.rs:240 uses `items.resize(position.saturating_add(1), Self::null())` to
+          grow an existing sequence to an arbitrary filter-chosen length, and ops.rs:126 takes the
+          multiplier for string.repeat straight from the filter. That matters for any embedder
+          compiling filters it did not write.
+        remediation: |
+          Apply a ceiling before allocating. LoaderConfig.limits is already carried in RunCtx and
+          already has the vocabulary; add a max-collection-size and max-string-length limit and
+          check it in map_index, the resize path, and Mul-on-string, returning Error::str with the
+          offending size so the failure lands on the normal YgError::Runtime path. Failing that,
+          use try_reserve and convert allocation failure into an error rather than an abort.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [filter-constructed-values-recurse-without-depth-bound]
+        effort: small
+        effort_notes: "One limit field plus three check sites"
+
+      - slug: fromjson-ignores-configured-limits
+        title: "fromjson hard-codes moderate limits and uses the full YAML parser, bypassing --strict"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/funs.rs
+            start_line: 312
+            end_line: 328
+        evidence: |
+          fn fromjson(&self) -> ValR<Self> {
+              let Data::Str(source) = &self.data else {
+                  return Err(Error::typ(self.clone(), "string"));
+              };
+              let config = yamalgam_core::LoaderConfig::moderate()
+                  .with_tag_resolution(yamalgam_core::TagResolution::Json);
+              let mut documents = crate::build::parse_str_with_config(source, &config)
+                  .map_err(|error| Error::str(format_args!("fromjson: {error}")))?;
+              if documents.len() == 1 {
+                  Ok(documents.remove(0))
+              } else {
+                  Err(Error::str(format_args!(
+                      "fromjson: expected 1 document, got {}",
+                      documents.len()
+                  )))
+              }
+          }
+        evidence_markers:
+          - lines: "5-6"
+            type: del
+            label: "moderate is hard-coded; the run's --strict / --trusted choice is discarded"
+          - lines: "7"
+            type: mark
+            label: "full YAML parser, so anchors and aliases are accepted from the embedded string"
+        mechanism: |
+          RunCtx already carries the operator's LoaderConfig, and every other native filter reaches
+          it via context_value.0.data().context.config (see resolve at funs.rs:154). fromjson does
+          not: it constructs LoaderConfig::moderate() unconditionally, so
+          `yg --strict '.payload | fromjson'` parses the embedded string with a 256 MB input cap
+          (yamalgam-core/src/loader.rs:59-64), depth 256 and 10,000 alias expansions, instead of
+          the strict caps the operator asked for.
+          Choosing --strict is precisely the case where a doubly-untrusted embedded string most
+          needs the tighter budget.
+
+          Compounding it, the parse goes through crate::build::parse_str_with_config — the full
+          YAML parser, not a JSON subset — so an attacker-supplied string field containing YAML
+          anchors and aliases is accepted and expanded. That makes fromjson a second entry point
+          for the bomb above, reachable from a document field rather than from the input
+          document's own structure, and it accepts &/* syntax that no JSON producer would emit.
+        remediation: |
+          Read the config from the run context the way resolve does:
+          `let config = context_value.0.data().context.config.clone().with_tag_resolution(TagResolution::Json);`
+          and pass that through. Separately, decide whether fromjson should accept YAML syntax at
+          all — if the intent is JSON, reject documents containing anchors, aliases or tags rather
+          than resolving them.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 7
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,7]
+        chains:
+          enables: [yaml-bomb-materialized-by-emitters]
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "The context plumbing already exists; a two-line change plus a signature tweak to thread cv"
+
+  - slug: process-contract
+    title: "The Process Contract Surface"
+    thesis: "Exit codes and stream discipline are the CLI's API for shell pipelines, and several of them report the wrong thing: a successful pipe reports failure, an explicit failure reports success, and a plain -n invocation blocks."
+    verdict: "The exit-code table in the spec is mostly implemented faithfully, and the deliberate borrowing of jq's exit 4 is already owned in the deviations ledger. What is not owned is the set of edge cases: broken pipe conflated with filter error, negative halt clamped to success, halt writing to stderr on a successful run, and runtime errors that drop the filename they already have in scope. Individually these are small; together they mean a CI script cannot reliably distinguish 'your query is wrong' from 'the consumer stopped reading' from 'the gate deliberately failed'. All are one-expression to few-line fixes."
+
+    flow:
+      - id: invoke
+        label: "yg FILTER files"
+        type: start
+      - id: nullinput
+        label: "-n given?"
+        type: decision
+        no: read
+      - id: skip
+        label: "should skip stdin"
+        type: process
+        spine: false
+        next: run
+        findings:
+          - slug: null-input-still-blocks-on-stdin
+            label: "Reads anyway"
+      - id: read
+        label: "Read inputs"
+        type: process
+      - id: run
+        label: "Run filter"
+        type: process
+      - id: write
+        label: "Write to stdout"
+        type: process
+        findings:
+          - slug: stdout-epipe-becomes-runtime-error
+            label: "EPIPE = exit 5"
+      - id: map
+        label: "Map error to exit code"
+        type: decision
+      - id: exit
+        label: "Exit"
+        type: end
+        findings:
+          - slug: exit-code-mapping-diverges-from-spec
+            label: "halt(-1) = 0"
+          - slug: halt-prints-a-spurious-error-line
+            label: "halt on stderr"
+
+    findings:
+      - slug: null-input-still-blocks-on-stdin
+        title: "-n/--null-input reads standard input to EOF before running, so yg -n hangs on a terminal"
+        concern: significant
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 242
+            end_line: 249
+        evidence: |
+          if files.is_empty() {
+              let mut input = String::new();
+              std::io::stdin()
+                  .read_to_string(&mut input)
+                  .map_err(|error| {
+                      YgError::InputParse(format!("failed to read standard input: {error}"))
+                  })?;
+              append_input(&mut records, input, None, 0, args, config);
+        evidence_markers:
+          - lines: "1"
+            type: del
+            label: "no args.null_input guard — stdin is drained even with -n"
+          - lines: "3-4"
+            type: mark
+            label: "blocking read to EOF before the filter ever runs"
+        mechanism: |
+          cmd_query calls collect_inputs unconditionally at query.rs:53, before
+          run_filter_with_null_input decides to drive the filter with a single null.
+          collect_inputs has no null_input branch: with no file arguments it drains stdin to EOF.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ ( sleep 6 ) | timeout 3 yg -n '1+1'
+            $ echo $?
+            124
+
+          Exit 124 is the timeout — yg produced nothing and blocked. With stdin already closed it
+          returns 2 immediately, which is why the existing test misses it: assert_cmd hands the
+          child a closed stdin, so tests/yg.rs:45 asserts the right output for the wrong reason.
+          `yg -n '1 + 1'` typed at a terminal is the single most common way anyone first exercises
+          a jq-like tool, and it hangs until Ctrl-D. With file arguments, -n still reads and fully
+          parses every file for a filter that may never look at them. jq's -n never touches stdin
+          unless the program calls input/inputs, and the spec says r[cli.null-input] is "Identical
+          to jq". This is not in the deviations ledger.
+        remediation: |
+          Make the input stream lazy, or short-circuit it: in collect_inputs, return an empty
+          record list when args.null_input && files.is_empty(), and defer the stdin read until
+          input/inputs actually pulls. A lazy reader also fixes the eager whole-file parse for
+          `yg -n <filter> file.yml`. Add a regression test that runs `yg -n '1+1'` with an open
+          stdin and a timeout.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 1
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,1]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [query-cli-materializes-all-inputs-before-filtering]
+        effort: small
+        effort_notes: "A guard in collect_inputs; the fully lazy version is a larger refactor"
+
+      - slug: stdout-epipe-becomes-runtime-error
+        title: "A closed stdout is reported as a runtime error with exit 5 and an OS error on stderr"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 110
+            end_line: 122
+        evidence: |
+          if json_output {
+              writeln!(output, "{}", to_json(&value, &options))
+                  .map_err(|error| YgError::Runtime(error.to_string()))?;
+          } else if args.raw_output && value.is_string() {
+              writeln!(output, "{}", value.as_str_content().unwrap_or_default())
+                  .map_err(|error| YgError::Runtime(error.to_string()))?;
+          } else {
+              if !first && !args.no_doc {
+                  writeln!(output, "---").map_err(|error| YgError::Runtime(error.to_string()))?;
+              }
+              write!(output, "{}", to_yaml(&value, &options))
+                  .map_err(|error| YgError::Runtime(error.to_string()))?;
+          }
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "every io::Error, including EPIPE, becomes YgError::Runtime -> exit 5"
+          - lines: "12"
+            type: mark
+            label: "same conflation on the default YAML path"
+        mechanism: |
+          Rust sets SIGPIPE to SIG_IGN at startup, so writing to a closed pipe returns EPIPE
+          rather than killing the process. All four write sites convert any io::Error into
+          YgError::Runtime, which exit_for maps to 5 — the code the spec's r[cli.exit.runtime]
+          reserves for filter type errors and resource-limit violations.
+
+          Reproduced against the built binary at 27cf037:
+
+            $ yg -n 'range(200000)' | head -2 >/dev/null
+            yg: Broken pipe (os error 32)
+            $ # yg's own exit status: 5
+
+          `yg . big.yaml | head -5` is exactly the usage this tool exists for. Under
+          `set -o pipefail`, standard in CI, that fails the whole pipeline for a successful query.
+          It also leaks raw OS error text where a tool should exit quietly, and it makes exit 5
+          ambiguous between "the filter failed" and "the consumer stopped reading" — the
+          distinction a pipeline needs most. Separately, stdout is never explicitly flushed before
+          cmd_query returns, so a failure on the final implicit flush would exit 0 with truncated
+          output; every write here ends in a newline through a LineWriter, which narrows that
+          window without closing it.
+        remediation: |
+          Treat ErrorKind::BrokenPipe as a normal end of output: match on it at the write sites
+          (or in a small write_output helper wrapping all four) and return a sentinel that stops
+          iteration and exits 0 without printing. Give genuine write failures their own exit code
+          so scripts can tell them from filter errors. Flush the stdout lock explicitly at the end
+          of cmd_query and route a flush failure through the same path.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [exit-code-mapping-diverges-from-spec]
+        effort: small
+        effort_notes: "One helper covering four call sites plus an early-exit signal through run_filter"
+
+      - slug: exit-code-mapping-diverges-from-spec
+        title: "halt(-1) clamps to exit 0, input errors take the runtime code, and pre-pipeline failures take the -e code"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 389
+            end_line: 396
+        evidence: |
+          fn exit_for(error: &YgError) -> ExitCode {
+              match error {
+                  YgError::FilterSyntax(_) => ExitCode::from(2),
+                  YgError::FilterCompile(_) => ExitCode::from(3),
+                  YgError::InputParse(_) | YgError::Runtime(_) => ExitCode::from(5),
+                  YgError::Halt(code) => ExitCode::from((*code).clamp(0, 255) as u8),
+              }
+          }
+        evidence_markers:
+          - lines: "6"
+            type: del
+            label: "clamp(0, 255) maps every negative code to 0 — success"
+          - lines: "5"
+            type: mark
+            label: "a missing or unreadable input file exits 5, the runtime-error code"
+        mechanism: |
+          Three mismatches against the documented table (spec 8.5, r[cli.exit] and children, which
+          enumerates 0, 1, 2, 3, 5).
+
+          First and worst, halt codes are clamped into 0..=255, so halt(-1) — the idiomatic
+          "fail maximally" spelling, which jq turns into exit 255 via the POSIX & 0xff convention
+          — produces success. Reproduced against the built binary at 27cf037:
+
+            $ yg -n 'halt(-1)' ; echo $?
+            0
+
+          A CI gate written as `yg 'if .replicas < 1 then halt(-1) else . end' d.yaml` passes on
+          exactly the documents it was written to reject, and the caller cannot tell: stdout is
+          empty either way, and -e reports on filter truthiness rather than the halt code.
+          halt_error($code) inherits the same mapping.
+
+          Second, a nonexistent or unreadable input file becomes YgError::InputParse and exits 5
+          rather than the usage code; jq exits 2 for the same condition and the spec assigns "bad
+          arguments" to 2. Third, failures raised before the query pipeline — config load and
+          logging init in main.rs:28-43 — return through anyhow, so Termination prints "Error: ..."
+          and exits 1, the code the spec reserves for "-e and the last output was false or null".
+          A script running with -e cannot distinguish a falsy result from a broken config file.
+        remediation: |
+          Use POSIX truncation instead of a clamp: ExitCode::from(*code as u8) wraps -1 to 255 and
+          256 to 0, matching jq, exit(3) and every shell. Add a test asserting halt(-1) exits 255.
+          Split input-availability errors from parse errors and map the former to 2, or amend the
+          spec to say 5 covers input errors. Give pre-pipeline failures their own code so 1 keeps
+          its documented -e meaning. Update r[cli.exit] to list 4 once the existing jq-borrowed
+          deviation is ratified.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [halt-prints-a-spurious-error-line, stdout-epipe-becomes-runtime-error]
+        effort: small
+        effort_notes: "The halt fix is one expression; the variant split is a little larger"
+
+      - slug: halt-prints-a-spurious-error-line
+        title: "report() prints \"yg: halt\" to stderr on the halt path, including when halt exits 0"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 380
+            end_line: 383
+        evidence: |
+          fn report(error: YgError) -> ExitCode {
+              eprintln!("yg: {error}");
+              exit_for(&error)
+          }
+        evidence_markers:
+          - lines: "2"
+            type: del
+            label: "unconditional stderr line, even for the non-error Halt variant"
+        mechanism: |
+          YgError::Halt is routed through the same report() as genuine errors, and its Display is
+          the bare string "halt" (error.rs:43-45).
+
+          Reproduced against the built binary at 27cf037:
+
+            $ yg -n 'halt' 2>&1 >/dev/null
+            yg: halt
+            $ yg -n 'halt' >/dev/null 2>&1 ; echo $?
+            0
+
+          A filter that ends with halt or halt(0) succeeds while writing to stderr. Any wrapper
+          that treats stderr output as a failure signal — a common CI and Makefile pattern — sees
+          a successful run as broken. The message carries no information either: it does not say
+          what code was requested or which document halted. jq's halt is silent; only halt_error
+          writes to stderr, and it writes the value, not the word.
+        remediation: |
+          Branch on the variant before printing: return exit_for(&error) directly for Halt and
+          keep the eprintln for the other four variants. If a halt diagnostic is wanted, emit it
+          only for non-zero codes and include the code.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [exit-code-mapping-diverges-from-spec]
+        effort: trivial
+        effort_notes: "One match arm in report()"
+
+      - slug: runtime-errors-drop-document-and-file-identity
+        title: "Filter runtime errors are stringified without the filename or document index already in scope"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 180
+            end_line: 187
+        evidence: |
+          for input in &mut driver {
+              let input = input.map_err(|error| E::from(YgError::InputParse(error)))?;
+              for output in filter.id.run((jaq_context.clone(), input)) {
+                  let output: YamlVal = output.map_err(|error| E::from(YgError::runtime(error)))?;
+                  last = Some(output.as_bool());
+                  visit(output)?;
+              }
+          }
+        evidence_markers:
+          - lines: "4"
+            type: mark
+            label: "jaq error stringified with no reference to context.input_meta"
+        mechanism: |
+          run_filter_with_null_input receives &RunCtx, whose input_meta RefCell holds the current
+          filename, file_index and document_index (engine.rs:48-65), refreshed for every record by
+          the input iterator in query.rs:86-89. The runtime-error arm ignores it, so
+          `yg '.a.b' *.yaml` over fifty files fails with a bare "yg: cannot index string with b"
+          and no indication of which file or which document triggered it.
+
+          The contrast is visible in the same codebase: parse errors are prefixed with the
+          filename in append_input (query.rs:352-355), and BuildError::UnknownAlias carries a line
+          and column (error.rs:12-22). The gap is worst under -i, where the user must work out
+          which of several files aborted the run — and, per the partial-application finding, which
+          ones were already rewritten before it did.
+        remediation: |
+          In the runtime-error arm, borrow context.input_meta and prefix the message with the
+          filename and document index in the same "{filename}: " form append_input already uses,
+          falling back to "<stdin> document N". Consider making YgError::Runtime a struct with
+          optional filename and document fields rather than a bare String, so the formatting lives
+          in one place and callers cannot forget it.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [in-place-multi-file-partial-application]
+        effort: small
+        effort_notes: "Read the existing RefCell and format; no new plumbing needed"
+
+  - slug: filter-parameterization
+    title: "The Filter Parameterization Surface"
+    thesis: "The compiler accepts global variables and the CLI never supplies any, so the only way to get a runtime value into a filter is to concatenate it into the program text."
+    verdict: "This is a missing affordance rather than a bug in existing code — nothing here is wrong, something is absent. But the absence has a security consequence: without --arg, shell interpolation into the FILTER argument is the only option available, and that is a code-injection sink into a language that can read the environment and forge exit codes. The mechanism to fix it is already built and wired; compile_filter takes a variables slice and forwards it correctly. The sole caller passes an empty one."
+
+    findings:
+      - slug: no-argument-binding-forces-filter-concatenation
+        title: "with_global_vars is wired to an empty slice — there is no --arg, so values must be concatenated into filter text"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 129
+            end_line: 137
+        evidence: |
+          let variables = variables
+              .iter()
+              .map(|variable| format!("${variable}"))
+              .collect::<Vec<_>>();
+          compile::Compiler::default()
+              .with_funs(crate::funs::all_funs())
+              .with_global_vars(variables.iter().map(String::as_str))
+              .compile(modules)
+              .map_err(|errors| YgError::FilterCompile(render_compile_errors(errors)))
+        evidence_markers:
+          - lines: "5-7"
+            type: mark
+            label: "the parameterization mechanism is present and functional"
+          - lines: "1-4"
+            type: del
+            label: "but the only caller passes &[], so no variable can ever be bound"
+        mechanism: |
+          compile_filter accepts variables: &[String] and correctly forwards it to jaq's
+          with_global_vars. The sole call site at commands/query.rs:35 passes &[]. There is no
+          --arg, --argjson, --slurpfile or --args in QueryArgs — confirmed against `yg --help` on
+          the built binary at 27cf037, which lists no such flag — and jaq's Vars::new([]) in
+          run_filter_with_null_input supplies no values either. A filter has no way to receive a
+          value except as literal text inside the program.
+
+          That leaves shell concatenation as the only option, which is the jq-injection sink. A CI
+          step writing `yg ".services[] | select(.name == \"$SERVICE\")" stack.yaml` hands $SERVICE
+          to the jaq lexer; a value of `x") | halt_error(0) | ("` terminates the string literal and
+          appends filter code. From there the program is attacker-chosen, including env (below),
+          halt to forge an exit code, and — with -i — the contents written back to the file. The
+          spec defers --arg to a later milestone, so the gap is planned; what makes it a finding
+          now is that the unsafe alternative is the only one currently available and nothing warns
+          about it.
+        remediation: |
+          Add --arg NAME VALUE and --argjson NAME JSON to QueryArgs, collect them into the
+          variables slice compile_filter already accepts, and bind their values through Vars in
+          run_filter_with_null_input (currently Vars::new([]) at engine.rs:171). Until then,
+          document in --help that interpolating shell values into the FILTER argument is unsafe.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: [env-filter-registered-unconditionally]
+          enabled_by: []
+          related: [exit-code-mapping-diverges-from-spec]
+        effort: medium
+        effort_notes: "Two clap args plus threading values into Vars; the compiler side is already done"
+
+      - slug: env-filter-registered-unconditionally
+        title: "all_funs registers jaq-std's env, exposing the process environment to any compiled filter"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/funs.rs
+            start_line: 11
+            end_line: 22
+        evidence: |
+          pub fn all_funs() -> impl Iterator<Item = Fun<YgKind>> {
+              let run = run::<YgKind>;
+              jaq_core::funs::<YgKind>()
+                  .chain(jaq_std::funs::<YgKind>())
+                  .chain(
+                      jaq_std::input::funs::<YgKind>()
+                          .into_vec()
+                          .into_iter()
+                          .map(run),
+                  )
+                  .chain(yg_natives().into_vec().into_iter().map(run))
+          }
+        evidence_markers:
+          - lines: "4"
+            type: mark
+            label: "jaq_std::funs pulls in the std feature group, where env and now live"
+        mechanism: |
+          jaq-std is depended on with default features (crates/yamalgam-query/Cargo.toml:14), so
+          jaq_std::funs() resolves to base_funs().chain(extra_funs()) and extra_funs includes the
+          std() group — env, which returns std::env::vars() as a mapping, and now.
+
+          Confirmed against the built binary at 27cf037:
+
+            $ SECRET=hunter2 yg -n 'env.SECRET'
+            hunter2
+
+          This matches jq's behaviour and the operator normally types the filter, so it is not an
+          exposure in ordinary CLI use. It matters for two reasons. compile_filter and all_funs are
+          public API on a library crate with no way to opt out, so any embedder compiling filters
+          supplied by its own users inherits environment read with no knob to disable it. And it is
+          the payload that makes the concatenation sink above worth exploiting.
+
+          The rest of this boundary is clean and worth recording: jaq's module loader is left at
+          its default `read: |_path| Err("module loading not supported".into())`, so include and
+          import cannot touch the filesystem; input/inputs are bounded to the CLI-supplied RcIter;
+          and no filter can spawn a process or open a socket.
+        remediation: |
+          Split the registration so embedders can choose: keep all_funs() as the CLI's full set and
+          add all_funs_sandboxed(), or a sandbox: bool on compile_filter. Note that the obvious
+          implementation is not available — in jaq-std 3.0.1, std(), format(), math(), regex(),
+          time() and log() are all private (src/lib.rs:460, 482, 518, 612, 625, 663); only funs(),
+          base_funs() and extra_funs() are pub, so the restricted set cannot be assembled from the
+          individual groups. Three implementable options: base_funs() alone, which drops
+          format/math/regex/time/log wholesale and is probably too blunt; filter the all_funs()
+          iterator by Fun name to remove env and now, which is the recommended path since it is
+          surgical and needs no upstream change; or patch jaq-std to export the groups. Document on
+          compile_filter that the default set grants environment read.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 7
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,7]
+        chains:
+          enables: []
+          enabled_by: [no-argument-binding-forces-filter-concatenation]
+          related: []
+        effort: medium
+        effort_notes: "jaq-std exposes none of its function groups, so the restricted set must be built by name-filtering all_funs() rather than by composing groups"
+
+  - slug: value-model
+    title: "The Value Model Surface"
+    thesis: "The value type is well built — O(1) clone, total and mutually consistent Ord/Eq/Hash, jq-faithful arithmetic — but it is publicly constructible and publicly parseable without being publicly readable."
+    verdict: "This is the surface with the least wrong and the most to decide. Nothing here is broken today; the crate has exactly one consumer and that consumer lives inside the workspace. But M11 adds !include/$ref resolvers and M12 adds schema validation and an LSP, and every one of those must walk a parsed tree and branch on node type — which the current public API cannot do. The crate is pre-release with no downstream users, so the cost of fixing the shape now is close to zero and rises monotonically from here. That is the argument for doing it before M11 starts, not a criticism of what exists."
+
+    findings:
+      - slug: no-public-read-access-to-yamlval
+        title: "YamlVal can be constructed and parsed from outside the crate but not read — no accessor reaches Bool, Int, Float, Seq or Map"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 71
+            end_line: 75
+        evidence: |
+          #[derive(Clone, Debug, Default)]
+          pub struct YamlVal {
+              pub(crate) data: Data,
+              pub(crate) meta: Option<Rc<Meta>>,
+          }
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "the only route to the variant is crate-private; no data() accessor exists"
+        mechanism: |
+          parse_str and parse_str_with_config are public and return Vec<YamlVal>, and there are
+          seven public constructors (null, int, float, str, seq, map, with_meta) plus From impls.
+          The complete set of public read accessors is meta(), type_name(), kind_name(),
+          tag_shorthand(), style_name(), get_str(), is_string(), as_str_content() and keys(). There
+          is no way for an external caller to obtain a bool, an i64 or an f64, to iterate a
+          sequence, or to iterate a mapping's values.
+
+          value::Data is declared pub (value.rs:44) and value::YgMap is declared pub (value.rs:39),
+          so both are nameable — but neither is re-exported from lib.rs, YgMap's single field is
+          pub(crate), and YamlVal.data is pub(crate). They are public names with zero reachable
+          surface.
+
+          The in-crate tests show the friction: tests/value.rs verifies numeric contents only by
+          comparing against a re-constructed YamlVal (tests/value.rs:144), and tests/engine.rs
+          asserts on value.to_string() because no structural inspection is available. Those are
+          integration tests, so they see exactly the surface a downstream crate would see. The
+          roadmap puts !include/$ref in M11 and schema validation plus an LSP in M12; each must
+          walk a tree and branch on node type, so each would have to live inside yamalgam-query or
+          reimplement parsing.
+        remediation: |
+          Decide the public read contract now, while there are no downstream users. Minimal
+          version: re-export Data from lib.rs, add `pub fn data(&self) -> &Data`, and give YgMap a
+          public iteration and lookup surface (iter, get, len, is_empty). If committing to the Data
+          layout is undesirable, the alternative is a typed accessor set — as_bool, as_i64, as_f64,
+          as_seq() -> Option<&[YamlVal]>, iter_entries() — modelled on serde_json::Value. Either
+          way, land it before M11 begins consuming the crate, and make YgMap either genuinely
+          public or pub(crate).
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [alias-metadata-survives-mutation-dropping-edits, rc-makes-value-model-non-send]
+        effort: small
+        effort_notes: "Adding accessors and re-exports is mechanical; the only real decision is whether Data becomes part of the public contract"
+
+      - slug: input-meta-refcell-races-with-input-lookahead
+        title: "RunCtx.input_meta is written by the input iterator, so input/inputs lookahead makes filename report the wrong document"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 85
+            end_line: 89
+        evidence: |
+          let iterator_context = Rc::clone(&context);
+          let inputs = records.into_iter().map(move |record| {
+              *iterator_context.input_meta.borrow_mut() = record.metadata;
+              record.value
+          });
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "per-document metadata is written as a side effect of pulling the next input"
+        mechanism: |
+          RunCtx exposes pub input_meta: RefCell<InputMeta> (engine.rs:64) and the CLI writes it
+          from inside the input iterator's map closure. The engine wraps that same iterator in an
+          RcIter (engine.rs:165) handed to jaq as Inputs, and the native filters filename,
+          file_index and document_index (funs.rs:164-196) read the RefCell back during evaluation.
+
+          Nothing sequences these. jaq's input and inputs pull from the same RcIter while the
+          current document's filter is still running, and each pull re-runs the closure above,
+          overwriting input_meta with the next record's metadata. So `input as $next | filename`
+          reports the filename of $next, not of the document under evaluation, and inputs leaves
+          input_meta pinned at the last record for the rest of the run. Under -n the driver is a
+          single null while inputs still consumes real records, so filename reports whichever
+          record was pulled most recently.
+
+          This is not a borrow panic today — every borrow() in funs.rs is a statement-scoped
+          temporary — but the shape is one shared RefCell written by a lazily-driven iterator and
+          read re-entrantly from inside that iterator's consumer, which is exactly the arrangement
+          that becomes a BorrowMutError the first time a native filter holds a Ref across a pull.
+        remediation: |
+          Carry the metadata with the value instead of in ambient mutable state: make the engine's
+          input item (InputMeta, YamlVal), or attach it in the driver loop inside
+          run_filter_with_null_input, which already owns the point where a document becomes the
+          current one. If the RefCell stays, make the field private behind
+          set_input_meta/input_meta() accessors so the write point is auditable, and document that
+          filename is unspecified in combination with input/inputs.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [runtime-errors-drop-document-and-file-identity]
+        effort: medium
+        effort_notes: "Threading metadata through the input item changes the engine signature and both CLI call paths"
+
+      - slug: integer-only-indexing-diverges-from-equal-float-values
+        title: "Indexing and slicing accept only Data::Int, so a float that compares equal to an integer is a type error"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/valt.rs
+            start_line: 331
+            end_line: 336
+        evidence: |
+          const fn as_int(&self) -> Option<i64> {
+              match self.data {
+                  Data::Int(number) => Some(number),
+                  _ => None,
+              }
+          }
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "Data::Float(3.0) returns None despite comparing == to Data::Int(3)"
+        mechanism: |
+          PartialEq for YamlVal treats Int(3) and Float(3.0) as equal (value.rs:582-584) and Hash
+          gives them the same hash (value.rs:644-645) — they are indistinguishable as mapping keys.
+          But the integer-only rule is encoded in four independent places with no shared helper:
+          as_int itself, reached from map_index (valt.rs:178 and 224) and from range_bounds
+          (valt.rs:356) feeding range and map_range; ValT::index (valt.rs:90), which does not call
+          as_int at all but pattern-matches `(Data::Seq(items), Data::Int(position))` inline; and
+          jaq_std::ValT::as_isize (valt.rs:405) for std filters like limit and nth.
+
+          So two values the type system says are equal behave differently. Confirmed against the
+          built binary at 27cf037: `.[1]` on `[1,2,3]` returns 2, while `.[1.0]` fails with
+          "cannot index [1, 2, 3] with 1.0". This is reachable from ordinary arithmetic rather than
+          from a float literal — ValT::from_num (valt.rs:23) parses 3.0 as a Float, and Div returns
+          Float whenever the division is inexact (ops.rs:155), so a computed index is a Float
+          whenever the arithmetic that produced it was. Four separate encodings of one rule is the
+          durable problem here: jaq_core and jaq_std can drift on what counts as an integer as
+          either impl grows, and nothing would catch it.
+        remediation: |
+          Pick one contract and encode it once. If integral floats should index — closest to jq and
+          to the compat promise the module doc makes — give as_int a single implementation that
+          also accepts Data::Float(f) where f.fract() == 0.0 && f.is_finite(), and have all four
+          sites call it, including the inline match at valt.rs:90. Note that accepting integral
+          floats alone does not reach jq parity for slice bounds: jq truncates, so `.[0:(length/2)]`
+          works there on odd-length input where the bound is 1.5, and an f.fract() == 0.0 test
+          would still reject it. Decide separately whether to truncate non-integral finite floats
+          in range_bounds. If integer-only is the intended contract, document the divergence in the
+          deviations ledger alongside the existing i64 note and add a regression test pinning
+          `.[1.0]` to the intended error.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: small
+        effort_notes: "One shared helper plus three call sites; the decision costs more than the code"
+
+      - slug: run-filter-signature-overconstrains-callers
+        title: "run_filter requires 'static inputs and a String error channel that jaq itself does not require"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 157
+            end_line: 163
+        evidence: |
+          pub fn run_filter_with_null_input<E: From<YgError>>(
+              filter: &Filter<YgKind>,
+              context: &RunCtx,
+              inputs: impl Iterator<Item = Result<YamlVal, String>> + 'static,
+              null_input: bool,
+              mut visit: impl FnMut(YamlVal) -> Result<(), E>,
+          ) -> Result<Option<bool>, E> {
+        evidence_markers:
+          - lines: "4"
+            type: del
+            label: "'static and String are both stricter than the underlying jaq contract"
+        mechanism: |
+          The 'static bound is an artifact of the boxing on engine.rs:164 —
+          `let inputs: Box<dyn Iterator<Item = Result<YamlVal, String>>> = Box::new(inputs);` —
+          whose elided trait-object lifetime defaults to 'static. jaq's own contract is
+          lifetime-generic: jaq_std::input::Inputs<'i, V> is
+          `&'i RcIter<dyn Iterator<Item = Result<V, String>> + 'i>`. Making the function generic
+          over a lifetime and boxing as `Box<dyn Iterator<Item = ...> + 'a>` would compile unchanged
+          and would let callers stream values out of a borrowed buffer instead of materializing
+          owned ones first.
+
+          The String error channel is jaq's, but re-exporting it verbatim in yg's own public
+          signature pushes stringification onto every caller before the engine can classify the
+          failure. The engine immediately re-wraps it as YgError::InputParse(String)
+          (engine.rs:181), so a caller's typed BuildError is flattened to text and can never be
+          matched on again. The CLI already pays for this: append_input (query.rs:346-357) discards
+          a structured BuildError into a formatted string, and every test writes
+          `documents.into_iter().map(Ok::<_, String>)` because inference cannot pick the error type.
+          Separately, run_filter (engine.rs:144) exists only to call run_filter_with_null_input with
+          false — two public entry points for one operation.
+        remediation: |
+          Introduce a lifetime parameter and box as `Box<dyn Iterator<Item = _> + 'a>` so borrowed
+          input iterators are accepted. Replace the String item error with BuildError (or a second
+          generic IE: Into<YgError>) and convert at the boundary, which also removes the turbofish
+          from every call site. Collapse the two entry points into one — or, given the crate is
+          pre-release, simply drop the convenience wrapper.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [input-meta-refcell-races-with-input-lookahead, no-public-read-access-to-yamlval]
+        effort: small
+        effort_notes: "Signature change plus one boxing annotation; call sites in the CLI and three test files"
+
+      - slug: rc-makes-value-model-non-send
+        title: "Rc throughout YamlVal makes the whole value model !Send, foreclosing parallel consumers"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 71
+            end_line: 75
+        evidence: |
+          #[derive(Clone, Debug, Default)]
+          pub struct YamlVal {
+              pub(crate) data: Data,
+              pub(crate) meta: Option<Rc<Meta>>,
+          }
+        evidence_markers:
+          - lines: "4"
+            type: mark
+            label: "Rc here and in every Data collection variant makes YamlVal !Send and !Sync"
+        mechanism: |
+          Data holds Rc<Vec<YamlVal>>, Rc<YgMap> and Rc<str>, and meta is Option<Rc<Meta>>. That is
+          the right call for the jaq hot path — Rc's non-atomic refcount is measurably cheaper than
+          Arc's, and jaq is single-threaded by construction — so this is a deliberate and correct
+          trade, not an oversight. It is recorded here because it is a public API commitment that
+          is invisible in the signatures: no downstream consumer can move a YamlVal across a thread
+          boundary, which forecloses a parallel multi-file mode for yg (a natural fit for
+          `yg -i '...' **/*.yaml`) and any future LSP that wants to parse documents off the main
+          thread.
+
+          The cost of changing it later is high and rises with every consumer: it is not a
+          signature change but a type-parameter or wholesale substitution across value.rs, valt.rs,
+          ops.rs, build.rs and both emitters.
+        remediation: |
+          No action required if single-threaded is the intended long-term contract — in which case
+          document it on YamlVal so consumers learn it from the docs rather than from a compile
+          error. If parallelism is wanted later, the cheapest path is to make the pointer type a
+          crate-level alias now (type Shared<T> = Rc<T>) so a future switch to Arc is one line plus
+          a recompile, and to decide before M12's LSP work rather than during it.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [no-public-read-access-to-yamlval]
+        effort: small
+        effort_notes: "The alias indirection is trivial now; an actual Arc switch later is medium"
+
+  - slug: emission-performance
+    title: "The Emission Performance Surface"
+    thesis: "The value model is genuinely fast and the emitter is where the allocations are — a String per node, a String per line of indentation, a copy per scalar inspected, and a linear scan per anchor lookup."
+    verdict: "The headline question has a good answer: YamlVal clone is O(1) regardless of document size, and an alias shares its referent rather than copying it, so jaq's constant cloning is cheap and the core value model is the fast part of this crate. None of the findings here affect correctness, and for typical CLI documents none are user-visible. They are recorded because this is a workspace with a dedicated benchmark crate and an explicit performance identity — the emitter is currently the part that would show up in those benchmarks, and it is also the part slated for replacement in M13, which makes now the cheap moment to decide whether to optimize it or wait."
+
+    findings:
+      - slug: yaml-inline-emitter-string-per-node
+        title: "Flow emission allocates a String per node and copies each subtree into its parent"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 191
+            end_line: 191
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 390
+            end_line: 392
+        evidence: |
+          fn indent(&self, output: &mut String, depth: usize) {
+              output.push_str(&" ".repeat(self.options.indent.saturating_mul(depth)));
+          }
+        evidence_markers:
+          - lines: "2"
+            type: del
+            label: "String::repeat allocates a fresh heap buffer for every emitted line"
+        mechanism: |
+          The block path writes into a shared &mut String, which is the right shape. The flow path
+          does not: `fn inline(&mut self, value: &YamlVal) -> String` (emit/yaml.rs:191) builds each
+          nested value into its own String and then pushes that String into its parent's, so a
+          value at depth d is copied d times on its way to the output. For a document rendered with
+          -c, total copying is O(output_size * depth) rather than O(output_size).
+
+          Indentation is a separate allocation of the same kind: every emitted line calls
+          `" ".repeat(indent * depth)`, allocating and dropping a heap buffer per line. A 100k-line
+          document performs 100k allocations to write whitespace that could come from a single
+          cached string sliced to length. Neither is visible on a small config file; both scale
+          with output size, and this crate's sibling benchmark suite measures exactly that.
+        remediation: |
+          Thread the same &mut String through inline() that block emission already uses, so nested
+          values append in place instead of building and copying. For indentation, keep one
+          preallocated string of spaces on the Context and push a slice of it — extending only when
+          a deeper level is first reached.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [needs-quotes-copies-every-scalar-it-inspects]
+        effort: small
+        effort_notes: "Signature change on inline() plus a cached indent buffer on Context"
+
+      - slug: needs-quotes-copies-every-scalar-it-inspects
+        title: "needs_quotes allocates a full copy of each scalar just to test its resolved type"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 705
+            end_line: 713
+        evidence: |
+          pub(crate) fn needs_quotes(value: &str) -> bool {
+              use yamalgam_core::{TagResolution, TagResolver as _, Value};
+
+              if value.is_empty()
+                  || !matches!(
+                      TagResolution::Yaml12.resolve_scalar(value),
+                      Value::String(_)
+                  )
+              {
+        evidence_markers:
+          - lines: "6"
+            type: mark
+            label: "resolve_scalar builds an owned Value — for the String case that is a full copy"
+        mechanism: |
+          resolve_scalar returns an owned yamalgam_core::Value. For a scalar that resolves as a
+          string — the overwhelmingly common case — that means allocating a String containing the
+          entire scalar, matching on it, and dropping it, purely to learn that it was a string. The
+          cost is one allocation and one full copy per scalar emitted, so a document with N string
+          scalars performs N copies of the document's total scalar bytes on top of writing them.
+
+          This is on the default output path: every plain scalar in every emitted document goes
+          through it. It compounds with the per-node String allocation above, since both run over
+          the same data.
+        remediation: |
+          Add a borrowing or predicate form to the TagResolver trait — resolves_as_string(&str) ->
+          bool, or a resolve_scalar_kind returning a lightweight enum — and call that from
+          needs_quotes. The resolver already computes the discriminant before building the Value;
+          this only avoids materializing the payload.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [yaml-inline-emitter-string-per-node]
+        effort: small
+        effort_notes: "A new trait method in yamalgam-core plus one call site; touches a crate outside yamalgam-query"
+
+      - slug: emitter-anchor-table-is-a-linear-scanned-vec
+        title: "Emitted-anchor lookup is a linear Vec<String> scan run several times per node"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 321
+            end_line: 326
+        evidence: |
+          fn alias_is_emittable(&self, value: &YamlVal) -> bool {
+              value
+                  .meta()
+                  .and_then(|meta| meta.alias_of.as_deref())
+                  .is_some_and(|alias| self.anchors_emitted.iter().any(|anchor| anchor == alias))
+          }
+        evidence_markers:
+          - lines: "5"
+            type: mark
+            label: "O(n) scan per lookup, with a full string compare at each step"
+        mechanism: |
+          anchors_emitted is a Vec<String> scanned linearly on every alias check, and the check runs
+          per node during emission. For a document with A anchors and N nodes, emission is
+          O(N * A) in string comparisons. Most real documents have a handful of anchors, so this is
+          invisible in practice — but a generated document with thousands of anchors (Helm value
+          trees and CI matrices both produce these) turns emission quadratic.
+
+          The same shape appears in IdentityInventory (value.rs), which dedupes anchors with a
+          linear Vec scan, making the `aliases` and `orphan_anchors` filters quadratic in anchor
+          count. Those two filters exist specifically to audit documents with many anchors, which
+          is the input that makes the scan expensive.
+        remediation: |
+          Replace both with a HashSet<Rc<str>> (or an IndexSet where insertion order is needed for
+          output). The anchor names are already Rc<str> in Meta, so the set can share them without
+          new allocation.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 9
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,9]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [alias-audit-skips-mapping-keys]
+        effort: trivial
+        effort_notes: "Two container type changes"
+
+      - slug: query-cli-materializes-all-inputs-before-filtering
+        title: "The CLI parses every document of every input file into memory before the filter runs"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 242
+            end_line: 249
+        evidence: |
+          if files.is_empty() {
+              let mut input = String::new();
+              std::io::stdin()
+                  .read_to_string(&mut input)
+                  .map_err(|error| {
+                      YgError::InputParse(format!("failed to read standard input: {error}"))
+                  })?;
+              append_input(&mut records, input, None, 0, args, config);
+        evidence_markers:
+          - lines: "2-4"
+            type: del
+            label: "whole input read to a String, then fully parsed, before any filter runs"
+        mechanism: |
+          collect_inputs reads each source to a String and parses every document into a Vec of
+          records before run_filter is called. Peak memory is therefore the sum of all input files
+          plus their full parsed representations, even for a filter that inspects one field of the
+          first document. jq streams: it parses one value, runs the filter, emits, and moves on,
+          so its resident set is bounded by the largest single document rather than the whole
+          input set.
+
+          The practical consequences: `yg '.name' **/*.yaml` over a large repo holds every file in
+          memory simultaneously, and `yg 'first(.[])' huge.yaml` pays for the entire document. It
+          also means yg cannot be used on a stream that never ends — `kubectl get -w -o yaml | yg .`
+          produces nothing, because collect_inputs is still waiting for EOF. Whether this is a
+          design choice or an accident is not recorded anywhere; the spec does not commit either
+          way.
+        remediation: |
+          Make the record source a lazy iterator that parses one document at a time and yields it,
+          rather than a Vec built up front. The engine already consumes an
+          `impl Iterator<Item = Result<YamlVal, String>>`, so the interface it needs is in place;
+          the change is confined to collect_inputs and its callers. Note that -s (slurp) and -i
+          legitimately need the whole set, so those paths keep the eager form. If streaming is not
+          wanted, record the decision in the spec so the memory profile is a stated contract.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [null-input-still-blocks-on-stdin]
+        effort: medium
+        effort_notes: "Lazy iterator plumbing through collect_inputs; the engine side already accepts it"
+
+  - slug: spec-conformance
+    title: "The Spec Conformance Surface"
+    thesis: "The eleven documented deviations are all accurate and all genuinely owned; the gaps are the drift the ledger does not admit."
+    verdict: "This is the surface that came out best, and the discipline behind it deserves saying plainly: every one of the eleven entries in the implementation-notes ledger was checked against the code and every one is correct, and the jq-manual allowlist gives each expected failure an individual reason with a spec cross-reference. That is better conformance tracking than most shipped tools have. The findings below are all of one kind — behaviour that diverges from a documented promise and is not in the ledger. The fix for several is a ledger entry rather than code, which is cheap; the point is that the ledger is currently the project's strongest conformance artifact and these items are missing from it."
+
+    findings:
+      - slug: alias-audit-skips-mapping-keys
+        title: "aliases and orphan_anchors never inspect mapping keys, so key anchors and key aliases are invisible"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 517
+            end_line: 523
+        evidence: |
+          Data::Map(mapping) => {
+              for (key, value) in &mapping.0 {
+                  path.push(key.clone());
+                  self.visit(value, path);
+                  path.pop();
+              }
+          }
+        evidence_markers:
+          - lines: "3-4"
+            type: del
+            label: "key is used as a path segment only; visit() is never called on it"
+        mechanism: |
+          IdentityInventory::visit descends into sequence items and mapping values but never into
+          the key node itself, even though the builder gives keys full metadata — build.rs:140
+          builds keys through the same node() path, so `&anchored_key: v` and `*alias_key: v` both
+          carry anchor and alias_of.
+
+          The consequences are wrong answers rather than errors. An anchor defined on a key is
+          missing from the inventory, and — worse — an alias used as a key is not counted as a
+          reference, so orphan_anchors reports a genuinely referenced anchor as an orphan. Both
+          filters are advertised in README.md as auditing tools, which is exactly the use case a
+          false positive breaks. The behaviour is also inconsistent with explode_aliases, which
+          does recurse into keys (value.rs:388-394). Nothing in the deviations ledger mentions
+          this; the only test (tests/engine.rs:216) uses value-position anchors.
+        remediation: |
+          Call self.visit(key, path) for each key before visiting the value, using a path
+          representation that distinguishes key position from value position. Add a test with
+          `&k key: v` and a second mapping whose key is `*k`.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 1
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,1]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [emitter-anchor-table-is-a-linear-scanned-vec]
+        effort: small
+        effort_notes: "One recursive call plus a path-representation decision"
+
+      - slug: regex-is-not-pcre
+        title: "Regex filters are backed by regex-bites, not the PCRE-compatible engine the spec promises"
+        concern: moderate
+        locations:
+          - path: docs/spec/yg-query-language-spec-draft-01.md
+            start_line: 265
+            end_line: 266
+        evidence: |
+          r[filters.regex]
+          `test`, `match`, `capture`, `scan`, `split`, `sub`, `gsub` — identical to jq. PCRE-compatible patterns.
+        evidence_markers:
+          - lines: "2"
+            type: del
+            label: "PCRE compatibility is promised; the shipped engine is a finite-automata matcher"
+        mechanism: |
+          The regex surface is delegated wholesale to jaq-std 3.0.1, which depends on regex-bites
+          (Cargo.lock:625-637); defs.jq only wraps the native matches builtin for match and scan.
+          regex-bites is a finite-automata engine in the Rust regex family: no lookahead, no
+          lookbehind, no backreferences, no possessive or atomic groups. jq 1.8 uses Oniguruma,
+          which supports all of them.
+
+          Every jq-manual example in the corpus passes, so the common cases — named captures,
+          flags, g — are fine. But a user porting a real jq script containing (?=...), (?<=...) or
+          \1 gets a runtime error rather than a result. That is at least a hard failure rather than
+          silent degradation, which is the right direction. The problem is documentary: the promise
+          in the spec is unqualified and the deviations ledger does not list it, so a user has no
+          document telling them the limit exists. The unmatched-optional-capture difference is
+          already allowlisted (tests/fixtures/manual-allowlist.yml:39-41), which shows the engine
+          difference is known at the case level but not at the capability level.
+        remediation: |
+          Add a numbered entry to docs/spec/yg-spec-draft-01-implementation-notes.md stating that
+          regex support is the regex-bites/RE2-style subset — no lookaround, no backreferences —
+          and have draft 02 replace "PCRE-compatible" with the accurate constraint. Optionally
+          mention the workaround in README.
+        temporal:
+          introduced: 2026-06-10
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "One ledger entry; the spec-text change lands in draft 02"
+
+  - slug: supply-chain
+    title: "The Supply Chain Surface"
+    thesis: "The dependency tree is clean by every automated measure, and the one real gap is that the pre-release gate does not run the policy it thinks it runs."
+    verdict: "Nothing to fix in the dependencies themselves: no CVEs, no yanked crates, licenses inside policy, lockfile committed, toolchain pinned, one new build script and zero new proc-macro crates across the whole M10 subtree. The workspace's dependency-light discipline relaxes here for the first time, and it relaxes for good reasons — jaq supplies an entire language implementation that would be absurd to rewrite. The two items worth a decision are the pre-release recipe's cargo-deny invocation, which silently checks the wrong policy, and how tightly to pin jaq given that this crate implements jaq's own traits."
+
+    findings:
+      - slug: release-check-runs-cargo-deny-without-config
+        title: "The pre-release recipe runs bare cargo deny check, which falls back to built-in defaults and fails"
+        concern: moderate
+        locations:
+          - path: .justfile
+            start_line: 176
+            end_line: 180
+        evidence: |
+          # Security/license check
+          echo ""
+          echo "🔐 Running cargo-deny..."
+          cargo deny check
+          echo "✅ Dependencies OK"
+        evidence_markers:
+          - lines: "4"
+            type: del
+            label: "no --config, so cargo-deny falls back to built-in defaults and fails"
+        mechanism: |
+          The project's cargo-deny policy lives at .config/deny.toml, not at the repo-root default
+          path, so every invocation must pass --config. The dedicated `deny` recipe at
+          .justfile:21-22 does — `cargo deny --all-features --config .config/deny.toml check` — and
+          this branch actually fixed its argument order (previously `check --config ...`, which
+          cargo-deny rejects). The pre-release recipe shown above was not updated and still runs
+          bare `cargo deny check`.
+
+          Verified against the working tree at 27cf037:
+
+            $ cargo deny --all-features --config .config/deny.toml check
+            advisories ok, bans ok, licenses ok, sources ok
+
+            $ cargo deny check
+            error[rejected]: failed to satisfy license requirements
+              ... (dozens, including "MIT OR Apache-2.0" on anyhow, anstream, anstyle)
+            advisories ok, bans ok, licenses FAILED, sources ok
+
+          Without --config, cargo-deny uses built-in defaults with no license allowlist, so it
+          rejects MIT/Apache-2.0 — meaning the pre-release gate fails on a tree whose policy is
+          fully satisfied. The practical outcome is that whoever runs it learns to ignore the
+          failure, which is worse than not running the check: an ignored red gate does not catch
+          the real advisory when one lands.
+        remediation: |
+          Change .justfile:179 to invoke the existing recipe (`just deny`) rather than duplicating
+          the command, so there is one definition of what the check means. Confirm the CI workflow
+          uses the same form. As a general rule, any command with a required flag should live in
+          exactly one recipe that other recipes call.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-08-02
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "One line"
+
+      - slug: jaq-trait-coupling-outruns-version-constraint
+        title: "The crate implements two of jaq's own traits but pins jaq with a caret range that admits minor upgrades"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/Cargo.toml
+            start_line: 12
+            end_line: 14
+        evidence: |
+          indexmap = "2"
+          jaq-core = "3.0"
+          jaq-std = "3.0"
+        evidence_markers:
+          - lines: "2-3"
+            type: mark
+            label: "^3.0 admits any 3.x, but the coupling is to trait layout, not just public API"
+        mechanism: |
+          valt.rs implements jaq_core::ValT and, separately, jaq_std::ValT — jaq 3.0 split the trait
+          across two crates, and yamalgam-query implements both. Implementing a dependency's traits
+          is a much tighter coupling than calling its functions: a new required method, a changed
+          associated type, or a default-method signature change in any 3.x release is a compile
+          break, and semver permits all of those on a trait that is not sealed and not
+          #[non_exhaustive]-guarded.
+
+          Nothing is broken today and it builds clean — but the caret has already been exercised.
+          Cargo.lock:614-615 pins jaq-core 3.1.0, not 3.0.1; only jaq-std is still at 3.0.1
+          (Cargo.lock:624-626). So a minor bump on the crate whose traits this code implements has
+          already been taken silently under this range. That strengthens the case rather than
+          weakening it: the range says "any 3.x is fine" while the code's actual tolerance is
+          narrower and unstated, and the next bump may not be as benign. Both trait impls are
+          present and confirmed: jaq_core::ValT at valt.rs:22, jaq_std::ValT at valt.rs:395.
+        remediation: |
+          Decide deliberately and write it down. Either tighten to `jaq-core = "~3.0"` /
+          `jaq-std = "~3.0"` so a minor bump is an explicit action, or keep the caret and add a
+          comment in Cargo.toml noting that valt.rs implements jaq traits and that jaq upgrades
+          need a compile check rather than a rubber stamp. Whichever, a CI job that periodically
+          builds against the latest permitted jaq would turn a future break into a scheduled
+          notification rather than a surprise.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 1
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,1]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "A version-range edit plus a comment, or a scheduled CI job"
+
+      - slug: unused-dev-dep-pretty-assertions
+        title: "pretty_assertions is declared as a dev-dependency but not used by any test"
+        concern: note
+        locations:
+          - path: crates/yamalgam-query/Cargo.toml
+            start_line: 20
+            end_line: 22
+        evidence: |
+          [dev-dependencies]
+          pretty_assertions = "1"
+          serde = { version = "1", features = ["derive"] }
+        evidence_markers:
+          - lines: "2"
+            type: del
+            label: "reported unused by cargo-udeps; no test file imports it"
+        mechanism: |
+          cargo udeps flags pretty_assertions as an unused dev-dependency of yamalgam-query. udeps
+          has known false positives — it cannot see doc-test usage — but none of the four
+          integration test files import it. The cost is a small unnecessary compile in the test
+          profile, nothing more; it is recorded because an unused declaration tends to be a leftover
+          from a scaffolding step and is cheapest to resolve while the memory of it is fresh.
+        remediation: |
+          Either remove the dependency, or start using it — its diff output is genuinely better than
+          std assert_eq! for the multi-line YAML comparisons these tests do, so adopting it is at
+          least as reasonable as dropping it.
+        temporal:
+          introduced: 2026-08-02
+          last_modified: 2026-08-02
+          commit_count: 1
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,1]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "Delete one line, or add one import"
+
+summary:
+  counts:
+    critical: 4
+    significant: 5
+    moderate: 22
+    advisory: 4
+    note: 1

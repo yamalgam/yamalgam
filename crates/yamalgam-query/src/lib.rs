@@ -26,3 +26,11 @@ pub use build::{parse_str, parse_str_with_config};
 pub use emit::{EmitError, EmitFormat, EmitOpts};
 pub use error::{BuildError, YgError};
 pub use value::{Meta, NodeStyle, YamlVal};
+
+/// Parse one strict JSON value under the supplied resource limits.
+pub fn parse_json_with_config(
+    source: &str,
+    config: &yamalgam_core::LoaderConfig,
+) -> Result<YamlVal, YgError> {
+    funs::parse_json(source, config).map_err(YgError::Runtime)
+}
