@@ -93,6 +93,10 @@ pub struct QueryArgs {
     #[arg(short = 'f', long, value_name = "FILE")]
     pub from_file: Option<camino::Utf8PathBuf>,
 
+    /// Disable the jq-compatible `env` filter.
+    #[arg(long)]
+    pub no_env: bool,
+
     /// Bind VALUE to $NAME as a string without filter interpolation.
     #[arg(long = "arg", value_names = ["NAME", "VALUE"], num_args = 2)]
     pub string_args: Vec<String>,

@@ -75,7 +75,16 @@ pub fn cmd_query(args: &QueryArgs, options: RunOptions) -> anyhow::Result<ExitCo
         Ok(variables) => variables,
         Err(error) => return Ok(report(error)),
     };
-    let filter = match engine::compile_filter(&filter_source, &variables.names) {
+    let compile_options = if args.no_env {
+        engine::CompileOptions::sandboxed()
+    } else {
+        engine::CompileOptions::default()
+    };
+    let filter = match engine::compile_filter_with_options(
+        &filter_source,
+        &variables.names,
+        compile_options,
+    ) {
         Ok(filter) => filter,
         Err(error) => return Ok(report(error)),
     };

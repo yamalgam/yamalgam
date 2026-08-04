@@ -190,6 +190,24 @@ fn arguments_bind_strings_and_json_without_filter_interpolation() {
 }
 
 #[test]
+fn no_env_disables_environment_filter_access() {
+    const SECRET: &str = "m10-no-env-sentinel";
+
+    yg().env("YG_AUDIT_SECRET", SECRET)
+        .args(["-n", "-r", "env.YG_AUDIT_SECRET"])
+        .assert()
+        .success()
+        .stdout(format!("{SECRET}\n"));
+
+    yg().env("YG_AUDIT_SECRET", SECRET)
+        .args(["--no-env", "-n", "-r", "env.YG_AUDIT_SECRET"])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains("env").and(predicate::str::contains(SECRET).not()));
+}
+
+#[test]
 fn schema_flag_changes_resolution() {
     yg().args(["--schema", "1.1", ".a | type"])
         .write_stdin("a: yes\n")
