@@ -1037,7 +1037,9 @@ pub(crate) fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, fl
         || value.contains(": ")
         || value.ends_with(':')
         || value.contains(" #")
-        || value.chars().any(char::is_control)
+        || value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
         || (flow && value.contains([',', '[', ']', '{', '}']))
 }
 
@@ -1071,7 +1073,9 @@ fn write_double_quoted(output: &mut impl core::fmt::Write, value: &str) -> core:
             '\t' => output.write_str("\\t")?,
             '\r' => output.write_str("\\r")?,
             '\0' => output.write_str("\\0")?,
-            control if (control as u32) < 0x20 => {
+            '\u{2028}' => output.write_str("\\L")?,
+            '\u{2029}' => output.write_str("\\P")?,
+            control if (control as u32) < 0x20 || (0x7f..=0x9f).contains(&(control as u32)) => {
                 write!(output, "\\x{:02x}", control as u32)?;
             }
             other => output.write_char(other)?,

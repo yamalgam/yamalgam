@@ -98,6 +98,8 @@ fn key_string(key: &YamlVal) -> String {
 }
 
 fn json_quote(string: &str) -> String {
+    use core::fmt::Write as _;
+
     let mut output = String::with_capacity(string.len() + 2);
     output.push('"');
     for character in string.chars() {
@@ -107,8 +109,11 @@ fn json_quote(string: &str) -> String {
             '\n' => output.push_str("\\n"),
             '\t' => output.push_str("\\t"),
             '\r' => output.push_str("\\r"),
-            character if (character as u32) < 0x20 => {
-                output.push_str(&format!("\\u{:04x}", character as u32));
+            character
+                if (character as u32) < 0x20 || (0x7f..=0x9f).contains(&(character as u32)) =>
+            {
+                write!(output, "\\u{:04x}", character as u32)
+                    .expect("writing to a String cannot fail");
             }
             character => output.push(character),
         }

@@ -58,6 +58,20 @@ fn json_escapes_strings_and_can_sort_keys() {
 }
 
 #[test]
+fn json_escapes_extended_control_characters() {
+    let value = YamlVal::seq(vec![
+        YamlVal::str("x\u{7f}y"),
+        YamlVal::str("x\u{85}y"),
+        YamlVal::str("x\u{9f}y"),
+    ]);
+
+    assert_eq!(
+        to_json(&value, &EmitOpts::compact()).unwrap(),
+        r#"["x\u007fy","x\u0085y","x\u009fy"]"#
+    );
+}
+
+#[test]
 fn yaml_scalars_quote_when_plain_text_would_change_type() {
     let value = YamlVal::seq(
         ["a", "1", "true", "null", "x: y"]
@@ -109,11 +123,27 @@ fn yaml_scalars_quote_for_active_schema() {
 
 #[test]
 fn yaml_control_characters_are_double_quoted() {
-    let value = YamlVal::seq(vec![YamlVal::str("x\ry"), YamlVal::str("x\u{1b}y")]);
+    let value = YamlVal::seq(vec![
+        YamlVal::str("x\ry"),
+        YamlVal::str("x\u{1b}y"),
+        YamlVal::str("x\u{7f}y"),
+        YamlVal::str("x\u{85}y"),
+        YamlVal::str("x\u{9f}y"),
+        YamlVal::str("x\u{2028}y"),
+        YamlVal::str("x\u{2029}y"),
+    ]);
 
     assert_eq!(
         to_yaml(&value, &EmitOpts::default()).unwrap(),
-        "- \"x\\ry\"\n- \"x\\x1by\"\n"
+        concat!(
+            "- \"x\\ry\"\n",
+            "- \"x\\x1by\"\n",
+            "- \"x\\x7fy\"\n",
+            "- \"x\\x85y\"\n",
+            "- \"x\\x9fy\"\n",
+            "- \"x\\Ly\"\n",
+            "- \"x\\Py\"\n",
+        )
     );
 }
 
