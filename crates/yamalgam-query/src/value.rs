@@ -151,9 +151,19 @@ impl Drop for YgSeq {
 
 impl Drop for YgMap {
     fn drop(&mut self) {
+        if entries_are_shallow(self) {
+            return;
+        }
         let entries = core::mem::take(&mut self.0);
         drop_values(entries.into_iter().flat_map(<[_; 2]>::from));
     }
+}
+
+fn entries_are_shallow(mapping: &YgMap) -> bool {
+    mapping.0.iter().all(|(key, value)| {
+        !matches!(&key.data, Data::Seq(_) | Data::Map(_))
+            && !matches!(&value.data, Data::Seq(_) | Data::Map(_))
+    })
 }
 
 fn drop_values(values: impl IntoIterator<Item = YamlVal>) {
@@ -1170,4 +1180,33 @@ fn hash_number<H: Hasher>(value: f64, state: &mut H) {
         value.to_bits()
     };
     bits.hash(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Data, YamlVal, YgMap, entries_are_shallow};
+
+    fn mapping(value: &YamlVal) -> &YgMap {
+        let Data::Map(mapping) = &value.data else {
+            panic!("fixture must be a mapping");
+        };
+        mapping
+    }
+
+    #[test]
+    fn shallow_mapping_drop_excludes_collection_keys_and_values() {
+        let scalar = YamlVal::map(vec![(YamlVal::str("key"), YamlVal::int(1))]);
+        let nested_value = YamlVal::map(vec![(
+            YamlVal::str("key"),
+            YamlVal::seq(vec![YamlVal::int(1)]),
+        )]);
+        let nested_key = YamlVal::map(vec![(
+            YamlVal::seq(vec![YamlVal::int(1)]),
+            YamlVal::str("value"),
+        )]);
+
+        assert!(entries_are_shallow(mapping(&scalar)));
+        assert!(!entries_are_shallow(mapping(&nested_value)));
+        assert!(!entries_are_shallow(mapping(&nested_key)));
+    }
 }
