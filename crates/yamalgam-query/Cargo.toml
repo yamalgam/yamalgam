@@ -11,7 +11,9 @@ publish = false
 [dependencies]
 indexmap = "2"
 jaq-core = "=3.1.0"
-jaq-std = "=3.0.1"
+# jaq-std 3.0.1 gates its public aggregate `funs()` registry behind this full
+# set. Keep `time` explicit until upstream exposes feature-composable registries.
+jaq-std = { version = "=3.0.1", default-features = false, features = ["std", "format", "log", "math", "regex", "time"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = "2.0"
 yamalgam-core = { path = "../yamalgam-core" }
