@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 25
+  fixed: 26
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 20
+  open: 19
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -549,4 +549,23 @@ rendering, collection routing before scalar emission, and the scalar-only
 
 This is a documentation-only closure because the audit independently verified
 the paths are unreachable and did not require a correctness change. All 112
+`yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Unsorted mapping entries borrowed
+
+**Disposition:** fixed
+**Addresses:**
+[mapping-entries-collected-into-vec-per-emit](README.md#mapping-entries-collected-into-vec-per-emit)
+**Commit:** 706e502a93d69f8bff93c280163a00d7da7ce1a9
+**Author:** Codex
+
+Validation and both emitters now share a double-ended mapping-entry iterator
+that borrows `IndexMap` entries on the default unsorted path. Only the explicit
+`sort_keys` path collects and sorts a vector, preserving prior order semantics
+without the common-path allocation.
+
+A focused unit test pins borrowed-versus-sorted iterator selection, while the
+existing YAML and JSON sort tests pin output behavior. All 113
 `yamalgam-query` tests and the workspace Clippy gate pass.
