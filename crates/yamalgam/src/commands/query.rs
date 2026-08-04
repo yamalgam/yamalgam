@@ -1,7 +1,7 @@
 //! The yg query pipeline: inputs to filter engine to serialized output.
 
 use std::collections::VecDeque;
-use std::io::{Read as _, Write};
+use std::io::{BufWriter, Read as _, Write};
 use std::process::ExitCode;
 use std::rc::Rc;
 
@@ -79,7 +79,7 @@ pub fn cmd_query(
     let records = deferred_inputs(files, args.clone(), config.clone());
     let context = Rc::new(RunCtx::new(config).with_variables(variables.values));
     let stdout = std::io::stdout();
-    let mut output = stdout.lock();
+    let mut output = BufWriter::new(stdout.lock());
     let result = run_records(
         &filter,
         context,
@@ -209,29 +209,34 @@ fn run_in_place(
                     "failed to create temporary file beside {path}: {error}"
                 ))
             })?;
-        let file_last = run_records(
-            filter,
-            Rc::new(RunCtx::new(config.clone()).with_variables(variables.iter().cloned())),
-            records.into_iter(),
-            args,
-            json_output,
-            false,
-            temporary.as_file_mut(),
-        )?
-        .ok_or_else(|| {
-            YgError::Runtime(format!(
-                "{path}: filter produced no output; refusing to replace the input file"
-            ))
-        })?;
-        temporary
-            .as_file_mut()
-            .flush()
-            .and_then(|()| temporary.as_file().sync_all())
-            .map_err(|error| {
+        let file_last = {
+            let mut output = BufWriter::new(temporary.as_file_mut());
+            let last = run_records(
+                filter,
+                Rc::new(RunCtx::new(config.clone()).with_variables(variables.iter().cloned())),
+                records.into_iter(),
+                args,
+                json_output,
+                false,
+                &mut output,
+            )?
+            .ok_or_else(|| {
+                YgError::Runtime(format!(
+                    "{path}: filter produced no output; refusing to replace the input file"
+                ))
+            })?;
+            output.flush().map_err(|error| {
                 YgError::Runtime(format!(
                     "failed to finish temporary output for {path}: {error}"
                 ))
             })?;
+            last
+        };
+        temporary.as_file().sync_all().map_err(|error| {
+            YgError::Runtime(format!(
+                "failed to finish temporary output for {path}: {error}"
+            ))
+        })?;
         preserve_owner(temporary.path(), &source_metadata, path)?;
         temporary
             .as_file()
