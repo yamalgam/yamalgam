@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 26
+  fixed: 27
   mitigated: 1
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 18
+  open: 17
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -588,3 +588,21 @@ The second traversal remains intentionally centralized so YAML and JSON share
 one resource-limit and alias-expansion policy instead of duplicating it across
 two recursive emitters. All 113 `yamalgam-query` tests and the workspace
 Clippy gate pass.
+
+---
+
+## 2026-08-04 — Shallow mappings dropped directly
+
+**Disposition:** fixed
+**Addresses:**
+[ygmap-drop-allocates-a-vec-per-mapping](README.md#ygmap-drop-allocates-a-vec-per-mapping)
+**Commit:** 14d48c002a0e445916b6b1692f3f94429b3310e1
+**Author:** Codex
+
+`YgMap::drop` now detects mappings whose keys and values are all scalars and
+lets their existing `IndexMap` storage drop directly. Mappings containing any
+sequence or mapping still use the iterative value stack, preserving the deep
+collection stack-safety contract.
+
+A focused unit test pins scalar, collection-key, and collection-value path
+selection. All 114 `yamalgam-query` tests and the workspace Clippy gate pass.
