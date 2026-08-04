@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 9
+  fixed: 10
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 38
+  open: 37
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -185,3 +185,23 @@ The generic `From<String> for YgError` conversion was removed so future call
 sites must choose a class explicitly. Tests cover driver and native-input
 paths plus a caught input error followed by an unrelated runtime error. All
 100 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — Resulting value depth enforced
+
+**Disposition:** fixed
+**Addresses:**
+[value-tree-recursion-has-no-depth-bound](README.md#value-tree-recursion-has-no-depth-bound)
+**Commit:** 288d13136722771894dace707ba6ae29eb434605
+**Author:** Codex
+
+An iterative `YamlVal` worklist now validates resulting tree depth. The builder
+applies it before anchor insertion, so syntactically shallow alias chains
+cannot create deeper values than the configured limit.
+
+Infallible jaq array construction records over-depth failures and substitutes
+a safe value before recursive operations can continue; mapping construction
+and every engine output are checked as well. Tests cover alias-expanded depth,
+deep filter construction before comparison, and visitor-boundary validation.
+All 103 query tests and clippy pass.
