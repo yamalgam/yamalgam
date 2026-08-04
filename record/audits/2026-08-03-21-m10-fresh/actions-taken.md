@@ -2,8 +2,8 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 1
-  mitigated: 1
+  fixed: 2
+  mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
@@ -51,3 +51,22 @@ tree. Focused tests exercise all three limits, and the complete
 The finding is mitigated rather than fixed because `Display for YamlVal` still
 walks the logical alias tree without a rendering budget. A follow-up action
 must bound that error-formatting path before this finding can be closed.
+
+---
+
+## 2026-08-03 — Runtime value display bounded
+
+**Disposition:** fixed
+**Addresses:** [explode-aliases-unbounded-expansion](README.md#explode-aliases-unbounded-expansion)
+**Commit:** 133bf2cb994f50558919505d1452d895554637f3
+**Author:** Codex
+
+Superseded the earlier mitigation by routing `Display for YamlVal` through a
+bounded buffer using the active runtime limits. Error formatting now stops
+walking once `max_output_bytes` is reached and substitutes a truncation marker
+instead of descending beyond `max_depth`; unlimited profiles retain the prior
+behavior.
+
+Regression tests exercise both the logical alias-tree output cap and recursive
+depth truncation. Together with commit `e95ce8b`, this closes both amplification
+paths recorded by the finding.
