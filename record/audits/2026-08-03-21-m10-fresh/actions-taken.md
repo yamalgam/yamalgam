@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 22
+  fixed: 23
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 23
+  open: 22
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -494,3 +494,21 @@ existing `halt(-1)` behavior while preventing nonzero requests such as
 The CLI regression test pins `halt`, `halt(-1)`, and `halt(256)`, including
 their intentionally empty diagnostics. All 87 `yamalgam` package tests and the
 workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Builder invariants typed separately
+
+**Disposition:** fixed
+**Addresses:**
+[build-invariant-errors-labeled-as-limit](README.md#build-invariant-errors-labeled-as-limit)
+**Commit:** 9def9495dc887f8775b4fbbbc1f769902d79064e
+**Author:** Codex
+
+`BuildError::Invariant` now represents an unexpected event within a node or a
+truncated parser event stream. `BuildError::Limit` is again reserved for
+configured resource-limit breaches, so library callers can distinguish a
+document that needs a different profile from a parser/builder contract bug.
+
+A focused variant test pins the invariant diagnostic and classification. All
+112 `yamalgam-query` tests and the workspace Clippy gate pass.
