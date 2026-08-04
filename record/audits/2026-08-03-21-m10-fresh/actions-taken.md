@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 35
+  fixed: 36
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 8
+  open: 7
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -775,3 +775,22 @@ distinction, while jq-compatible environment access remains the default.
 The existing behavior test proves that `--no-env` removes the `env` filter;
 a focused help test now pins discoverability. Both tests, specification
 Markdown lint, and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Deferred M10 spec surfaces identified
+
+**Disposition:** fixed
+**Addresses:**
+[spec-features-deferred-while-spec-text-still-promises-them](README.md#spec-features-deferred-while-spec-text-still-promises-them)
+**Commit:** 4bc9c01ce259fb03c58f4abf087276269af9e8b7
+**Author:** Codex
+
+Draft 01 now exposes its M10 implementation boundary at the canonical entry
+point. Strict comparison is marked pending the draft-02 grammar decision,
+`chomping` is assigned to the Phase 3 CST milestone, and external-resolution
+flags are assigned to M11 / Phase 4.
+
+The section links the existing implementation notes for complete rationale,
+so the future requirements remain intact without appearing shipped. The
+updated specification passes focused Markdown lint.
