@@ -50,6 +50,7 @@ pub fn cmd_query(
         Ok(filter) => filter,
         Err(error) => return Ok(report(error)),
     };
+    let context = RunCtx::new(config).with_variables(variables.values);
 
     if args.in_place {
         if files.is_empty() || files.iter().any(|path| path == "-") {
@@ -57,14 +58,7 @@ pub fn cmd_query(
             return Ok(ExitCode::from(2));
         }
         return Ok(
-            match run_in_place(
-                &filter,
-                &files,
-                args,
-                json_output,
-                &config,
-                &variables.values,
-            ) {
+            match run_in_place(&filter, &files, args, json_output, &context) {
                 Err(error) => report(error),
                 Ok(last) => exit_status(last, args.exit_status),
             },
@@ -76,13 +70,12 @@ pub fn cmd_query(
     {
         return Ok(report(error));
     }
-    let records = deferred_inputs(files, args.clone(), config.clone());
-    let context = Rc::new(RunCtx::new(config).with_variables(variables.values));
+    let records = deferred_inputs(&files, args, &context.config);
     let stdout = std::io::stdout();
     let mut output = BufWriter::new(stdout.lock());
     let result = run_records(
         &filter,
-        context,
+        &context,
         records,
         args,
         json_output,
@@ -100,18 +93,17 @@ pub fn cmd_query(
     })
 }
 
-fn run_records(
+fn run_records<'inputs>(
     filter: &CompiledFilter,
-    context: Rc<RunCtx>,
-    records: impl Iterator<Item = InputRecord> + 'static,
+    context: &'inputs RunCtx,
+    records: impl Iterator<Item = InputRecord> + 'inputs,
     args: &QueryArgs,
     json_output: bool,
     color: bool,
     output: &mut dyn Write,
 ) -> Result<Option<bool>, YgError> {
-    let iterator_context = Rc::clone(&context);
     let inputs = records.map(move |record| {
-        iterator_context.stage_input_meta(record.metadata);
+        context.stage_input_meta(record.metadata);
         record.value
     });
 
@@ -128,7 +120,7 @@ fn run_records(
     let mut first = true;
     engine::run_filter_with_null_input(
         filter,
-        &context,
+        context,
         inputs,
         args.null_input,
         |value| -> Result<(), YgError> {
@@ -174,8 +166,7 @@ fn run_in_place(
     files: &[camino::Utf8PathBuf],
     args: &QueryArgs,
     json_output: bool,
-    config: &LoaderConfig,
-    variables: &[YamlVal],
+    context: &RunCtx,
 ) -> Result<Option<bool>, YgError> {
     struct StagedEdit {
         path: camino::Utf8PathBuf,
@@ -194,7 +185,7 @@ fn run_in_place(
             )));
         }
         warn_if_hard_linked(path, &source_metadata);
-        let mut records = collect_inputs(std::slice::from_ref(path), args, config)?;
+        let mut records = collect_inputs(std::slice::from_ref(path), args, &context.config)?;
         for record in &mut records {
             record.metadata.filename = Some(Rc::<str>::from(path.as_str()));
             record.metadata.file_index = file_index;
@@ -213,7 +204,7 @@ fn run_in_place(
             let mut output = BufWriter::new(temporary.as_file_mut());
             let last = run_records(
                 filter,
-                Rc::new(RunCtx::new(config.clone()).with_variables(variables.iter().cloned())),
+                context,
                 records.into_iter(),
                 args,
                 json_output,
@@ -368,11 +359,11 @@ fn filter_and_files(args: &QueryArgs) -> Result<(String, Vec<camino::Utf8PathBuf
     }
 }
 
-fn deferred_inputs(
-    files: Vec<camino::Utf8PathBuf>,
-    args: QueryArgs,
-    config: LoaderConfig,
-) -> impl Iterator<Item = InputRecord> {
+fn deferred_inputs<'inputs>(
+    files: &'inputs [camino::Utf8PathBuf],
+    args: &'inputs QueryArgs,
+    config: &'inputs LoaderConfig,
+) -> impl Iterator<Item = InputRecord> + 'inputs {
     let mut next_file = 0;
     let mut loaded_stdin = false;
     let mut loaded_slurp = false;
@@ -389,7 +380,7 @@ fn deferred_inputs(
                     return None;
                 }
                 loaded_slurp = true;
-                match collect_inputs(&files, &args, &config) {
+                match collect_inputs(files, args, config) {
                     Ok(inputs) => records.extend(inputs),
                     Err(error) => records.push_back(InputRecord {
                         metadata: InputMeta::default(),
@@ -404,7 +395,7 @@ fn deferred_inputs(
                     return None;
                 }
                 loaded_stdin = true;
-                match collect_inputs(&[], &args, &config) {
+                match collect_inputs(&[], args, config) {
                     Ok(inputs) => records.extend(inputs),
                     Err(error) => records.push_back(InputRecord {
                         metadata: InputMeta::default(),
@@ -417,7 +408,7 @@ fn deferred_inputs(
             let path = files.get(next_file)?;
             let file_index = next_file;
             next_file += 1;
-            match collect_inputs(std::slice::from_ref(path), &args, &config) {
+            match collect_inputs(std::slice::from_ref(path), args, config) {
                 Ok(mut inputs) => {
                     for input in &mut inputs {
                         input.metadata.file_index = file_index;
