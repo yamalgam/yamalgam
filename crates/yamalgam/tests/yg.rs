@@ -451,6 +451,27 @@ fn help_explains_color_and_chdir_collision() {
 }
 
 #[test]
+fn help_explains_subcommand_filter_shadowing() {
+    yg().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Leading doctor and info select subcommands.",
+        ))
+        .stdout(predicate::str::contains("yg -- FILTER"));
+}
+
+#[test]
+fn argument_terminator_forces_subcommand_name_to_filter() {
+    yg().args(["--", "doctor"])
+        .write_stdin("null\n")
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains("undefined filter doctor"));
+}
+
+#[test]
 fn in_place_edits_file_and_preserves_sibling_style() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("config.yml");

@@ -32,6 +32,10 @@ const AFTER_HELP: &str = "\
 COLOR:
     Use --color auto|always|never. -C is --chdir, not a color flag.
 
+FILTERS:
+    Leading doctor and info select subcommands. Use `yg -- FILTER` to force a
+    first-position filter, or `.doctor` / `.info` to select mapping keys.
+
 ENVIRONMENT VARIABLES:
     RUST_LOG             Log filter (e.g., debug, yamalgam=trace)
     YAMALGAM_LOG_PATH    Log file path (rotated daily)
