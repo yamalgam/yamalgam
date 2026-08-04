@@ -2,10 +2,25 @@
 
 use yamalgam_core::{ResourceLimits, TagResolution};
 use yamalgam_query::{
-    EmitOpts, YamlVal,
-    emit::{to_json, to_yaml},
+    EmitFormat, EmitOpts, YamlVal,
+    emit::{emit, to_json, to_yaml},
     parse_str,
 };
+
+#[test]
+fn emit_dispatches_by_format() {
+    let value = YamlVal::map(vec![(YamlVal::str("answer"), YamlVal::int(42))]);
+    let options = EmitOpts::compact();
+
+    assert_eq!(
+        emit(&value, EmitFormat::Yaml, &options).unwrap(),
+        "{answer: 42}\n"
+    );
+    assert_eq!(
+        emit(&value, EmitFormat::Json, &options).unwrap(),
+        r#"{"answer":42}"#
+    );
+}
 
 #[test]
 fn json_output_materializes_aliases_and_stringifies_keys() {

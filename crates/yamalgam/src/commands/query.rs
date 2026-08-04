@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use yamalgam_core::{LoaderConfig, TagResolution};
-use yamalgam_query::emit::{to_json, to_yaml};
+use yamalgam_query::emit::emit;
 use yamalgam_query::engine::{self, CompiledFilter, InputMeta, RunCtx};
-use yamalgam_query::{EmitOpts, YamlVal, YgError};
+use yamalgam_query::{EmitFormat, EmitOpts, YamlVal, YgError};
 
 use crate::{QueryArgs, SchemaArg};
 
@@ -43,6 +43,13 @@ impl OutputMode {
         match self {
             Self::Yaml { color } => color,
             Self::Json => false,
+        }
+    }
+
+    const fn emit_format(self) -> EmitFormat {
+        match self {
+            Self::Yaml { .. } => EmitFormat::Yaml,
+            Self::Json => EmitFormat::Json,
         }
     }
 }
@@ -165,7 +172,12 @@ fn run_records<'inputs>(
             // r[impl output.multidoc]
             // r[impl output.multidoc.suppress]
             if output_mode.is_json() {
-                writeln!(output, "{}", to_json(&value, &options)?).map_err(output_error)?;
+                writeln!(
+                    output,
+                    "{}",
+                    emit(&value, output_mode.emit_format(), &options)?
+                )
+                .map_err(output_error)?;
             } else if args.raw_output && value.is_string() {
                 writeln!(output, "{}", value.as_str_content().unwrap_or_default())
                     .map_err(output_error)?;
@@ -173,7 +185,12 @@ fn run_records<'inputs>(
                 if !first && !args.no_doc {
                     writeln!(output, "---").map_err(output_error)?;
                 }
-                write!(output, "{}", to_yaml(&value, &options)?).map_err(output_error)?;
+                write!(
+                    output,
+                    "{}",
+                    emit(&value, output_mode.emit_format(), &options)?
+                )
+                .map_err(output_error)?;
             }
             first = false;
             Ok(())

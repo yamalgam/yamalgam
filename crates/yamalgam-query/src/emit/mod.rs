@@ -64,6 +64,14 @@ impl Default for EmitOpts {
     }
 }
 
+/// Render a value using the selected output format.
+pub fn emit(value: &YamlVal, format: EmitFormat, options: &EmitOpts) -> Result<String, EmitError> {
+    match format {
+        EmitFormat::Yaml => to_yaml(value, options),
+        EmitFormat::Json => to_json(value, options),
+    }
+}
+
 enum MapEntries<'mapping> {
     Direct(indexmap::map::Iter<'mapping, YamlVal, YamlVal>),
     Sorted(std::vec::IntoIter<(&'mapping YamlVal, &'mapping YamlVal)>),
