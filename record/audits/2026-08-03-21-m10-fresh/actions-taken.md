@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 32
+  fixed: 33
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 11
+  open: 10
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -719,3 +719,22 @@ exit class instead of requiring an exhaustive downstream match.
 
 All 206 `yamalgam-query` and `yamalgam` tests and the workspace Clippy gate
 pass.
+
+---
+
+## 2026-08-04 — Resolver string predicate contract defined
+
+**Disposition:** fixed
+**Addresses:**
+[resolves-as-string-overrides-restate-resolution](README.md#resolves-as-string-overrides-restate-resolution)
+**Commit:** 1648144f4dec416bdbc29b0fb2ad1a6e4bf75e89
+**Author:** Codex
+
+The `TagResolver` contract now requires optimized `resolves_as_string`
+overrides to remain observationally equivalent to full scalar resolution.
+The shared regression corpus covers empty and null values, every supported
+boolean and special-float spelling, signed and radix numbers, underscore
+separators, integer overflow, and malformed numeric lookalikes.
+
+The focused equivalence test and all 60 `yamalgam-core` tests pass, and the
+workspace Clippy gate is clean.
