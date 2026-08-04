@@ -3,11 +3,11 @@ audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
   fixed: 26
-  mitigated: 0
+  mitigated: 1
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 19
+  open: 18
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -569,3 +569,22 @@ without the common-path allocation.
 A focused unit test pins borrowed-versus-sorted iterator selection, while the
 existing YAML and JSON sort tests pin output behavior. All 113
 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Emit validation anchor copies removed
+
+**Disposition:** mitigated
+**Addresses:**
+[emit-validation-walks-the-tree-a-second-time](README.md#emit-validation-walks-the-tree-a-second-time)
+**Commit:** bd1d8c7ad66d0567c97affa2f54b80e58f65d0be
+**Author:** Codex
+
+The shared validation walk now retains cloned `Rc<str>` anchor handles instead
+of allocating a new `String` for every anchor name. Alias membership checks
+remain borrowed, so the validation pass no longer copies anchor contents.
+
+The second traversal remains intentionally centralized so YAML and JSON share
+one resource-limit and alias-expansion policy instead of duplicating it across
+two recursive emitters. All 113 `yamalgam-query` tests and the workspace
+Clippy gate pass.
