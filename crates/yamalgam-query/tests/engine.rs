@@ -259,6 +259,24 @@ fn yaml_metadata_filters_expose_source_properties() {
 }
 
 #[test]
+fn resolved_type_aliases_type_after_resolution() {
+    assert_eq!(
+        eval(
+            ".[] | type == resolved_type",
+            "[null, true, 1, 1.5, text, [], {}]\n",
+        ),
+        vec!["true"; 7]
+    );
+    assert_eq!(
+        eval(
+            r#""yes" | resolve_as("1.1") | type == resolved_type"#,
+            "null\n",
+        ),
+        vec!["true"]
+    );
+}
+
+#[test]
 fn raw_rejects_collections() {
     let context = RunCtx::new(LoaderConfig::moderate());
     let filter = engine::compile_filter("raw", &[]).unwrap();

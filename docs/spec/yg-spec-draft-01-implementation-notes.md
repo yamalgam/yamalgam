@@ -136,6 +136,15 @@ an unterminated standard-input stream therefore does not produce incremental
 documents. Full document streaming requires an incremental scanner input
 source and remains a post-M10 pipeline change.
 
+## 14. `resolved_type` aliases `type`
+
+The builder resolves scalar text under the active schema before query
+evaluation, so M10 retains no unresolved value state for `resolved_type` to
+inspect. It therefore aliases `type`; after `resolve_as`, both report the type
+of the newly resolved value. Draft 02 should either remove the redundant filter
+or define a distinct result that the value model can represent
+([`r[ext.resolved-type]`](yg-query-language-spec-draft-01.md#62-type-introspection)).
+
 ## Additional implementation-driven changes
 
 - Librebar 0.4 reserves `-C` for changing directory and exposes the canonical

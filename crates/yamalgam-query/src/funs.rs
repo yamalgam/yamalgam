@@ -148,6 +148,8 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
             bome(context_value.1.merge_keys())
         }),
         // r[impl ext.resolved-type]
+        // Scalars are resolved while building YamlVal, so this intentionally
+        // aliases `type`; `resolve_as` creates a newly resolved value first.
         ("resolved_type", v(0), |context_value| {
             bome(Ok(YamlVal::str(context_value.1.type_name())))
         }),
