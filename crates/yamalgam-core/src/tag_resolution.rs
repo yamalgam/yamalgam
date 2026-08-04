@@ -22,6 +22,11 @@ pub trait TagResolver {
     fn resolve_scalar(&self, value: &str) -> Value;
 
     /// Return whether a plain scalar resolves as a string.
+    ///
+    /// Implementations may override this method to avoid allocating the
+    /// resolved string, but the result must be observationally equivalent to
+    /// `matches!(self.resolve_scalar(value), Value::String(_))` for every
+    /// input.
     fn resolves_as_string(&self, value: &str) -> bool {
         matches!(self.resolve_scalar(value), Value::String(_))
     }
@@ -408,7 +413,89 @@ mod tests {
 
     #[test]
     fn resolves_as_string_matches_full_resolution() {
-        let samples = ["", "null", "true", "yes", "42", "1.5", ".inf", "plain text"];
+        let samples = [
+            // Empty and null spellings.
+            "",
+            "~",
+            "null",
+            "Null",
+            "NULL",
+            "nil",
+            // JSON, Core, and YAML 1.1 boolean spellings.
+            "true",
+            "True",
+            "TRUE",
+            "false",
+            "False",
+            "FALSE",
+            "yes",
+            "Yes",
+            "YES",
+            "no",
+            "No",
+            "NO",
+            "on",
+            "On",
+            "ON",
+            "off",
+            "Off",
+            "OFF",
+            "y",
+            "Y",
+            "n",
+            "N",
+            // Signs, decimal boundaries, overflow, and invalid leading zeros.
+            "0",
+            "-0",
+            "+1",
+            "42",
+            "-42",
+            "9223372036854775807",
+            "9223372036854775808",
+            "-9223372036854775808",
+            "-9223372036854775809",
+            "01",
+            // Schema-specific radix and underscore forms plus invalid lookalikes.
+            "0o17",
+            "-0o17",
+            "017",
+            "-017",
+            "0x1f",
+            "-0x1f",
+            "0b1010",
+            "-0b1010",
+            "1_000",
+            "0xFF_FF",
+            "0o8",
+            "0x",
+            "0b2",
+            "1__0",
+            // Decimal floats, exponents, and malformed numeric lookalikes.
+            "1.5",
+            "-1.5",
+            "+1.5",
+            "1e3",
+            "1E-3",
+            "1.",
+            ".5",
+            "1e",
+            "1.2.3",
+            // Full Core/YAML 1.1 infinity and NaN literal sets.
+            ".inf",
+            ".Inf",
+            ".INF",
+            "+.inf",
+            "+.Inf",
+            "+.INF",
+            "-.inf",
+            "-.Inf",
+            "-.INF",
+            ".nan",
+            ".NaN",
+            ".NAN",
+            "+.nan",
+            "plain text",
+        ];
         for resolver in [
             TagResolution::Failsafe,
             TagResolution::Json,
