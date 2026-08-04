@@ -3,11 +3,11 @@ audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
   fixed: 29
-  mitigated: 1
+  mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 15
+  open: 14
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -643,3 +643,25 @@ temporary reference-counted string keys.
 A focused test distinguishes borrowed string lookup from a numerically similar
 non-string key. All 116 `yamalgam-query` tests and the workspace Clippy gate
 pass.
+
+---
+
+## 2026-08-04 — Document-at-a-time parsing exposed
+
+**Disposition:** mitigated
+**Addresses:**
+[cli-materializes-every-document-in-a-file-before-emitting](README.md#cli-materializes-every-document-in-a-file-before-emitting)
+**Commit:** 75d86e9a3c9346563775d8468bdb95488919a14d
+**Author:** Codex
+
+The query library now exposes a borrowing `Documents` iterator that owns its
+builder state and yields one owned `YamlVal` per document. The compatible eager
+API is a thin collection over that iterator, so library consumers are no
+longer required to accumulate a whole stream before processing its first
+document.
+
+The CLI still collects each owned input's values because safely storing a
+parser that borrows the same owned `String` needs a separate owned-source
+iterator design. A regression proves a valid first document is delivered
+before a later parse error. All 117 `yamalgam-query` tests and the workspace
+Clippy gate pass.
