@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 18
+  fixed: 19
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 27
+  open: 26
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -409,3 +409,27 @@ set explicitly. ADR 0009 records the measured `jiff` cost and the revisit
 condition rather than forking or copying upstream internals. All 103 query
 tests and the workspace Clippy and Cargo-deny gates pass; Cargo-deny reports
 only its existing policy warnings.
+
+---
+
+## 2026-08-04 — Native JSON parsing enforced
+
+**Disposition:** fixed
+**Addresses:**
+[serde-json-redundant-in-yaml-native-engine](README.md#serde-json-redundant-in-yaml-native-engine)
+**Commit:** c3f59d353bc26bf83e42232c8cbc67f12d4e8f7c
+**Author:** Codex
+
+`fromjson` now validates one strict JSON value without constructing a second
+DOM, then materializes it through yamalgam's scanner, parser, and event builder
+under `TagResolution::Json`. Depth, decoded scalar and key sizes, and
+per-collection entry counts are checked before the next child is built.
+
+The native scanner now decodes JSON-compatible UTF-16 surrogate pairs, and
+JSON number resolution preserves the former `i64`/finite-`f64` boundary.
+`serde_json` moved to dev-dependencies as a differential oracle; the normal
+`yamalgam-query` graph no longer contains it, and yg no longer enables its
+`preserve_order` feature. All 361 scanner, core, and query tests pass,
+including comparison across more than 500 jq-manual JSON texts, along with the
+workspace Clippy and Cargo-deny gates. Cargo-deny reports only its existing
+policy warnings.
