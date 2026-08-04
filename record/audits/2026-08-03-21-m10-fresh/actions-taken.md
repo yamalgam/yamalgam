@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 23
+  fixed: 24
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 22
+  open: 21
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -512,3 +512,22 @@ document that needs a different profile from a parser/builder contract bug.
 
 A focused variant test pins the invariant diagnostic and classification. All
 112 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — In-place ownership denial made nonfatal
+
+**Disposition:** fixed
+**Addresses:**
+[in-place-chown-failure-aborts-the-edit](README.md#in-place-chown-failure-aborts-the-edit)
+**Commit:** f398ce260a9b0dc1232f129a1c6f7673c2c4374d
+**Author:** Codex
+
+Unix in-place edits now classify `chown` failures. Permission denial emits a
+warning that the replacement will be owned by the current user and allows the
+already-staged atomic edit to continue; every other ownership I/O error remains
+fatal with the source path in its diagnostic.
+
+A focused unit test pins both policy branches. Permission preservation,
+multi-file staging, and atomic replacement remain unchanged. All 88
+`yamalgam` package tests and the workspace Clippy gate pass.
