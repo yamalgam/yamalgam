@@ -1,7 +1,10 @@
 //! Resolved-value and presentation-metadata semantics for `YamlVal`.
 
 use yamalgam_core::{LoaderConfig, TagResolution};
-use yamalgam_query::{BuildError, Meta, NodeStyle, YamlVal, parse_str, parse_str_with_config};
+use yamalgam_query::{
+    BuildError, Meta, NodeStyle, YamlVal, parse_documents_with_config, parse_str,
+    parse_str_with_config,
+};
 use yamalgam_scanner::ScalarStyle;
 
 #[test]
@@ -149,6 +152,18 @@ fn builder_preserves_scalar_metadata() {
         Some(NodeStyle::Scalar(ScalarStyle::SingleQuoted))
     );
     assert_eq!(meta.raw.as_deref(), Some("hi"));
+}
+
+#[test]
+fn document_iterator_yields_prior_document_before_later_error() {
+    let config = LoaderConfig::moderate();
+    let mut documents =
+        parse_documents_with_config("---\na: 1\n...\n---\n[unterminated\n", &config).unwrap();
+
+    let first = documents.next().unwrap().unwrap();
+    assert_eq!(first.get_str("a"), Some(&YamlVal::int(1)));
+    assert!(documents.next().unwrap().is_err());
+    assert!(documents.next().is_none());
 }
 
 #[test]

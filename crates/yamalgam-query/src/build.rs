@@ -25,43 +25,106 @@ pub fn parse_str_with_config(
     input: &str,
     config: &LoaderConfig,
 ) -> Result<Vec<YamlVal>, BuildError> {
+    parse_documents_with_config(input, config)?.collect()
+}
+
+/// Parse documents incrementally using an explicit loader configuration.
+pub fn parse_documents_with_config<'input, 'config>(
+    input: &'input str,
+    config: &'config LoaderConfig,
+) -> Result<Documents<'input, 'config>, BuildError> {
     config
         .limits
         .check_input_size(input.len())
         .map_err(BuildError::Limit)?;
 
-    let mut events = Parser::with_config(input, config)
-        .filter(|event| event.as_ref().map_or(true, |event| !event.is_structural()));
-    let mut builder = Builder::new(config);
-    let mut documents = Vec::new();
+    Ok(Documents {
+        events: SemanticEvents {
+            inner: Parser::with_config(input, config),
+        },
+        builder: Builder::new(config),
+        done: false,
+    })
+}
 
-    while let Some(event) = next_optional_event(&mut events)? {
-        match event {
-            Event::StreamStart => {}
-            Event::StreamEnd => break,
-            Event::VersionDirective { .. } | Event::TagDirective { .. } => {}
-            Event::DocumentStart { .. } => {
-                builder.start_document();
-                match next_optional_event(&mut events)? {
-                    Some(Event::DocumentEnd { .. }) | None => {
-                        documents.push(YamlVal::null());
-                    }
-                    Some(Event::StreamEnd) => {
-                        documents.push(YamlVal::null());
-                        break;
-                    }
-                    Some(first) => documents.push(builder.node(first, &mut events, 0)?),
-                }
+/// Iterator of owned YAML document values parsed from one borrowed input.
+pub struct Documents<'input, 'config> {
+    events: SemanticEvents<'input>,
+    builder: Builder<'config>,
+    done: bool,
+}
+
+impl Iterator for Documents<'_, '_> {
+    type Item = Result<YamlVal, BuildError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        match self.next_document() {
+            Ok(Some(document)) => Some(Ok(document)),
+            Ok(None) => {
+                self.done = true;
+                None
             }
-            Event::DocumentEnd { .. } => {}
-            first => {
-                builder.start_document();
-                documents.push(builder.node(first, &mut events, 0)?);
+            Err(error) => {
+                self.done = true;
+                Some(Err(error))
             }
         }
     }
+}
 
-    Ok(documents)
+impl Documents<'_, '_> {
+    fn next_document(&mut self) -> Result<Option<YamlVal>, BuildError> {
+        while let Some(event) = next_optional_event(&mut self.events)? {
+            match event {
+                Event::StreamStart => {}
+                Event::StreamEnd => return Ok(None),
+                Event::VersionDirective { .. } | Event::TagDirective { .. } => {}
+                Event::DocumentStart { .. } => {
+                    self.builder.start_document();
+                    return match next_optional_event(&mut self.events)? {
+                        Some(Event::DocumentEnd { .. }) => Ok(Some(YamlVal::null())),
+                        None => {
+                            self.done = true;
+                            Ok(Some(YamlVal::null()))
+                        }
+                        Some(Event::StreamEnd) => {
+                            self.done = true;
+                            Ok(Some(YamlVal::null()))
+                        }
+                        Some(first) => Ok(Some(self.builder.node(first, &mut self.events, 0)?)),
+                    };
+                }
+                Event::DocumentEnd { .. } => {}
+                first => {
+                    self.builder.start_document();
+                    return Ok(Some(self.builder.node(first, &mut self.events, 0)?));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+struct SemanticEvents<'input> {
+    inner: Parser<'input>,
+}
+
+impl<'input> Iterator for SemanticEvents<'input> {
+    type Item = Result<Event<'input>, yamalgam_parser::ParseError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let event = self.inner.next()?;
+            if event.as_ref().map_or(true, |event| !event.is_structural()) {
+                return Some(event);
+            }
+        }
+    }
 }
 
 struct Builder<'config> {
