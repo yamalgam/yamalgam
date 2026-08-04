@@ -484,6 +484,10 @@ fn char_byte_range(string: &str, skip: usize, take: usize) -> (usize, usize) {
     (byte_offset(skip), byte_offset(skip.saturating_add(take)))
 }
 
+fn lossy_rc_str(bytes: &[u8]) -> Rc<str> {
+    Rc::from(String::from_utf8_lossy(bytes).as_ref())
+}
+
 impl jaq_std::ValT for YamlVal {
     fn into_seq<S: FromIterator<Self>>(self) -> Result<S, Self> {
         self.into_seq_vec()
@@ -518,20 +522,27 @@ impl jaq_std::ValT for YamlVal {
 
     fn as_sub_str(&self, sub: &[u8]) -> Self {
         debug_assert!(matches!(&self.data, Data::Str(_)));
-        Self::str(String::from_utf8_lossy(sub).into_owned())
+        Self::str(lossy_rc_str(sub))
     }
 
     fn from_utf8_bytes(bytes: impl AsRef<[u8]> + Send + 'static) -> Self {
-        Self::str(String::from_utf8_lossy(bytes.as_ref()).into_owned())
+        Self::str(lossy_rc_str(bytes.as_ref()))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::lossy_rc_str;
     use jaq_core::{ValT as _, path::Opt};
 
     use crate::build::parse_str;
     use crate::value::YamlVal;
+
+    #[test]
+    fn lossy_rc_string_preserves_valid_and_invalid_utf8_semantics() {
+        assert_eq!(lossy_rc_str("héllo".as_bytes()).as_ref(), "héllo");
+        assert_eq!(lossy_rc_str(b"a\xffb").as_ref(), "a\u{fffd}b");
+    }
 
     #[test]
     fn from_num_parses_ints_and_floats() {
