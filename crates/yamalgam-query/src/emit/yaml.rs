@@ -7,7 +7,7 @@ use std::rc::Rc;
 use yamalgam_parser::CollectionStyle;
 use yamalgam_scanner::ScalarStyle;
 
-use crate::emit::{EmitError, EmitFormat, EmitOpts, validate_value};
+use crate::emit::{EmitError, EmitFormat, EmitOpts, ordered_entries, validate_value};
 use crate::value::{
     Data, NodeStyle, YamlVal, YgMap, fmt_float, is_valid_tag, needs_quotes, quote_double,
 };
@@ -113,7 +113,7 @@ impl Context<'_> {
     }
 
     fn mapping(&mut self, output: &mut String, mapping: &YgMap, depth: usize, inline_first: bool) {
-        for (index, (key, value)) in self.entries(mapping).into_iter().enumerate() {
+        for (index, (key, value)) in ordered_entries(mapping, self.options.sort_keys).enumerate() {
             if inline_first && index == 0 {
                 self.indent(output, depth.saturating_sub(1));
                 output.push_str("- ");
@@ -222,7 +222,9 @@ impl Context<'_> {
             }
             Data::Map(mapping) => {
                 output.push('{');
-                for (index, (key, value)) in self.entries(mapping).into_iter().enumerate() {
+                for (index, (key, value)) in
+                    ordered_entries(mapping, self.options.sort_keys).enumerate()
+                {
                     if index > 0 {
                         output.push_str(", ");
                     }
@@ -338,14 +340,6 @@ impl Context<'_> {
         key.meta().is_some_and(|metadata| {
             metadata.anchor.is_some() || metadata.alias_of.is_some() || metadata.tag.is_some()
         })
-    }
-
-    fn entries<'a>(&self, mapping: &'a YgMap) -> Vec<(&'a YamlVal, &'a YamlVal)> {
-        let mut entries = mapping.0.iter().collect::<Vec<_>>();
-        if self.options.sort_keys {
-            entries.sort_by(|left, right| left.0.cmp(right.0));
-        }
-        entries
     }
 
     fn alias_is_emittable(&self, value: &YamlVal) -> bool {

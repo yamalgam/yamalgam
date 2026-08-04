@@ -10,7 +10,7 @@ pub use yaml::to_yaml;
 
 use std::collections::HashSet;
 
-use crate::value::{Data, YamlVal};
+use crate::value::{Data, YamlVal, YgMap};
 
 /// Serialization failure caused by an unsafe or lossy output request.
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +63,50 @@ impl Default for EmitOpts {
     }
 }
 
+enum MapEntries<'mapping> {
+    Direct(indexmap::map::Iter<'mapping, YamlVal, YamlVal>),
+    Sorted(std::vec::IntoIter<(&'mapping YamlVal, &'mapping YamlVal)>),
+}
+
+fn ordered_entries(mapping: &YgMap, sort_keys: bool) -> MapEntries<'_> {
+    if sort_keys {
+        let mut entries = mapping.0.iter().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        MapEntries::Sorted(entries.into_iter())
+    } else {
+        MapEntries::Direct(mapping.0.iter())
+    }
+}
+
+impl<'mapping> Iterator for MapEntries<'mapping> {
+    type Item = (&'mapping YamlVal, &'mapping YamlVal);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Direct(entries) => entries.next(),
+            Self::Sorted(entries) => entries.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Direct(entries) => entries.size_hint(),
+            Self::Sorted(entries) => entries.size_hint(),
+        }
+    }
+}
+
+impl DoubleEndedIterator for MapEntries<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Direct(entries) => entries.next_back(),
+            Self::Sorted(entries) => entries.next_back(),
+        }
+    }
+}
+
+impl ExactSizeIterator for MapEntries<'_> {}
+
 fn validate_value(
     value: &YamlVal,
     options: &EmitOpts,
@@ -111,11 +155,7 @@ fn validate_value(
                     .limits
                     .check_collection_size(mapping.0.len())
                     .map_err(EmitError::Limit)?;
-                let mut entries = mapping.0.iter().collect::<Vec<_>>();
-                if options.sort_keys {
-                    entries.sort_by(|left, right| left.0.cmp(right.0));
-                }
-                for (key, value) in entries.into_iter().rev() {
+                for (key, value) in ordered_entries(mapping, options.sort_keys).rev() {
                     stack.push((value, depth + 1));
                     stack.push((key, depth + 1));
                 }
@@ -135,5 +175,33 @@ impl EmitOpts {
             compact: true,
             ..Self::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MapEntries, ordered_entries};
+    use crate::value::{Data, YamlVal};
+
+    #[test]
+    fn ordered_entries_borrows_unsorted_mappings() {
+        let value = YamlVal::map(vec![
+            (YamlVal::str("b"), YamlVal::int(1)),
+            (YamlVal::str("a"), YamlVal::int(2)),
+        ]);
+        let Data::Map(mapping) = &value.data else {
+            panic!("fixture must be a mapping");
+        };
+
+        assert!(matches!(
+            ordered_entries(mapping, false),
+            MapEntries::Direct(_)
+        ));
+        assert_eq!(
+            ordered_entries(mapping, true)
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>(),
+            vec![YamlVal::str("a"), YamlVal::str("b")]
+        );
     }
 }

@@ -4,7 +4,7 @@ use core::fmt::Write as _;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use crate::emit::{EmitError, EmitFormat, EmitOpts, validate_value};
+use crate::emit::{EmitError, EmitFormat, EmitOpts, ordered_entries, validate_value};
 use crate::value::{Data, YamlVal};
 
 /// Render a value as JSON, discarding YAML presentation metadata.
@@ -52,14 +52,9 @@ fn write_json(
         }
         Data::Map(mapping) if mapping.0.is_empty() => output.push_str("{}"),
         Data::Map(mapping) => {
-            let mut entries = mapping.0.iter().collect::<Vec<_>>();
-            if options.sort_keys {
-                entries.sort_by(|left, right| left.0.cmp(right.0));
-            }
-
-            let mut keys = HashSet::with_capacity(entries.len());
+            let mut keys = HashSet::with_capacity(mapping.0.len());
             output.push('{');
-            for (index, (key, value)) in entries.into_iter().enumerate() {
+            for (index, (key, value)) in ordered_entries(mapping, options.sort_keys).enumerate() {
                 if index > 0 {
                     output.push(',');
                 }
