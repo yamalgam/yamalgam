@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 41
+  fixed: 42
   mitigated: 3
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 1
+  open: 0
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -910,3 +910,22 @@ an isolated target directory.
 The first completed census emitted 2,359 unsafe diagnostics across transitive
 dependencies and zero diagnostics in workspace sources. Focused documentation
 lint and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Cargo Deny feature graph aligned
+
+**Disposition:** fixed
+**Addresses:**
+[deny-advisory-ignore-matches-only-under-all-features](README.md#deny-advisory-ignore-matches-only-under-all-features)
+**Commit:** e60427ec4b20dd21f0488817bfdb3370d5898fa2
+**Author:** Codex
+
+The GitHub Actions Cargo Deny job now resolves `--all-features`, matching both
+repository Just entry points. A policy comment beside `RUSTSEC-2023-0051`
+records why the optional benchmark dependency must remain in the resolved
+graph for the advisory ignore to be exercised.
+
+`actionlint` passes, and `just deny` reports advisories, bans, licenses, and
+sources as OK without an `advisory-not-detected` warning. Its remaining output
+is limited to the repository's existing dependency-policy warnings.
