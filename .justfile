@@ -200,16 +200,18 @@ outdated:
 # Safe update: respects semver constraints, only touches Cargo.lock
 update:
     cargo update --workspace --verbose
+    cargo update -p serde-saphyr --precise 1.0.0
+    cargo update -p granit-parser --precise 1.0.0
 
 # Upgrade Cargo.toml to latest compatible versions
 upgrade:
     cargo upgrade
-    cargo update --workspace
+    just update
 
 # The nuclear option: upgrade to latest incompatible versions (breaking changes)
 upgrade-breaking:
     cargo upgrade --incompatible
-    cargo update --workspace
+    just update
 
 # See what WOULD update without doing it
 check-updates:
