@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 37
+  fixed: 38
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 6
+  open: 5
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -813,3 +813,22 @@ model capable of representing a distinct result.
 A focused regression covers every value kind and values produced by
 `resolve_as`. That test, implementation-notes Markdown lint, and the workspace
 Clippy gate pass.
+
+---
+
+## 2026-08-04 — In-place exclusions documented
+
+**Disposition:** fixed
+**Addresses:**
+[in-place-conflicts-diverge-from-plan-undocumented](README.md#in-place-conflicts-diverge-from-plan-undocumented)
+**Commit:** d56948ccc34f135f3bf52ef643dac52b81fdbb61
+**Author:** Codex
+
+CLI help and the implementation notes now state that `-i` is exclusive with
+null input, slurp, and JSON output. The notes reconcile the superseded plan:
+null/slurp lack coherent per-file replacement semantics, while JSON output
+would silently change a YAML file's format.
+
+The focused help assertion and all 11 in-place CLI tests pass. The updated
+implementation notes pass Markdown lint, and the workspace Clippy gate is
+clean.
