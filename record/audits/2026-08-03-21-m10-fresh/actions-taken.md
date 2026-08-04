@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 38
+  fixed: 39
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 5
+  open: 4
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -832,3 +832,20 @@ would silently change a YAML file's format.
 The focused help assertion and all 11 in-place CLI tests pass. The updated
 implementation notes pass Markdown lint, and the workspace Clippy gate is
 clean.
+
+---
+
+## 2026-08-04 — Subcommand filter shadowing documented
+
+**Disposition:** fixed
+**Addresses:**
+[subcommand-name-shadowing-not-documented-in-help](README.md#subcommand-name-shadowing-not-documented-in-help)
+**Commit:** e5ef90079f15a25affe5db9c90bd1c194d28f0a9
+**Author:** Codex
+
+Root help now states that leading `doctor` and `info` tokens select
+subcommands. It documents `yg -- FILTER` as the positional escape hatch and
+`.doctor` / `.info` as the mapping-key forms.
+
+Focused regressions pin both the help text and `yg -- doctor` filter parsing.
+Both tests and the workspace Clippy gate pass.
