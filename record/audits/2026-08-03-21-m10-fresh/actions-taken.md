@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 16
+  fixed: 17
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 31
+  open: 30
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -328,4 +328,23 @@ configuration instead of owning clones.
 `cmd_query` constructs one run context and reuses it for normal output and
 every in-place file, removing the per-file context allocation and repeated
 configuration and variable clones. All 40 `yg` CLI integration tests and the
+workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Query output options typed
+
+**Disposition:** fixed
+**Addresses:**
+[three-bool-parameters-at-command-boundary](README.md#three-bool-parameters-at-command-boundary)
+**Commit:** 34dd75cd5502bcdd483dd7b5472e132c47019066
+**Author:** Codex
+
+The query command boundary now accepts one named `RunOptions` value containing
+an `OutputMode`. JSON and YAML are distinct variants, and only the YAML variant
+can carry color state; quiet remains a named field.
+
+The typed output mode is resolved once in `main` and threaded through in-place
+and record execution, removing the repeated positional boolean pairs and the
+`color && !json_output` invariant. All 40 `yg` CLI integration tests and the
 workspace Clippy gate pass.
