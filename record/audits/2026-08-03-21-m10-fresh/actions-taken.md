@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 10
+  fixed: 11
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 37
+  open: 36
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -220,3 +220,20 @@ Updated the strict-mode CLI regression contract to require rejection when a
 filter constructs an over-depth value and later discards it. This pins the
 construction-time guard added by commit `288d131` and confirms that no partial
 placeholder reaches stdout.
+
+---
+
+## 2026-08-03 — CLI output buffered
+
+**Disposition:** fixed
+**Addresses:**
+[cli-output-is-unbuffered](README.md#cli-output-is-unbuffered)
+**Commit:** 6be2063a16b0d4fc43354b3f58866ed4aa011005
+**Author:** Codex
+
+Standard output now passes through `BufWriter` rather than relying on the
+line-buffered stdout lock. In-place output uses the same buffering around the
+temporary file and explicitly flushes before `sync_all`, preserving the
+durability boundary before replacement.
+
+All 40 `yg` CLI integration tests and the workspace Clippy gate pass.
