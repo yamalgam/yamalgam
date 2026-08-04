@@ -185,7 +185,8 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
         }),
         // r[impl ext.explode]
         ("explode_aliases", v(0), |context_value| {
-            bome(Ok(context_value.1.explode_aliases()))
+            let limits = &context_value.0.data().context.config.limits;
+            bome(context_value.1.explode_aliases(limits))
         }),
         // r[impl ext.aliases]
         ("aliases", v(0), |context_value| {

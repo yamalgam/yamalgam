@@ -82,6 +82,41 @@ pub struct YamlVal {
     pub(crate) meta: Option<Rc<Meta>>,
 }
 
+#[derive(Default)]
+struct ExpansionBudget {
+    aliases: usize,
+    entries: usize,
+}
+
+impl ExpansionBudget {
+    fn count_alias(
+        &mut self,
+        limits: &yamalgam_core::ResourceLimits,
+    ) -> jaq_core::ValR<(), YamlVal> {
+        self.aliases = self
+            .aliases
+            .checked_add(1)
+            .ok_or_else(|| jaq_core::Error::str("alias expansion count overflow"))?;
+        limits
+            .check_alias_expansions(self.aliases)
+            .map_err(jaq_core::Error::str)
+    }
+
+    fn count_entries(
+        &mut self,
+        count: usize,
+        limits: &yamalgam_core::ResourceLimits,
+    ) -> jaq_core::ValR<(), YamlVal> {
+        self.entries = self
+            .entries
+            .checked_add(count)
+            .ok_or_else(|| jaq_core::Error::str("materialized entry count overflow"))?;
+        limits
+            .check_collection_size(self.entries)
+            .map_err(jaq_core::Error::str)
+    }
+}
+
 impl YgSeq {
     pub(crate) fn into_values(mut self) -> Vec<YamlVal> {
         core::mem::take(&mut self.0)
@@ -505,20 +540,57 @@ impl YamlVal {
         })
     }
 
-    #[must_use]
     // r[impl ext.explode]
-    pub(crate) fn explode_aliases(&self) -> Self {
+    pub(crate) fn explode_aliases(
+        &self,
+        limits: &yamalgam_core::ResourceLimits,
+    ) -> jaq_core::ValR<Self> {
+        self.explode_aliases_bounded(limits, &mut ExpansionBudget::default(), 0)
+    }
+
+    fn explode_aliases_bounded(
+        &self,
+        limits: &yamalgam_core::ResourceLimits,
+        budget: &mut ExpansionBudget,
+        depth: usize,
+    ) -> jaq_core::ValR<Self> {
+        limits.check_depth(depth).map_err(jaq_core::Error::str)?;
+        if self
+            .meta()
+            .is_some_and(|metadata| metadata.alias_of.is_some())
+        {
+            budget.count_alias(limits)?;
+        }
+
         let data = match &self.data {
-            Data::Seq(items) => Data::Seq(Rc::new(YgSeq(
-                items.iter().map(Self::explode_aliases).collect(),
-            ))),
-            Data::Map(mapping) => Data::Map(Rc::new(YgMap(
-                mapping
+            Data::Seq(items) => {
+                budget.count_entries(items.len(), limits)?;
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| jaq_core::Error::str("value depth overflow"))?;
+                let items = items
+                    .iter()
+                    .map(|item| item.explode_aliases_bounded(limits, budget, child_depth))
+                    .collect::<jaq_core::ValR<Vec<_>, Self>>()?;
+                Data::Seq(Rc::new(YgSeq(items)))
+            }
+            Data::Map(mapping) => {
+                budget.count_entries(mapping.0.len(), limits)?;
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| jaq_core::Error::str("value depth overflow"))?;
+                let mapping = mapping
                     .0
                     .iter()
-                    .map(|(key, value)| (key.explode_aliases(), value.explode_aliases()))
-                    .collect(),
-            ))),
+                    .map(|(key, value)| {
+                        Ok::<_, jaq_core::Error<Self>>((
+                            key.explode_aliases_bounded(limits, budget, child_depth)?,
+                            value.explode_aliases_bounded(limits, budget, child_depth)?,
+                        ))
+                    })
+                    .collect::<jaq_core::ValR<YgMap, Self>>()?;
+                Data::Map(Rc::new(mapping))
+            }
             data => data.clone(),
         };
         let mut meta = self.meta.clone();
@@ -527,7 +599,7 @@ impl YamlVal {
             metadata.anchor = None;
             metadata.alias_of = None;
         }
-        Self { data, meta }
+        Ok(Self { data, meta })
     }
 
     #[must_use]

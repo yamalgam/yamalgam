@@ -279,6 +279,68 @@ fn alias_audit_filters_report_and_strip_identity() {
 }
 
 #[test]
+fn explode_aliases_obeys_alias_expansion_limit() {
+    let document = "a: &a [1]\nb: &b [*a, *a]\nc: [*b, *b]\n";
+    let filter = engine::compile_filter("explode_aliases", &[]).unwrap();
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_alias_expansions = Some(2);
+    config.limits.max_collection_size = None;
+    let context = RunCtx::new(config);
+    let documents = yamalgam_query::parse_str(document).unwrap();
+
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("alias expansions"));
+}
+
+#[test]
+fn explode_aliases_obeys_materialized_entry_budget() {
+    let filter = engine::compile_filter("explode_aliases", &[]).unwrap();
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_alias_expansions = None;
+    config.limits.max_collection_size = Some(2);
+    let context = RunCtx::new(config);
+    let documents = yamalgam_query::parse_str("[[1, 2], [3, 4]]\n").unwrap();
+
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("collection size"));
+}
+
+#[test]
+fn explode_aliases_obeys_depth_limit() {
+    let filter = engine::compile_filter("explode_aliases", &[]).unwrap();
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_alias_expansions = None;
+    config.limits.max_collection_size = None;
+    config.limits.max_depth = Some(1);
+    let context = RunCtx::new(config);
+    let documents = yamalgam_query::parse_str("[[[1]]]\n").unwrap();
+
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("depth"));
+}
+
+#[test]
 fn alias_audit_includes_mapping_keys() {
     let document = "first:\n  ? &k key\n  : one\nsecond:\n  ? *k\n  : two\n";
 
