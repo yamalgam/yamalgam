@@ -205,3 +205,18 @@ a safe value before recursive operations can continue; mapping construction
 and every engine output are checked as well. Tests cover alias-expanded depth,
 deep filter construction before comparison, and visitor-boundary validation.
 All 103 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — Strict depth CLI contract aligned
+
+**Disposition:** fixed
+**Addresses:**
+[value-tree-recursion-has-no-depth-bound](README.md#value-tree-recursion-has-no-depth-bound)
+**Commit:** b212751d5417339f308cf1ce5f747b90e3ad1cfc
+**Author:** Codex
+
+Updated the strict-mode CLI regression contract to require rejection when a
+filter constructs an over-depth value and later discards it. This pins the
+construction-time guard added by commit `288d131` and confirms that no partial
+placeholder reaches stdout.
