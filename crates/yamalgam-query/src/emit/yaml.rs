@@ -1,5 +1,6 @@
 //! YAML output serialization.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -43,9 +44,9 @@ enum Position {
     Flow,
 }
 
-enum Rendered {
-    Inline(String),
-    Literal(String),
+enum Rendered<'value> {
+    Inline(Cow<'value, str>),
+    Literal(Cow<'value, str>),
 }
 
 struct Context<'options> {
@@ -241,14 +242,18 @@ impl Context<'_> {
         }
     }
 
-    fn scalar(&self, value: &YamlVal, position: Position) -> Rendered {
+    fn scalar<'value>(&self, value: &'value YamlVal, position: Position) -> Rendered<'value> {
         match &value.data {
-            Data::Null => Rendered::Inline(self.paint("null", "2")),
-            Data::Bool(boolean) => Rendered::Inline(self.paint(&boolean.to_string(), "33")),
-            Data::Int(integer) => Rendered::Inline(self.paint(&integer.to_string(), "33")),
-            Data::Float(float) => Rendered::Inline(self.paint(&fmt_float(*float), "33")),
+            Data::Null => Rendered::Inline(self.paint(Cow::Borrowed("null"), "2")),
+            Data::Bool(boolean) => {
+                Rendered::Inline(self.paint(Cow::Owned(boolean.to_string()), "33"))
+            }
+            Data::Int(integer) => {
+                Rendered::Inline(self.paint(Cow::Owned(integer.to_string()), "33"))
+            }
+            Data::Float(float) => Rendered::Inline(self.paint(Cow::Owned(fmt_float(*float)), "33")),
             Data::Str(string) => match self.string(string, value, position) {
-                Rendered::Inline(text) => Rendered::Inline(self.paint(&text, "32")),
+                Rendered::Inline(text) => Rendered::Inline(self.paint(text, "32")),
                 literal => literal,
             },
             Data::Seq(_) | Data::Map(_) => unreachable!("collections are not scalars"),
@@ -257,7 +262,12 @@ impl Context<'_> {
 
     // r[impl output.yaml.style-preservation]
     // r[impl output.yaml.style-default]
-    fn string(&self, string: &str, value: &YamlVal, position: Position) -> Rendered {
+    fn string<'value>(
+        &self,
+        string: &'value str,
+        value: &YamlVal,
+        position: Position,
+    ) -> Rendered<'value> {
         let block_allowed = !self.options.compact
             && matches!(
                 position,
@@ -271,7 +281,7 @@ impl Context<'_> {
                 .chars()
                 .all(|character| character == '\n' || !character.is_control());
         if string.contains('\n') && literal_safe && block_allowed {
-            return Rendered::Literal(string.to_owned());
+            return Rendered::Literal(Cow::Borrowed(string));
         }
         if string.contains('\n')
             || needs_quotes(
@@ -280,17 +290,17 @@ impl Context<'_> {
                 matches!(position, Position::Flow),
             )
         {
-            return Rendered::Inline(quote_double(string));
+            return Rendered::Inline(Cow::Owned(quote_double(string)));
         }
 
         match value.meta().and_then(|meta| meta.style) {
             Some(NodeStyle::Scalar(ScalarStyle::SingleQuoted)) => {
-                Rendered::Inline(format!("'{}'", string.replace('\'', "''")))
+                Rendered::Inline(Cow::Owned(format!("'{}'", string.replace('\'', "''"))))
             }
             Some(NodeStyle::Scalar(ScalarStyle::DoubleQuoted)) => {
-                Rendered::Inline(quote_double(string))
+                Rendered::Inline(Cow::Owned(quote_double(string)))
             }
-            _ => Rendered::Inline(string.to_owned()),
+            _ => Rendered::Inline(Cow::Borrowed(string)),
         }
     }
 
@@ -344,9 +354,10 @@ impl Context<'_> {
 
     fn alias_text(&self, value: &YamlVal) -> Option<String> {
         let alias = value.meta()?.alias_of.as_deref()?;
-        self.anchors_emitted
-            .contains(alias)
-            .then(|| self.paint(&format!("*{alias}"), "35"))
+        self.anchors_emitted.contains(alias).then(|| {
+            self.paint(Cow::Owned(format!("*{alias}")), "35")
+                .into_owned()
+        })
     }
 
     fn properties(&self, value: &YamlVal) -> String {
@@ -370,7 +381,7 @@ impl Context<'_> {
         if prefix.is_empty() {
             prefix
         } else {
-            self.paint(&prefix, "35")
+            self.paint(Cow::Owned(prefix), "35").into_owned()
         }
     }
 
@@ -384,7 +395,7 @@ impl Context<'_> {
         let content = string.strip_suffix('\n').unwrap_or(string);
         for line in content.split('\n') {
             self.indent(output, depth);
-            output.push_str(&self.paint(line, "32"));
+            output.push_str(&self.paint(Cow::Borrowed(line), "32"));
             output.push('\n');
         }
     }
@@ -412,11 +423,11 @@ impl Context<'_> {
         output.push_str(&self.indentation[..width]);
     }
 
-    fn paint(&self, text: &str, ansi_code: &str) -> String {
+    fn paint<'text>(&self, text: Cow<'text, str>, ansi_code: &str) -> Cow<'text, str> {
         if self.options.color {
-            format!("\x1b[{ansi_code}m{text}\x1b[0m")
+            Cow::Owned(format!("\x1b[{ansi_code}m{text}\x1b[0m"))
         } else {
-            text.to_owned()
+            text
         }
     }
 }
