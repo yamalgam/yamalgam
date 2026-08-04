@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 19
+  fixed: 20
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 26
+  open: 25
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -433,3 +433,24 @@ JSON number resolution preserves the former `i64`/finite-`f64` boundary.
 including comparison across more than 500 jq-manual JSON texts, along with the
 workspace Clippy and Cargo-deny gates. Cargo-deny reports only its existing
 policy warnings.
+
+---
+
+## 2026-08-04 — Runtime constructor limits pinned
+
+**Disposition:** fixed
+**Addresses:**
+[runtime-limits-cover-three-call-sites](README.md#runtime-limits-cover-three-call-sites)
+**Commit:** 94c7bb0eb645313ae1145fb2960a8e6aaf9591ca
+**Author:** Codex
+
+The growth-limit implementation already extended active collection and scalar
+budgets beyond the three original call sites: fallible constructors now return
+errors directly, while jaq's infallible sequence constructor records its first
+violation in scoped runtime state. The engine drains that pending error before
+accepting output and after result exhaustion.
+
+A focused contract test now proves `[range(4)]` under a three-item limit
+returns a collection-size error and invokes the output visitor zero times, so
+the internally truncated placeholder cannot escape as successful data. All
+111 `yamalgam-query` tests and the workspace Clippy gate pass.
