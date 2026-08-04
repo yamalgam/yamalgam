@@ -271,7 +271,7 @@ impl YamlVal {
 
     /// Return the resolved boolean value.
     #[must_use]
-    pub const fn as_bool(&self) -> Option<bool> {
+    pub const fn as_boolean(&self) -> Option<bool> {
         match self.data {
             Data::Bool(value) => Some(value),
             _ => None,

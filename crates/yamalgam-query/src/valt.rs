@@ -502,11 +502,7 @@ impl jaq_std::ValT for YamlVal {
     }
 
     fn as_f64(&self) -> Option<f64> {
-        match &self.data {
-            Data::Int(number) => Some(*number as f64),
-            Data::Float(number) => Some(*number),
-            _ => None,
-        }
+        self.as_f64()
     }
 
     fn is_utf8_str(&self) -> bool {
@@ -666,9 +662,11 @@ mod tests {
 
     #[test]
     fn jq_truthiness_and_interpolation_are_supported() {
-        assert!(!jaq_core::ValT::as_bool(&YamlVal::null()));
-        assert!(!jaq_core::ValT::as_bool(&YamlVal::from(false)));
-        assert!(jaq_core::ValT::as_bool(&YamlVal::int(0)));
+        use jaq_core::ValT as _;
+
+        assert!(!YamlVal::null().as_bool());
+        assert!(!YamlVal::from(false).as_bool());
+        assert!(YamlVal::int(0).as_bool());
         assert_eq!(YamlVal::int(3).into_string(), YamlVal::str("3"));
         assert_eq!(
             YamlVal::seq(vec![YamlVal::str("foo")]).into_string(),
@@ -685,6 +683,7 @@ mod tests {
         assert_eq!(YamlVal::int(3).as_isize(), Some(3));
         assert_eq!(YamlVal::float(3.0).as_isize(), None);
         assert_eq!(YamlVal::float(3.5).as_f64(), Some(3.5));
+        assert_eq!(jaq_std::ValT::as_f64(&YamlVal::int(3)), Some(3.0));
         assert!(YamlVal::str("x").is_utf8_str());
         assert_eq!(YamlVal::str("abc").as_bytes(), Some(b"abc".as_ref()));
         assert_eq!(

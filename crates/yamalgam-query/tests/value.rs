@@ -19,7 +19,7 @@ fn kind_names_follow_yaml_terms() {
 
 #[test]
 fn public_accessors_expose_resolved_values() {
-    assert_eq!(YamlVal::from(true).as_bool(), Some(true));
+    assert_eq!(YamlVal::from(true).as_boolean(), Some(true));
     assert_eq!(YamlVal::int(7).as_i64(), Some(7));
     assert_eq!(YamlVal::float(2.5).as_f64(), Some(2.5));
 
