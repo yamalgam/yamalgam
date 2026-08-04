@@ -386,8 +386,23 @@ impl jaq_core::ValT for YamlVal {
     fn into_string(self) -> Self {
         match self.data {
             Data::Str(string) => Self::str(string),
-            data => crate::emit::to_json(&yaml_value(data), &crate::EmitOpts::compact())
-                .map_or_else(|error| Self::str(format!("<yg: {error}>")), Self::str),
+            data => {
+                let options = crate::EmitOpts {
+                    limits: crate::runtime_limits::current(),
+                    ..crate::EmitOpts::compact()
+                };
+                crate::emit::to_json(&yaml_value(data), &options).map_or_else(
+                    |error| {
+                        let message = error.to_string();
+                        if crate::runtime_limits::record_error(message.clone()) {
+                            Self::str("")
+                        } else {
+                            Self::str(format!("<yg: {message}>"))
+                        }
+                    },
+                    Self::str,
+                )
+            }
         }
     }
 }

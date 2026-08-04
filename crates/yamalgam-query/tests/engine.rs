@@ -384,6 +384,44 @@ fn runtime_limits_bound_collection_growth() {
     }
 }
 
+fn tostring_error(input: &str, config: LoaderConfig) -> (String, usize) {
+    let filter = engine::compile_filter("tostring", &[]).unwrap();
+    let context = RunCtx::new(config);
+    let documents = yamalgam_query::parse_str(input).unwrap();
+    let mut outputs = 0;
+    let error = engine::run_filter(
+        &filter,
+        &context,
+        documents.into_iter().map(Ok::<_, String>),
+        |_| {
+            outputs += 1;
+            Ok::<_, yamalgam_query::YgError>(())
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    (error, outputs)
+}
+
+#[test]
+fn tostring_propagates_json_conversion_errors() {
+    let (error, outputs) = tostring_error("{1: x, \"1\": y}\n", LoaderConfig::moderate());
+
+    assert_eq!(outputs, 0);
+    assert!(error.contains("duplicated"), "unexpected error: {error}");
+}
+
+#[test]
+fn tostring_uses_the_active_runtime_limits() {
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_depth = Some(0);
+
+    let (error, outputs) = tostring_error("[1]\n", config);
+
+    assert_eq!(outputs, 0);
+    assert!(error.contains("depth"), "unexpected error: {error}");
+}
+
 #[test]
 fn runtime_error_display_obeys_output_limit() {
     let document = concat!(
