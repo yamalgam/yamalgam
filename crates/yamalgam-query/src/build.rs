@@ -106,8 +106,9 @@ impl<'config> Builder<'config> {
                 style,
                 ..
             } => {
-                let data = self.resolve_scalar(&value, style, tag.as_deref());
-                self.finish(data, anchor, tag, NodeStyle::Scalar(style), Some(&value))
+                let raw: Rc<str> = Rc::from(value.as_ref());
+                let data = self.resolve_scalar(Rc::clone(&raw), style, tag.as_deref());
+                self.finish(data, anchor, tag, NodeStyle::Scalar(style), Some(raw))
             }
             Event::SequenceStart {
                 anchor, tag, style, ..
@@ -176,14 +177,17 @@ impl<'config> Builder<'config> {
     }
 
     // r[impl datamodel.schema]
-    fn resolve_scalar(&self, text: &str, style: ScalarStyle, tag: Option<&str>) -> Data {
+    fn resolve_scalar(&self, text: Rc<str>, style: ScalarStyle, tag: Option<&str>) -> Data {
         if let Some(tag) = tag {
             return resolve_tagged(text, tag);
         }
         if style != ScalarStyle::Plain {
-            return Data::Str(Rc::from(text));
+            return Data::Str(text);
         }
-        core_value_to_data(self.config.tag_resolution.resolve_scalar(text))
+        if self.config.tag_resolution.resolves_as_string(text.as_ref()) {
+            return Data::Str(text);
+        }
+        core_value_to_data(self.config.tag_resolution.resolve_scalar(text.as_ref()))
     }
 
     fn finish(
@@ -192,14 +196,14 @@ impl<'config> Builder<'config> {
         anchor: Option<Cow<'_, str>>,
         tag: Option<Cow<'_, str>>,
         style: NodeStyle,
-        raw: Option<&str>,
+        raw: Option<Rc<str>>,
     ) -> Result<YamlVal, BuildError> {
         let meta = Meta {
             tag: tag.as_deref().map(Rc::from),
             anchor: anchor.as_deref().map(Rc::from),
             alias_of: None,
             style: Some(style),
-            raw: raw.map(Rc::from),
+            raw,
         };
         let node = YamlVal {
             data,
@@ -256,31 +260,65 @@ pub(crate) fn core_value_to_data(value: Value) -> Data {
     }
 }
 
-fn resolve_tagged(text: &str, tag: &str) -> Data {
+fn resolve_tagged(text: Rc<str>, tag: &str) -> Data {
     let suffix = tag
         .strip_prefix("tag:yaml.org,2002:")
         .or_else(|| tag.strip_prefix("!!"));
 
-    let resolved = || core_value_to_data(TagResolution::Yaml12.resolve_scalar(text));
     match suffix {
-        Some("str") => Data::Str(Rc::from(text)),
-        Some("null") => match resolved() {
-            data @ Data::Null => data,
-            _ => Data::Str(Rc::from(text)),
+        Some("str") => Data::Str(text),
+        Some("null") => match resolve_yaml12_non_string(&text) {
+            Some(data @ Data::Null) => data,
+            _ => Data::Str(text),
         },
-        Some("bool") => match resolved() {
-            data @ Data::Bool(_) => data,
-            _ => Data::Str(Rc::from(text)),
+        Some("bool") => match resolve_yaml12_non_string(&text) {
+            Some(data @ Data::Bool(_)) => data,
+            _ => Data::Str(text),
         },
-        Some("int") => match resolved() {
-            data @ Data::Int(_) => data,
-            _ => Data::Str(Rc::from(text)),
+        Some("int") => match resolve_yaml12_non_string(&text) {
+            Some(data @ Data::Int(_)) => data,
+            _ => Data::Str(text),
         },
-        Some("float") => match resolved() {
-            data @ Data::Float(_) => data,
-            Data::Int(value) => Data::Float(value as f64),
-            _ => Data::Str(Rc::from(text)),
+        Some("float") => match resolve_yaml12_non_string(&text) {
+            Some(data @ Data::Float(_)) => data,
+            Some(Data::Int(value)) => Data::Float(value as f64),
+            _ => Data::Str(text),
         },
-        Some(_) | None => Data::Str(Rc::from(text)),
+        Some(_) | None => Data::Str(text),
+    }
+}
+
+fn resolve_yaml12_non_string(text: &str) -> Option<Data> {
+    if TagResolution::Yaml12.resolves_as_string(text) {
+        None
+    } else {
+        Some(core_value_to_data(
+            TagResolution::Yaml12.resolve_scalar(text),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_scalars_share_resolved_and_raw_allocation() {
+        for source in ["plain\n", "'quoted'\n", "!!str tagged\n", "!!int text\n"] {
+            let mut documents = parse_str(source).expect("scalar should parse");
+            let value = documents.pop().expect("document should contain a scalar");
+            let Data::Str(data) = &value.data else {
+                panic!("expected string scalar for {source:?}");
+            };
+            let raw = value
+                .meta()
+                .and_then(|meta| meta.raw.as_ref())
+                .expect("scalar should retain raw text");
+
+            assert!(
+                Rc::ptr_eq(data, raw),
+                "string data and raw metadata do not share storage for {source:?}"
+            );
+        }
     }
 }
