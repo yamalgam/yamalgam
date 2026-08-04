@@ -22,6 +22,22 @@ yg MUST use jaq-syn and jaq-core as its expression parser and evaluator engine. 
 r[overview.compat-promise]
 yg does not promise jq compatibility. yg promises jq *familiarity*. Where YAML semantics demand different behavior from JSON semantics, yg follows YAML and documents the divergence. Users who need exact jq JSON semantics SHOULD pipe through `yg -j | jq`.
 
+### 1.1 Milestone 10 Implementation Status
+
+This draft describes the target language. Milestone 10 implements it with
+three explicit deferrals:
+
+- [`r[comparison.strict]`](#32-strict-comparison--) is deferred pending the
+  draft-02 decision on extending jaq without forking its grammar.
+- [`r[ext.chomping]`](#61-node-metadata-filters) is deferred to the Phase 3
+  CST milestone, where the required presentation metadata is available.
+- [`r[cli.allow-includes]`](#84-schema-and-security-flags) and
+  [`r[cli.allow-refs]`](#84-schema-and-security-flags) are deferred to M11 /
+  Phase 4 external resolution.
+
+The [draft-01 implementation notes](yg-spec-draft-01-implementation-notes.md)
+record the complete rationale and every other implementation-driven change.
+
 ---
 
 ## 2. Data Model
