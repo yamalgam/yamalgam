@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 28
+  fixed: 29
   mitigated: 1
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 16
+  open: 15
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -624,3 +624,22 @@ invalid input retains replacement-character semantics.
 
 A focused test pins both valid and invalid UTF-8 conversion. All 115
 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Slice-bound key allocation removed
+
+**Disposition:** fixed
+**Addresses:**
+[slice-bound-keys-allocated-on-every-index](README.md#slice-bound-keys-allocated-on-every-index)
+**Commit:** 46623d17342cd096845b0dc0bda309b6f16c55ef
+**Author:** Codex
+
+`YgMap` now supports an allocation-free borrowed string probe whose hash and
+equivalence match only string-valued `YamlVal` keys. Both slice read/update
+paths and the public `YamlVal::get_str` helper use it instead of constructing
+temporary reference-counted string keys.
+
+A focused test distinguishes borrowed string lookup from a numerically similar
+non-string key. All 116 `yamalgam-query` tests and the workspace Clippy gate
+pass.
