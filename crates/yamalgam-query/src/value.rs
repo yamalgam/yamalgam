@@ -379,10 +379,15 @@ impl YamlVal {
     pub(crate) fn set_tag(mut self, tag: Self) -> jaq_core::ValR<Self> {
         let tag = match tag.data {
             Data::Null => None,
-            Data::Str(tag) => Some(tag.strip_prefix("!!").map_or_else(
+            Data::Str(tag) if is_valid_tag(&tag) => Some(tag.strip_prefix("!!").map_or_else(
                 || tag.clone(),
                 |suffix| Rc::from(format!("tag:yaml.org,2002:{suffix}")),
             )),
+            Data::Str(tag) => {
+                return Err(jaq_core::Error::str(format_args!(
+                    "invalid YAML tag {tag:?}"
+                )));
+            }
             data => {
                 return Err(jaq_core::Error::typ(
                     Self {
@@ -825,6 +830,36 @@ impl core::fmt::Display for YamlVal {
             }
         }
     }
+}
+
+/// Return whether a tag can be emitted without changing YAML structure.
+pub(crate) fn is_valid_tag(tag: &str) -> bool {
+    fn is_uri_char(character: char) -> bool {
+        character.is_ascii_alphanumeric()
+            || "-#;/?:@&=+$,_.!~*'()[]%".contains(character)
+            || (!character.is_ascii() && !character.is_control() && !character.is_whitespace())
+    }
+
+    fn is_tag_char(character: char) -> bool {
+        is_uri_char(character) && !"!,[]{}".contains(character)
+    }
+
+    if let Some(verbatim) = tag.strip_prefix("!<") {
+        let Some(uri) = verbatim.strip_suffix('>') else {
+            return false;
+        };
+        return !uri.is_empty() && uri.chars().all(is_uri_char);
+    }
+
+    if let Some(core) = tag.strip_prefix("!!") {
+        return !core.is_empty() && core.chars().all(is_tag_char);
+    }
+
+    if let Some(local) = tag.strip_prefix('!') {
+        return local.chars().all(is_tag_char);
+    }
+
+    !tag.is_empty() && tag.chars().all(is_uri_char)
 }
 
 /// Return whether plain YAML emission would change a string's value or syntax.

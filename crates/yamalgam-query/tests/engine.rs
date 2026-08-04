@@ -412,6 +412,31 @@ fn set_anchor_rejects_invalid_names() {
 }
 
 #[test]
+fn set_tag_rejects_tags_that_cannot_be_emitted_safely() {
+    for filter_source in [
+        r#"set_tag("not valid")"#,
+        r#"set_tag("!x\ninjected: true")"#,
+        r#"set_tag("!x,y")"#,
+        r#"set_tag("!<broken")"#,
+    ] {
+        let filter = engine::compile_filter(filter_source, &[]).unwrap();
+        let context = RunCtx::new(LoaderConfig::moderate());
+        let documents = yamalgam_query::parse_str("scalar\n").unwrap();
+        let result = engine::run_filter(
+            &filter,
+            &context,
+            documents.into_iter().map(Ok::<_, String>),
+            |_| Ok::<_, yamalgam_query::YgError>(()),
+        );
+
+        assert!(
+            result.is_err(),
+            "filter unexpectedly succeeded: {filter_source}"
+        );
+    }
+}
+
+#[test]
 fn merge_expands_merge_keys_with_yaml_precedence_and_order() {
     let document = "base: &b {x: 1, y: 1}\nchild:\n  <<: *b\n  y: 2\n";
     assert_eq!(eval(".child | merge", document), vec!["{x: 1, y: 2}"]);

@@ -234,6 +234,15 @@ fn yaml_reemits_anchors_aliases_and_tags() {
 }
 
 #[test]
+fn yaml_omits_tags_that_cannot_be_reemitted_safely() {
+    let value = parse_str("k: !x%0Ainjected%3A%20true v\n")
+        .unwrap()
+        .remove(0);
+
+    assert_eq!(to_yaml(&value, &EmitOpts::default()).unwrap(), "k: v\n");
+}
+
+#[test]
 fn yaml_sort_keys_changes_output_not_the_value() {
     let value = parse_str("b: 1\na: 2\n").unwrap().remove(0);
     let options = EmitOpts {

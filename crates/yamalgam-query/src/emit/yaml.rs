@@ -7,7 +7,9 @@ use yamalgam_parser::CollectionStyle;
 use yamalgam_scanner::ScalarStyle;
 
 use crate::emit::{EmitError, EmitFormat, EmitOpts, validate_value};
-use crate::value::{Data, NodeStyle, YamlVal, YgMap, fmt_float, needs_quotes, quote_double};
+use crate::value::{
+    Data, NodeStyle, YamlVal, YgMap, fmt_float, is_valid_tag, needs_quotes, quote_double,
+};
 
 /// Render one value as a YAML document body.
 ///
@@ -420,6 +422,9 @@ impl Context<'_> {
 }
 
 fn safe_tag(tag: &str) -> Option<String> {
+    if !is_valid_tag(tag) {
+        return None;
+    }
     if tag.starts_with("!!") || tag.starts_with("!<") {
         return Some(tag.to_owned());
     }
