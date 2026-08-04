@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 11
+  fixed: 12
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 36
+  open: 35
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -237,3 +237,21 @@ temporary file and explicitly flushes before `sync_all`, preserving the
 durability boundary before replacement.
 
 All 40 `yg` CLI integration tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — JSON emitter allocations reduced
+
+**Disposition:** fixed
+**Addresses:**
+[json-emitter-allocates-indent-and-triple-allocates-keys](README.md#json-emitter-allocates-indent-and-triple-allocates-keys)
+**Commit:** ca7c2e8f28ae20d39449974af5266479bd682984
+**Author:** Codex
+
+JSON indentation, quoted strings, integers, and floats now append directly to
+the final output buffer instead of allocating intermediate strings. Duplicate
+object-name detection stores borrowed `Rc<str>` key text through `Cow<str>`;
+only non-string YAML keys allocate their required JSON name.
+
+The five focused JSON emitter tests, all 103 `yamalgam-query` tests, and the
+workspace Clippy gate pass.
