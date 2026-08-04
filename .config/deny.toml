@@ -54,6 +54,7 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 ignore = [
     # dlopen_derive 0.1.4 - via yamlstar (optional benchmark peer)
     # Unmaintained, but yamlstar is only used for comparative benchmarks
+    # All Cargo Deny entry points use --all-features so this entry stays live
     "RUSTSEC-2023-0051",
 ]
 
