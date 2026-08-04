@@ -247,28 +247,45 @@ where
         context.activate_pending_input_meta();
         for output in filter.id.run((jaq_context.clone(), input)) {
             let output: YamlVal = output.map_err(|error| {
-                let error = YgError::runtime(error);
-                let error = match error {
-                    YgError::Runtime(message) => {
-                        let metadata = context.input_meta.borrow();
-                        let source = metadata
-                            .filename
-                            .as_deref()
-                            .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
-                        YgError::Runtime(format!(
-                            "{source} document {}: {message}",
-                            metadata.document_index + 1
-                        ))
-                    }
-                    error => error,
-                };
-                E::from(error)
+                E::from(contextualize_runtime_error(
+                    context,
+                    YgError::runtime(error),
+                ))
             })?;
+            if let Some(message) = crate::runtime_limits::take_error() {
+                return Err(E::from(contextualize_runtime_error(
+                    context,
+                    YgError::Runtime(message),
+                )));
+            }
             last = Some(jaq_core::ValT::as_bool(&output));
             visit(output)?;
         }
+        if let Some(message) = crate::runtime_limits::take_error() {
+            return Err(E::from(contextualize_runtime_error(
+                context,
+                YgError::Runtime(message),
+            )));
+        }
     }
     Ok(last)
+}
+
+fn contextualize_runtime_error(context: &RunCtx, error: YgError) -> YgError {
+    match error {
+        YgError::Runtime(message) => {
+            let metadata = context.input_meta.borrow();
+            let source = metadata
+                .filename
+                .as_deref()
+                .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
+            YgError::Runtime(format!(
+                "{source} document {}: {message}",
+                metadata.document_index + 1
+            ))
+        }
+        error => error,
+    }
 }
 
 fn render_load_errors(errors: load::Errors<&str, &str>) -> String {

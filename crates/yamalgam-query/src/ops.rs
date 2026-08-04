@@ -62,12 +62,38 @@ impl core::ops::Add for YamlVal {
             (Int(left), Float(right)) => Float(left as f64 + right),
             (Float(left), Int(right)) => Float(left + right as f64),
             (Float(left), Float(right)) => Float(left + right),
-            (Str(left), Str(right)) => Str(Rc::from(format!("{left}{right}"))),
+            (Str(left), Str(right)) => {
+                let size = left
+                    .len()
+                    .checked_add(right.len())
+                    .ok_or_else(|| Error::str("string size overflow"))?;
+                crate::runtime_limits::check_scalar_size(size).map_err(Error::str)?;
+                let mut output = String::with_capacity(size);
+                output.push_str(&left);
+                output.push_str(&right);
+                Str(Rc::from(output))
+            }
             (Seq(mut left), Seq(right)) => {
+                let size = left
+                    .len()
+                    .checked_add(right.len())
+                    .ok_or_else(|| Error::str("collection size overflow"))?;
+                crate::runtime_limits::check_collection_size(size).map_err(Error::str)?;
                 Rc::make_mut(&mut left).extend(right.iter().cloned());
                 Seq(left)
             }
             (Map(mut left), Map(right)) => {
+                let added = right
+                    .0
+                    .keys()
+                    .filter(|key| !left.0.contains_key(*key))
+                    .count();
+                let size = left
+                    .0
+                    .len()
+                    .checked_add(added)
+                    .ok_or_else(|| Error::str("collection size overflow"))?;
+                crate::runtime_limits::check_collection_size(size).map_err(Error::str)?;
                 Rc::make_mut(&mut left).0.extend(
                     right
                         .0

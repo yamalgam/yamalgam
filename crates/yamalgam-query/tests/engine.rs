@@ -340,6 +340,50 @@ fn explode_aliases_obeys_depth_limit() {
     assert!(error.to_string().contains("depth"));
 }
 
+fn runtime_limit_error(filter_source: &str, config: LoaderConfig) -> String {
+    let filter = engine::compile_filter(filter_source, &[]).unwrap();
+    let context = RunCtx::new(config);
+    engine::run_filter(
+        &filter,
+        &context,
+        core::iter::once(Ok::<_, String>(YamlVal::null())),
+        |_| Ok::<_, yamalgam_query::YgError>(()),
+    )
+    .unwrap_err()
+    .to_string()
+}
+
+#[test]
+fn runtime_limits_bound_string_concatenation() {
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_scalar_bytes = Some(7);
+
+    let error = runtime_limit_error(r#""abcd" + "efgh""#, config);
+
+    assert!(error.contains("scalar size"), "unexpected error: {error}");
+}
+
+#[test]
+fn runtime_limits_bound_collection_growth() {
+    for filter_source in [
+        "[1, 2] + [3, 4]",
+        "{a: 1, b: 2} + {c: 3, d: 4}",
+        "[range(4)]",
+        "{a: 1, b: 2, c: 3, d: 4}",
+        "[1, 2] | map_values(., .)",
+    ] {
+        let mut config = LoaderConfig::moderate();
+        config.limits.max_collection_size = Some(3);
+
+        let error = runtime_limit_error(filter_source, config);
+
+        assert!(
+            error.contains("collection size"),
+            "unexpected result for {filter_source}: {error}"
+        );
+    }
+}
+
 #[test]
 fn runtime_error_display_obeys_output_limit() {
     let document = concat!(

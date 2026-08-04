@@ -762,7 +762,22 @@ impl From<f64> for YamlVal {
 impl FromIterator<Self> for YamlVal {
     // r[impl filters.construct.seq]
     fn from_iter<T: IntoIterator<Item = Self>>(iter: T) -> Self {
-        Self::seq(iter.into_iter().collect())
+        let mut items = Vec::new();
+        for item in iter {
+            let Some(size) = items.len().checked_add(1) else {
+                if !crate::runtime_limits::record_error("collection size overflow".into()) {
+                    items.push(item);
+                }
+                break;
+            };
+            if let Err(message) = crate::runtime_limits::check_collection_size(size)
+                && crate::runtime_limits::record_error(message)
+            {
+                break;
+            }
+            items.push(item);
+        }
+        Self::seq(items)
     }
 }
 

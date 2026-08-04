@@ -7,7 +7,7 @@ use jaq_core::path::Opt;
 use jaq_core::val::{Range, ValR, ValX};
 use jaq_core::{Error, Exn};
 
-use crate::value::{Data, YamlVal};
+use crate::value::{Data, YamlVal, YgMap, YgSeq};
 
 impl From<Range<Self>> for YamlVal {
     fn from(range: Range<Self>) -> Self {
@@ -31,7 +31,19 @@ impl jaq_core::ValT for YamlVal {
 
     // r[impl filters.construct.mapping]
     fn from_map<I: IntoIterator<Item = (Self, Self)>>(iter: I) -> ValR<Self> {
-        Ok(Self::map(iter.into_iter().collect()))
+        let mut mapping = YgMap::default();
+        for (key, value) in iter {
+            if !mapping.0.contains_key(&key) {
+                let size = mapping
+                    .0
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| Error::str("collection size overflow"))?;
+                crate::runtime_limits::check_collection_size(size).map_err(Error::str)?;
+            }
+            mapping.0.insert(key, value);
+        }
+        Ok(yaml_value(Data::Map(Rc::new(mapping))))
     }
 
     // r[impl filters.iterator]
@@ -147,17 +159,41 @@ impl jaq_core::ValT for YamlVal {
         match self.data_mut() {
             Data::Seq(items) => {
                 let previous = core::mem::take(&mut Rc::make_mut(items).0);
-                *Rc::make_mut(items) = crate::value::YgSeq(
-                    previous.into_iter().flat_map(f).collect::<Result<_, _>>()?,
-                );
+                let mut updated = Vec::new();
+                for value in previous {
+                    for result in f(value) {
+                        let value = result?;
+                        let size = updated
+                            .len()
+                            .checked_add(1)
+                            .ok_or_else(|| Exn::from(Error::str("collection size overflow")))?;
+                        crate::runtime_limits::check_collection_size(size)
+                            .map_err(Error::str)
+                            .map_err(Exn::from)?;
+                        updated.push(value);
+                    }
+                }
+                *Rc::make_mut(items) = YgSeq(updated);
                 Ok(self)
             }
             Data::Map(mapping) => {
                 let previous = core::mem::take(&mut Rc::make_mut(mapping).0);
-                Rc::make_mut(mapping).0 = previous
-                    .into_iter()
-                    .filter_map(|(key, value)| f(value).next().map(|value| Ok((key, value?))))
-                    .collect::<Result<_, Exn<'_, Self>>>()?;
+                let mut updated = YgMap::default();
+                for (key, value) in previous {
+                    if let Some(value) = f(value).next() {
+                        let value = value?;
+                        let size = updated
+                            .0
+                            .len()
+                            .checked_add(1)
+                            .ok_or_else(|| Exn::from(Error::str("collection size overflow")))?;
+                        crate::runtime_limits::check_collection_size(size)
+                            .map_err(Error::str)
+                            .map_err(Exn::from)?;
+                        updated.0.insert(key, value);
+                    }
+                }
+                *Rc::make_mut(mapping) = updated;
                 Ok(self)
             }
             _ => opt.fail(self, |value| {
