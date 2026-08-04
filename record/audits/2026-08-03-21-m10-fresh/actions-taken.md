@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 33
+  fixed: 34
   mitigated: 2
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 10
+  open: 9
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -737,4 +737,22 @@ boolean and special-float spelling, signed and radix numbers, underscore
 separators, integer overflow, and malformed numeric lookalikes.
 
 The focused equivalence test and all 60 `yamalgam-core` tests pass, and the
+workspace Clippy gate is clean.
+
+---
+
+## 2026-08-04 — Canonical color CLI specified
+
+**Disposition:** fixed
+**Addresses:**
+[yg-color-flags-replaced-without-spec-amendment](README.md#yg-color-flags-replaced-without-spec-amendment)
+**Commit:** ff48ac36392d89e7f77c339c3b6c2998712dcc15
+**Author:** Codex
+
+Draft 01 now specifies the shipped librebar `--color auto|always|never`
+interface instead of the absent `-C`/`-M` pair. Root help explicitly warns
+that `-C` is the global `--chdir` option and points color users to `--color`.
+
+Focused tests cover both color behavior and the help warning. The updated
+specification passes Markdown lint, both focused CLI tests pass, and the
 workspace Clippy gate is clean.
