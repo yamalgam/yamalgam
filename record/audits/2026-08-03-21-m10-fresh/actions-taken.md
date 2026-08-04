@@ -3,11 +3,11 @@ audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
   fixed: 1
-  mitigated: 0
+  mitigated: 1
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 46
+  open: 45
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -32,3 +32,22 @@ instead of replaying it as YAML structure.
 Regression tests cover the percent-decoded newline injection path and invalid
 `set_tag` arguments. Existing local and core tag round trips remain covered by
 the emitter suite.
+
+---
+
+## 2026-08-03 — Alias materialization bounded
+
+**Disposition:** mitigated
+**Addresses:** [explode-aliases-unbounded-expansion](README.md#explode-aliases-unbounded-expansion)
+**Commit:** e95ce8b19b087d84a08ba63d77d587e799600608
+**Author:** Codex
+
+Threaded the active `ResourceLimits` into `explode_aliases` and made expansion
+fallible. A per-invocation budget now enforces logical alias expansions, total
+materialized collection entries, and recursion depth before copying the value
+tree. Focused tests exercise all three limits, and the complete
+`yamalgam-query` suite remains green.
+
+The finding is mitigated rather than fixed because `Display for YamlVal` still
+walks the logical alias tree without a rendering budget. A follow-up action
+must bound that error-formatting path before this finding can be closed.
