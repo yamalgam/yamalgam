@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 40
+  fixed: 41
   mitigated: 3
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 2
+  open: 1
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -890,3 +890,23 @@ logging feature; until then, defaults remain disabled, the feature set stays
 explicit, and changes to the locked transitives require review. Locked graph
 checks, Markdown lint, Cargo Deny, and Cargo Audit pass with only the existing
 allowed `dlopen_derive` warning and baseline policy warnings.
+
+---
+
+## 2026-08-04 — Compiler-derived unsafe census added
+
+**Disposition:** fixed
+**Addresses:**
+[geiger-census-produced-no-unsafe-data](README.md#geiger-census-produced-no-unsafe-data)
+**Commit:** 9b93bd5df70bf5d7012f64456f62cd9f5bda76d8
+**Author:** Codex
+
+The repository no longer treats cargo-geiger 0.13 as audit evidence because it
+can exit successfully after an I/O error with no report. `just unsafe-census`
+now applies rustc's syntax-aware `unsafe_code` lint to the locked, normal
+dependency graph shipped by `yg`, with one build job, no compiler wrapper, and
+an isolated target directory.
+
+The first completed census emitted 2,359 unsafe diagnostics across transitive
+dependencies and zero diagnostics in workspace sources. Focused documentation
+lint and the workspace Clippy gate pass.
