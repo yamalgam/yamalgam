@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 12
+  fixed: 13
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 35
+  open: 34
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -255,3 +255,21 @@ only non-string YAML keys allocate their required JSON name.
 
 The five focused JSON emitter tests, all 103 `yamalgam-query` tests, and the
 workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Uncolored YAML scalar copies removed
+
+**Disposition:** fixed
+**Addresses:**
+[yaml-emitter-paint-copies-every-scalar-when-color-is-off](README.md#yaml-emitter-paint-copies-every-scalar-when-color-is-off)
+**Commit:** 4246b2821012818c593616e24d3bd40b37f3137c
+**Author:** Codex
+
+Rendered YAML scalar text now flows through `Cow<str>`. With color disabled,
+plain strings and literal lines remain borrowed and already-formatted scalar
+text is reused; the paint step no longer allocates or copies it. ANSI-enabled
+output still creates the required wrapped value.
+
+All 14 focused YAML emitter tests, the CLI color regression, all 103
+`yamalgam-query` tests, and the workspace Clippy gate pass.
