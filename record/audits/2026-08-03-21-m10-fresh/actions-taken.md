@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-04
 status:
-  fixed: 24
+  fixed: 25
   mitigated: 0
   accepted: 1
   disputed: 0
   deferred: 1
-  open: 21
+  open: 20
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -531,3 +531,22 @@ fatal with the source path in its diagnostic.
 A focused unit test pins both policy branches. Permission preservation,
 multi-file staging, and atomic replacement remain unchanged. All 88
 `yamalgam` package tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Unreachable contracts documented
+
+**Disposition:** fixed
+**Addresses:**
+[unreachable-macros-guard-unstated-invariants](README.md#unreachable-macros-guard-unstated-invariants)
+**Commit:** f1ee264820ff8b17a8c033153e133a163204d129
+**Author:** Codex
+
+The four production `unreachable!` arms now state the caller or type contract
+that excludes them: block-collection classification, flow-position scalar
+rendering, collection routing before scalar emission, and the scalar-only
+`TagResolver::resolve_scalar` result contract.
+
+This is a documentation-only closure because the audit independently verified
+the paths are unreachable and did not require a correctness change. All 112
+`yamalgam-query` tests and the workspace Clippy gate pass.
