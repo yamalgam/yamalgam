@@ -75,6 +75,7 @@ impl Context<'_> {
     }
 
     fn block_collection(&mut self, output: &mut String, value: &YamlVal, depth: usize) {
+        // `node` calls this only after `is_block_collection` accepts the value.
         match &value.data {
             Data::Seq(items) => self.sequence(output, items, depth),
             Data::Map(mapping) => self.mapping(output, mapping, depth, false),
@@ -237,6 +238,7 @@ impl Context<'_> {
             }
             _ => match self.scalar(value, Position::Flow) {
                 Rendered::Inline(text) => output.push_str(&text),
+                // `Position::Flow` prevents `string` from selecting block-literal style.
                 Rendered::Literal(_) => unreachable!("flow scalars cannot be literal blocks"),
             },
         }
@@ -256,6 +258,7 @@ impl Context<'_> {
                 Rendered::Inline(text) => Rendered::Inline(self.paint(text, "32")),
                 literal => literal,
             },
+            // Callers route collections to `inline` or `block_collection` first.
             Data::Seq(_) | Data::Map(_) => unreachable!("collections are not scalars"),
         }
     }

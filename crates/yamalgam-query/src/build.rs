@@ -272,6 +272,8 @@ pub(crate) fn core_value_to_data(value: Value) -> Data {
         Value::Integer(value) => Data::Int(value),
         Value::Float(value) => Data::Float(value),
         Value::String(value) => Data::Str(Rc::from(value)),
+        // This receives only `TagResolver::resolve_scalar` results; crate-owned
+        // resolvers return scalar `Value` variants from that method.
         Value::Sequence(_) | Value::Mapping(_) => {
             unreachable!("scalar resolver returned a collection")
         }
