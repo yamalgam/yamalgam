@@ -2,12 +2,12 @@
 audit: 2026-08-03-21-m10-fresh
 last_updated: 2026-08-03
 status:
-  fixed: 5
+  fixed: 6
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 42
+  open: 41
 ---
 
 # Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
@@ -109,3 +109,21 @@ extended-control handling with `\u00NN` escapes.
 Regression tests cover both emitters at the control-range boundaries, NEL,
 and the Unicode line and paragraph separators. The full `yamalgam-query` suite
 and clippy gate remain green.
+
+---
+
+## 2026-08-03 — YAML document markers quoted
+
+**Disposition:** fixed
+**Addresses:**
+[emitter-plain-document-end-marker](README.md#emitter-plain-document-end-marker)
+**Commit:** ba9243024ad96c1d35d7a8aadf25ffedf09e728e
+**Author:** Codex
+
+The centralized scalar classifier now requires quoting for exact `...` and
+`---` strings and marker prefixes followed by whitespace. Root scalar output
+can no longer be reinterpreted as a YAML document boundary.
+
+A focused regression test asserts quoted output and parse/emit round trips for
+both document markers and their followed-by-text forms. All 94 query tests and
+the clippy gate pass.
