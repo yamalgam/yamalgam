@@ -145,6 +145,21 @@ of the newly resolved value. Draft 02 should either remove the redundant filter
 or define a distinct result that the value model can represent
 ([`r[ext.resolved-type]`](yg-query-language-spec-draft-01.md#62-type-introspection)).
 
+## 15. Librebar expands the reviewed trust boundary
+
+Librebar 0.4 is consumed with default features disabled and only `cli`,
+`config`, `logging`, and `diagnostics` enabled. The latter two add
+`rust-zstd` 0.1.0 and `leakguard` 0.8.0 to the shipped binary. The locked
+`rust-zstd` source contains no unsafe code, and `leakguard` declares
+`forbid(unsafe_code)`; Cargo Deny and Cargo Audit report no advisory for either
+crate.
+
+The residual risk is their limited 0.x maintenance history. `rust-zstd`
+remains required by librebar's `logging` feature even without `diagnostics`,
+so removing that decompressor requires librebar to expose compressed rotation
+as a separate optional feature. Until then, yamalgam keeps librebar's feature
+set explicit and reviews changes to these locked transitive versions.
+
 ## Additional implementation-driven changes
 
 - Librebar 0.4 reserves `-C` for changing directory and exposes the canonical
