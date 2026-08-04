@@ -362,16 +362,13 @@ fn strict_mode_bounds_constructed_output_depth() {
 }
 
 #[test]
-fn discarded_deep_values_drop_without_stack_overflow() {
+fn strict_mode_rejects_discarded_over_depth_values() {
     yg().timeout(Duration::from_secs(10))
-        .args([
-            "--strict",
-            "-n",
-            "reduce range(20000) as $i (null; [.]) | 1",
-        ])
+        .args(["--strict", "-n", "reduce range(100) as $i (null; [.]) | 1"])
         .assert()
-        .success()
-        .stdout("1\n");
+        .code(5)
+        .stdout("")
+        .stderr(predicate::str::contains("depth"));
 }
 
 #[test]
