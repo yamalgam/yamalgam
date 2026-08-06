@@ -6,7 +6,7 @@ use std::iter::Peekable;
 
 use serde::de::{self, DeserializeSeed, Visitor};
 use yamalgam_core::value::Value;
-use yamalgam_core::{LoaderConfig, ResourceLimits, Span, TagResolver, Yaml12TagResolver};
+use yamalgam_core::{LoaderConfig, ResourceLimits, Span, TagResolver};
 use yamalgam_parser::{Event, ParseError, Parser, ScalarStyle};
 
 use crate::error::Error;
@@ -46,23 +46,22 @@ pub struct Deserializer<'input> {
 }
 
 impl<'input> Deserializer<'input> {
-    /// Create a `Deserializer` from a YAML input string.
+    /// Create a `Deserializer` from a YAML input string with
+    /// [`LoaderConfig::default`] resource limits.
     #[must_use]
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(input: &'input str) -> Self {
-        let parser = Parser::new(input);
-        Self {
-            events: (Box::new(parser) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
-            tag_resolver: Box::new(Yaml12TagResolver),
-            limits: ResourceLimits::none(),
-            finished: false,
-            at_document_start: false,
-            anchors: HashMap::new(),
-            anchor_count: 0,
-            alias_expansions: 0,
-            replay_buffer: VecDeque::new(),
-            stashed_error: None,
-        }
+        Self::from_str_with_config(input, &LoaderConfig::default())
+    }
+
+    /// Create a `Deserializer` from a YAML input string without resource
+    /// limits.
+    ///
+    /// Use only for trusted input. Prefer [`Self::from_str`] for ordinary
+    /// input.
+    #[must_use]
+    pub fn from_str_unchecked(input: &'input str) -> Self {
+        Self::from_str_with_config(input, &LoaderConfig::unchecked())
     }
 
     /// Create a `Deserializer` from a YAML input string with a full
