@@ -38,6 +38,8 @@ constructed trees are stack-safe independently of builder policy.
 
 ## File Map
 
+- Modify `crates/yamalgam-core/src/loader.rs`: expose the existing moderate
+  resource-only preset for const low-level consumers.
 - Modify `crates/yamalgam-cst/src/lib.rs`: safe constructors, builder-local
   collection depth, iterative operations, iterative drop, and regression tests.
 - Append
@@ -50,13 +52,14 @@ constructed trees are stack-safe independently of builder policy.
 
 **Files:**
 
+- Modify: `crates/yamalgam-core/src/loader.rs`
 - Modify: `crates/yamalgam-cst/src/lib.rs`
 - Test: `crates/yamalgam-cst/src/lib.rs`
 
 **Interfaces:**
 
-- Consumes: `LoaderConfig::default()`, `LoaderConfig::unchecked()`, and
-  `Parser::with_config`.
+- Consumes: `LoaderConfig::default()`, `LoaderConfig::unchecked()`,
+  `ResourceLimits::moderate()`, and `Parser::with_config`.
 - Produces: `parse_to_cst_with_config`, `parse_to_cst_unchecked`,
   `CstBuilder::new_with_config`, and `CstBuilder::new_unchecked` without
   removing the existing const constructor contract.
@@ -128,9 +131,32 @@ pub struct CstBuilder<'input> {
 }
 ```
 
-Preserve `CstBuilder::new` as a const API. `LoaderConfig::default()` delegates
-to the const `moderate()` preset, so use that preset directly in its struct
-literal. Add the config-aware constructor separately:
+Preserve `CstBuilder::new` as a const API. Moving a field out of
+`LoaderConfig::moderate()` in a const function is rejected with `E0493`
+because the unused resolution policy requires destruction. Move the existing
+moderate resource literal into a new `ResourceLimits::moderate()` const
+constructor, then have `LoaderConfig::moderate()` use it. This keeps one source
+of truth for the preset and gives low-level const consumers a drop-free path.
+
+```rust
+/// Balanced limits suitable for most workloads.
+#[must_use]
+pub const fn moderate() -> Self {
+    Self {
+        max_input_bytes: Some(256 * 1024 * 1024),
+        max_scalar_bytes: Some(64 * 1024 * 1024),
+        max_key_bytes: Some(1024 * 1024),
+        max_depth: Some(256),
+        max_alias_expansions: Some(10_000),
+        max_anchor_count: Some(10_000),
+        max_merge_depth: Some(64),
+        max_collection_size: Some(1_000_000),
+        max_output_bytes: Some(256 * 1024 * 1024),
+    }
+}
+```
+
+Add the config-aware builder constructor separately:
 
 ```rust
 #[must_use]
@@ -139,7 +165,7 @@ pub const fn new(source: &'input str) -> Self {
         source,
         stack: Vec::new(),
         last_offset: 0,
-        limits: LoaderConfig::moderate().limits,
+        limits: ResourceLimits::moderate(),
         collection_depth: 0,
     }
 }
@@ -223,7 +249,7 @@ pub const fn new_unchecked(source: &'input str) -> Self {
         source,
         stack: Vec::new(),
         last_offset: 0,
-        limits: LoaderConfig::unchecked().limits,
+        limits: ResourceLimits::none(),
         collection_depth: 0,
     }
 }
@@ -549,6 +575,7 @@ Expected: both isolated children complete successfully at 100,000 nodes.
 
 **Files:**
 
+- Modify: `crates/yamalgam-core/src/loader.rs`
 - Modify: `crates/yamalgam-cst/src/lib.rs`
 
 **Steps:**
@@ -557,6 +584,7 @@ Expected: both isolated children complete successfully at 100,000 nodes.
 
 ```bash
 just fmt
+cargo nextest run -p yamalgam-core
 cargo nextest run -p yamalgam-cst
 cargo test --doc -p yamalgam-cst
 just clippy
@@ -575,7 +603,7 @@ rerun Step 1 and obtain PASS.
 - [ ] **Step 3: Commit only the implementation**
 
 ```bash
-git add crates/yamalgam-cst/src/lib.rs
+git add crates/yamalgam-core/src/loader.rs crates/yamalgam-cst/src/lib.rs
 git --no-pager diff --cached --check
 git --no-pager diff --cached --name-only
 git commit -m "fix(cst): bound construction and remove recursion"
@@ -583,8 +611,9 @@ git rev-parse HEAD
 git --no-pager log --show-signature -1 --format=fuller
 ```
 
-Expected: exactly the CST source is committed and signature output contains
-`Good signature`. Record the full implementation SHA.
+Expected: exactly the centralized resource preset and CST implementation are
+committed, and signature output contains `Good signature`. Record the full
+implementation SHA.
 
 ---
 
