@@ -9,6 +9,8 @@ use yamalgam_parser::ResolveError;
 /// Errors that can occur during YAML deserialization.
 #[derive(Debug)]
 pub enum Error {
+    /// Reading YAML input failed before parsing began.
+    Io(std::io::Error),
     /// YAML parsing failed (scanner/parser level).
     Parse(ParseError),
     /// Resolver middleware error (!include, $ref).
@@ -40,11 +42,12 @@ pub enum Error {
 impl Error {
     /// Clone the structured form of this error.
     ///
-    /// `Resolve` is the only variant that cannot be cloned (`ResolveError`
-    /// can hold an `io::Error`); it degrades to `Custom` with the rendered
-    /// text. Every other variant round-trips losslessly.
+    /// `std::io::Error` is reconstructed from its kind and rendered message.
+    /// `Resolve` is the only variant that degrades to `Custom`, because a
+    /// `ResolveError` can contain arbitrary non-cloneable sources.
     pub(crate) fn clone_structured(&self) -> Self {
         match self {
+            Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
             Self::Parse(e) => Self::Parse(e.clone()),
             Self::Resolve(e) => Self::Custom(e.to_string()),
             Self::Unexpected {
@@ -70,6 +73,7 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Parse(e) => write!(f, "{e}"),
             Self::Resolve(e) => write!(f, "{e}"),
             Self::Unexpected {
@@ -106,6 +110,7 @@ fn write_position(f: &mut fmt::Formatter<'_>, span: Option<Span>) -> fmt::Result
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Resolve(e) => Some(e),
             _ => None,
@@ -125,6 +130,12 @@ impl From<ParseError> for Error {
     }
 }
 
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
 impl From<ResolveError> for Error {
     fn from(e: ResolveError) -> Self {
         Self::Resolve(e)
@@ -134,5 +145,27 @@ impl From<ResolveError> for Error {
 impl From<erased_serde::Error> for Error {
     fn from(e: erased_serde::Error) -> Self {
         Self::Custom(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clone_structured_preserves_io_error_kind_and_message() {
+        let original = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "clone fixture failed",
+        ));
+        let original_message = original.to_string();
+
+        let cloned = original.clone_structured();
+
+        let Error::Io(error) = &cloned else {
+            panic!("structured clone should retain Error::Io");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(cloned.to_string(), original_message);
     }
 }

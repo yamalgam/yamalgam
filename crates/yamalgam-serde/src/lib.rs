@@ -91,9 +91,7 @@ pub fn from_reader<R: std::io::Read, T: serde::de::DeserializeOwned>(
     mut reader: R,
 ) -> Result<T, Error> {
     let mut buf = String::new();
-    reader
-        .read_to_string(&mut buf)
-        .map_err(|e| Error::Custom(format!("I/O error: {e}")))?;
+    reader.read_to_string(&mut buf).map_err(Error::Io)?;
     from_str(&buf)
 }
 
@@ -110,8 +108,6 @@ pub fn from_reader_unchecked<R: std::io::Read, T: serde::de::DeserializeOwned>(
     mut reader: R,
 ) -> Result<T, Error> {
     let mut buf = String::new();
-    reader
-        .read_to_string(&mut buf)
-        .map_err(|e| Error::Custom(format!("I/O error: {e}")))?;
+    reader.read_to_string(&mut buf).map_err(Error::Io)?;
     from_str_unchecked(&buf)
 }
