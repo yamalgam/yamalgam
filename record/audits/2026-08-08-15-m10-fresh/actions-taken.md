@@ -2,12 +2,12 @@
 audit: 2026-08-08-15-m10-fresh
 last_updated: 2026-08-08
 status:
-  fixed: 3
+  fixed: 4
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 2
+  open: 1
 ---
 
 # Actions Taken: Full Repository Static Audit
@@ -72,3 +72,25 @@ fuzz/Cargo.lock`, nightly all-target fuzz-package check, locked metadata, and
 Actionlint passed. `just check` passed with 1,930 tests, Clippy with warnings
 denied, formatting, both dependency graphs, and doc tests. Independent code
 review returned PASS.
+
+---
+
+## 2026-08-08 — Preserve structured resource-limit failures
+
+**Disposition:** fixed
+**Addresses:** [resource-limit-checks-return-unstructured-strings](README.md#resource-limit-checks-return-unstructured-strings)
+**Commit:** `543b5380ced8633dbc4983b5108d4326df0b8064`
+**Author:** Codex
+
+Resource-limit checks now return a public `LimitExceeded` payload containing
+the resource category, observed value, and configured maximum. Scanner,
+parser, composer, serde, CST, query, and CLI boundaries preserve that payload;
+internal accounting overflow remains a distinct error. ADR-0014 records the
+error contract, including preservation of existing rendered context and
+prefixes.
+
+Verification: exact-payload regressions cover all nine resource categories and
+their public propagation paths, including jaq runtime operations and nested
+scanner/parser context. `just check` passed with 1,932 tests, Clippy with
+warnings denied, both Cargo Deny graphs, formatting, and doc tests. Independent
+code review returned PASS.
