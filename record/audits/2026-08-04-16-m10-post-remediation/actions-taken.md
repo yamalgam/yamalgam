@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 16
+  fixed: 17
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 11
+  open: 10
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -330,5 +330,23 @@ Regression coverage consumes a mapping, borrows it in a standard loop, mutates
 values through `&mut Mapping`, and verifies indexed lookup remains correct.
 All 68 core tests, workspace clippy, and the full repository check with 1,919
 tests pass. This standard trait addition did not require an ADR.
+
+---
+
+## 2026-08-08 — Mapping default derived
+
+**Disposition:** fixed
+**Addresses:** [mapping-default-manually-matches-derive](README.md#mapping-default-manually-matches-derive)
+**Commit:** 729f59bac3069ab88e5382675c22f16db409e21e
+**Author:** Codex
+
+`Mapping` now derives `Default`; the redundant manual implementation was
+removed. Derived initialization remains exactly equivalent to `Mapping::new()`:
+an empty entries vector and no lazily-created scalar index. The public const
+constructor remains unchanged.
+
+All 68 core tests, workspace clippy, and the full repository check with 1,919
+tests pass. This behavior-preserving implementation cleanup did not require an
+ADR.
 
 ---
