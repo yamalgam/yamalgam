@@ -80,5 +80,5 @@ first-party build, parse, compose, deserialize, and emit APIs.
 
 ## More Information
 
-- [ADR-0006](../../docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
+- [ADR-0006](../../record/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
 - [Fresh audit finding](../audits/2026-08-08-15-m10-fresh/README.md#resource-limit-checks-return-unstructured-strings)

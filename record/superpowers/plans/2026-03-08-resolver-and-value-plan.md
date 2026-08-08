@@ -9,9 +9,9 @@
 **Tech Stack:** Rust (edition 2024), yamalgam-core, yamalgam-parser, thiserror. No new crates — this milestone adds modules to existing crates.
 
 **Reference files:**
-- Design: `docs/plans/2026-03-08-event-consumers-and-resolver-design.md`
-- ADR: `docs/decisions/0007-resolver-trait-for-event-stream-middleware.md`
-- ADR: `docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md`
+- Design: `record/superpowers/plans/2026-03-08-event-consumers-and-resolver-design.md`
+- ADR: `record/decisions/0007-resolver-trait-for-event-stream-middleware.md`
+- ADR: `record/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md`
 - Parser events: `crates/yamalgam-parser/src/event.rs`
 - Parser API: `crates/yamalgam-parser/src/parser.rs`
 - LoaderConfig: `crates/yamalgam-core/src/loader.rs`
@@ -473,7 +473,7 @@ Complete `crates/yamalgam-parser/src/resolve.rs` above the tests:
 //! They intercept, transform, or annotate events — typically to handle
 //! `!include` directives, `$ref` references, or custom tag processing.
 //!
-//! See [ADR-0007](../../docs/decisions/0007-resolver-trait-for-event-stream-middleware.md).
+//! See [ADR-0007](../../record/decisions/0007-resolver-trait-for-event-stream-middleware.md).
 
 use std::fmt;
 use std::io;

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust (edition 2024, MSRV 1.88.0), `bitflags`, `encoding_rs`, `rmcp` (MCP SDK), `datatest-stable`, `miette`, `serde`/`serde_json` (for token serialization in comparison). C (libfyaml via small harness).
 
-**Design doc:** `docs/plans/2026-03-06-scanner-foundation-design.md`
+**Design doc:** `record/superpowers/plans/2026-03-06-scanner-foundation-design.md`
 
 **Skills:** @idiomatic-rust @code-annotations
 
@@ -186,8 +186,8 @@ git checkout -b chore/scaffold/milestone-1-crates
 git add crates/yamalgam-scanner/ crates/yamalgam-compare/ crates/yamalgam-mcp/ \
         crates/yamalgam-core/src/diagnostic.rs crates/yamalgam-core/src/lib.rs \
         crates/yamalgam-core/Cargo.toml tools/fyaml-tokenize/ \
-        docs/plans/2026-03-06-scanner-foundation-design.md \
-        docs/plans/2026-03-06-scanner-foundation-plan.md \
+        record/superpowers/plans/2026-03-06-scanner-foundation-design.md \
+        record/superpowers/plans/2026-03-06-scanner-foundation-plan.md \
         .claude/skills/idiomatic-rust/SKILL.md
 git commit -m "chore(scaffold): add milestone-1 crates, diagnostic type, and design docs"
 ```

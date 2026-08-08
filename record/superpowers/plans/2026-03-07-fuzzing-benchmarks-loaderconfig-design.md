@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-07
 **Status:** Proposed
-**Relates to:** [ADR-0006](../decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
+**Relates to:** [ADR-0006](../../decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
 
 ## Problem
 

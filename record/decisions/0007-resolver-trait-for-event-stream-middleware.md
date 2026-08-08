@@ -121,7 +121,7 @@ The `Resolver` trait and `ResolveError` type live in `yamalgam-core` alongside `
 
 ## More Information
 
-- Design document: [docs/plans/2026-03-08-event-consumers-and-resolver-design.md](../plans/2026-03-08-event-consumers-and-resolver-design.md)
-- Architecture diagram: [docs/diagrams/event-stream-architecture.svg](../diagrams/event-stream-architecture.svg)
+- Design document: [record/superpowers/plans/2026-03-08-event-consumers-and-resolver-design.md](../superpowers/plans/2026-03-08-event-consumers-and-resolver-design.md)
+- Architecture diagram: [record/diagrams/event-stream-architecture.svg](../diagrams/event-stream-architecture.svg)
 - Related: [ADR-0005](0005-parser-event-model-with-inline-directives.md) (parser event model), [ADR-0006](0006-loaderconfig-for-resource-limits-and-security-policy.md) (LoaderConfig and ResolutionPolicy)
 - Upstream discussion: `ref/architecture-discussion.md` (CST, serde/facet, resolver security surface)

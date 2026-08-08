@@ -225,7 +225,7 @@ scanner/parser constructor contract also remains outside this campaign.
 
 ## Related decisions
 
-- [ADR-0006: LoaderConfig for resource limits and security policy](../../../docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
+- [ADR-0006: LoaderConfig for resource limits and security policy](../../../record/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
 
 This design introduces three candidate decisions for separate ADRs. They are
 safe constructor defaults with unchecked escape hatches, a private randomized

@@ -1124,7 +1124,7 @@ Expected: all green, no warnings
 **Step 2: Verify no stale references**
 
 Run: `grep -r "libfyaml\|fyaml-tokenize\|c-baseline\|c_baseline" --include='*.rs' --include='*.toml' crates/`
-Expected: no matches (only in docs/plans and .handoffs which are historical)
+Expected: no matches (only in record/superpowers/plans and .handoffs which are historical)
 
 **Step 3: Verify compliance test count**
 

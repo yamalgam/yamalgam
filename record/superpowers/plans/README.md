@@ -1,6 +1,6 @@
 # yamalgam Roadmap
 
-Overall project plan, organized by milestone. Each milestone has a design doc and implementation plan in this directory. ADRs in `docs/decisions/`.
+Overall project plan, organized by milestone. Each milestone has a design doc and implementation plan in this directory. ADRs in `record/decisions/`.
 
 ## Pipeline Architecture
 
@@ -13,7 +13,7 @@ YAML bytes → Scanner (tokens) → Parser (events) → Resolver middleware
               serde Deser   (lossy)        (lossless)      (zero alloc)
 ```
 
-See `docs/diagrams/event-stream-architecture.svg`.
+See `record/diagrams/event-stream-architecture.svg`.
 
 ---
 
@@ -121,7 +121,7 @@ jaq 3 supplies the jq grammar and engine. `YamlVal` keeps YAML data and
 presentation metadata available to core jq filters and YAML-native extensions.
 
 - Spec: `docs/spec/yg-query-language-spec-draft-01.md`.
-- Plan: `docs/plans/2026-06-10-m10-yg-cli-implementation-plan.md`.
+- Plan: `record/superpowers/plans/2026-06-10-m10-yg-cli-implementation-plan.md`.
 - Scope: Phases 1-2 from spec Section 11.
 
 Key deliverables:

@@ -104,6 +104,6 @@ public type or panicking. The resolved CST report retains the original
 
 ## More Information
 
-- [ADR-0006](../../docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
+- [ADR-0006](../../record/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
 - [ADR-0010](0010-use-stateful-event-resolver-adapters.md)
 - [Post-remediation audit finding](../audits/2026-08-04-16-m10-post-remediation/README.md#loader-resolution-policy-is-entirely-unwired)

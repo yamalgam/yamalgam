@@ -3894,7 +3894,7 @@ git commit -m "feat(cli): in-place editing with best-effort style preservation"
 
 **Files:**
 - Modify: `README.md` (yg usage section replaces the pre-release stub's CLI mention)
-- Modify: `docs/plans/README.md` (M10 status → Complete, with deviations summary)
+- Modify: `record/superpowers/plans/README.md` (M10 status → Complete, with deviations summary)
 - Modify: `docs/spec/yg-query-language-spec-draft-01.md` — NO. Spec edits are Clay's; instead:
 - Create: `docs/spec/yg-spec-draft-01-implementation-notes.md` (the 11 deviations, fleshed out, for the draft-02 revision)
 - Test: full gate

@@ -8,8 +8,8 @@
 
 **Tech Stack:** cargo-fuzz (libFuzzer), arbitrary, divan/gungraun (existing benchmark framework), criterion (for yamalgam-bench comparative crate). Peers: yaml-serde, libyaml-safer, yaml-rust2, saphyr-parser, serde-saphyr, rust-yaml.
 
-**Design doc:** `docs/plans/2026-03-07-fuzzing-benchmarks-loaderconfig-design.md`
-**ADR:** `docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md`
+**Design doc:** `record/superpowers/plans/2026-03-07-fuzzing-benchmarks-loaderconfig-design.md`
+**ADR:** `record/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md`
 
 ---
 

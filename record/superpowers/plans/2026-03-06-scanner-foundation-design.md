@@ -25,7 +25,7 @@ yamalgam's goals — `!include`, `$ref`, linting, schema validation, CST round-t
 - `// cref:` annotations on all blocks covering the behavioral equivalent of a C function, even when the Rust structure differs
 - A comparison MCP server validates behavioral equivalence against libfyaml continuously during development
 
-See: [ADR-001](../decisions/), `.claude/skills/idiomatic-rust/`, `.claude/skills/code-annotations/`
+See: [ADR-001](../../decisions/), `.claude/skills/idiomatic-rust/`, `.claude/skills/code-annotations/`
 
 ---
 
@@ -256,7 +256,7 @@ chore(vendor): update yaml-test-suite to 2026-03-01 snapshot
 
 ### ADRs
 
-Captured in `docs/decisions/` using MADR format. Initial ADRs from this design:
+Captured in `record/decisions/` using MADR format. Initial ADRs from this design:
 
 - ADR-001: Port libfyaml state machine, redesign data structures
 - ADR-002: Preserve atom concept for CST fidelity
@@ -268,8 +268,8 @@ Captured in `docs/decisions/` using MADR format. Initial ADRs from this design:
 A new contributor follows this path:
 
 1. `AGENTS.md` — workspace layout, commands, conventions
-2. `docs/plans/` — design docs with rationale
-3. `docs/decisions/` — ADRs for architectural choices
+2. `record/superpowers/plans/` — design docs with rationale
+3. `record/decisions/` — ADRs for architectural choices
 4. `.claude/skills/` — coding conventions for agents
 5. `// cref:` annotations — traceable link from Rust to libfyaml C source
 6. PR history — narrative of why things were built in sequence

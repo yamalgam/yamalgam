@@ -89,5 +89,5 @@ version change now needs an explicit edit and review.
 ## More Information
 
 - [M10 audit finding](../audits/2026-08-03-21-m10-fresh/README.md#yg-ships-competing-yaml-parser-for-its-own-config)
-- [M10 query CLI implementation plan](../../docs/plans/2026-06-10-m10-yg-cli-implementation-plan.md)
+- [M10 query CLI implementation plan](../../record/superpowers/plans/2026-06-10-m10-yg-cli-implementation-plan.md)
 - [Release and crates.io setup](../../.github/docs/releases.md)

@@ -19,7 +19,7 @@
 //! | [`trusted()`](LoaderConfig::trusted) | Local files you control — generous limits |
 //! | [`unchecked()`](LoaderConfig::unchecked) | No limits at all |
 //!
-//! See [ADR-0006](../../docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
+//! See [ADR-0006](../../record/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
 //! for design rationale.
 
 use std::path::PathBuf;

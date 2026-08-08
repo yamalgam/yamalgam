@@ -110,7 +110,7 @@ just bench   # scanner/parser self-benches, comparative, CLI
 just unsafe-census # compiler-derived census for the shipped yg graph
 ```
 
-The roadmap lives in [`docs/plans/README.md`](docs/plans/README.md).
+The roadmap lives in [`record/superpowers/plans/README.md`](record/superpowers/plans/README.md).
 
 ## License
 

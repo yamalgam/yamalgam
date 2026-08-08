@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Address all 7 findings from the Codex-53 code review (`docs/code-reviews/codex-53-high-03-08-2026.md`).
+**Goal:** Address all 7 findings from the Codex-53 code review (`record/code-reviews/codex-53-high-03-08-2026.md`).
 
 **Architecture:** Six independent workstreams — compliance harness improvements (findings 1+2), composer limit enforcement (finding 3), config-aware convenience APIs (finding 4), merge-key error handling (finding 5), C harness hardening (finding 6), and tag comparison mode (finding 7). Each is a separate commit.
 

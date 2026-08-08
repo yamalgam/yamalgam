@@ -74,5 +74,5 @@ Small C harness outputs JSON tokens via subprocess. Comparison library diffs tok
 ## More Information
 
 - pikru reference implementation: `~/source/reference/pikru/crates/pikru-mcp/`
-- Design doc: [`docs/plans/2026-03-06-scanner-foundation-design.md`](../plans/2026-03-06-scanner-foundation-design.md)
+- Design doc: [`record/superpowers/plans/2026-03-06-scanner-foundation-design.md`](../superpowers/plans/2026-03-06-scanner-foundation-design.md)
 - Related: [ADR-0001](0001-port-libfyaml-state-machine-redesign-data-structures.md) (porting approach)

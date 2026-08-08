@@ -9,8 +9,8 @@
 **Tech Stack:** Rust (edition 2024), `yamalgam-scanner`, `yamalgam-core`, `thiserror`. No parser combinator libraries.
 
 **Reference files:**
-- Design: `docs/plans/2026-03-07-parser-layer-design.md`
-- ADR: `docs/decisions/0005-parser-event-model-with-inline-directives.md`
+- Design: `record/superpowers/plans/2026-03-07-parser-layer-design.md`
+- ADR: `record/decisions/0005-parser-event-model-with-inline-directives.md`
 - libfyaml parser: `vendor/libfyaml-0.9.5/src/lib/fy-parse.c` (9208 lines)
 - libfyaml header: `vendor/libfyaml-0.9.5/src/lib/fy-parse.h` (states at line 86)
 - libfyaml events: `vendor/libfyaml-0.9.5/include/libfyaml.h` (events at line 501)

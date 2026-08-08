@@ -70,6 +70,6 @@ Port the state machine (states, transitions, lookahead) faithfully. Build the su
 
 ## More Information
 
-- Design doc: [`docs/plans/2026-03-06-scanner-foundation-design.md`](../plans/2026-03-06-scanner-foundation-design.md)
+- Design doc: [`record/superpowers/plans/2026-03-06-scanner-foundation-design.md`](../superpowers/plans/2026-03-06-scanner-foundation-design.md)
 - Idiomatic Rust patterns: [`.claude/skills/idiomatic-rust/SKILL.md`](../../.claude/skills/idiomatic-rust/SKILL.md)
 - Code annotation conventions: [`.claude/skills/code-annotations/SKILL.md`](../../.claude/skills/code-annotations/SKILL.md)

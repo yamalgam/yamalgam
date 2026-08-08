@@ -1093,7 +1093,7 @@ Expected: All green (fmt + clippy + deny + test + doc-test).
 ### Task 10: Update roadmap
 
 **Files:**
-- Modify: `docs/plans/README.md` — update M7 status to "Complete"
+- Modify: `record/superpowers/plans/README.md` — update M7 status to "Complete"
 
 **Step 1: Update the M7 entry**
 
@@ -1126,7 +1126,7 @@ docs: update roadmap — M7 tag resolution complete
 
 ---
 
-Plan complete and saved to `docs/plans/2026-03-09-tag-resolution-trait-plan.md`. Two execution options:
+Plan complete and saved to `record/superpowers/plans/2026-03-09-tag-resolution-trait-plan.md`. Two execution options:
 
 **1. Subagent-Driven (this session)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
 

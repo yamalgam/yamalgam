@@ -64,4 +64,4 @@ BOM detection at input boundary, transcode to UTF-8, scanner operates on `&str`.
 
 - YAML spec encoding requirements: [YAML 1.2.2, Section 5.2](https://yaml.org/spec/1.2.2/#52-character-encodings)
 - `encoding_rs` crate: [docs.rs/encoding_rs](https://docs.rs/encoding_rs)
-- Design doc: [`docs/plans/2026-03-06-scanner-foundation-design.md`](../plans/2026-03-06-scanner-foundation-design.md)
+- Design doc: [`record/superpowers/plans/2026-03-06-scanner-foundation-design.md`](../superpowers/plans/2026-03-06-scanner-foundation-design.md)

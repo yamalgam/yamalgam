@@ -144,6 +144,6 @@ another ADR.
 
 ## More Information
 
-- [Superseded ADR-0007](../../docs/decisions/0007-resolver-trait-for-event-stream-middleware.md)
-- [Original consumer and resolver design](../../docs/plans/2026-03-08-event-consumers-and-resolver-design.md)
+- [Superseded ADR-0007](../../record/decisions/0007-resolver-trait-for-event-stream-middleware.md)
+- [Original consumer and resolver design](../../record/superpowers/plans/2026-03-08-event-consumers-and-resolver-design.md)
 - [Post-remediation audit finding](../audits/2026-08-04-16-m10-post-remediation/README.md#resolver-middleware-cannot-reach-most-documented-consumers)

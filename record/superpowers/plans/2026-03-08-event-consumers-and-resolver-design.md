@@ -33,7 +33,7 @@ resolver middleware (trait-based, composable)
     +-- SAX / Callbacks                (zero materialization)
 ```
 
-See `docs/diagrams/event-stream-architecture.svg` for the visual.
+See `record/diagrams/event-stream-architecture.svg` for the visual.
 
 ### Four consumer APIs
 

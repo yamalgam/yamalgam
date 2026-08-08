@@ -8,7 +8,7 @@
 
 **Tech Stack:** serde 1.0, erased-serde 0.4, thiserror 2.0, yamalgam-parser (event stream), yamalgam-core (Value, TagResolver, LoaderConfig)
 
-**Design doc:** `docs/plans/2026-03-09-streaming-serde-deserializer-design.md`
+**Design doc:** `record/superpowers/plans/2026-03-09-streaming-serde-deserializer-design.md`
 
 ---
 
@@ -1470,7 +1470,7 @@ Expected: All tests pass — scanner, parser, compose, CST, serde, compliance.
 Run: `just bench`
 Verify no performance regression in scanner/parser benchmarks.
 
-**Step 3: Update docs/plans/README.md**
+**Step 3: Update record/superpowers/plans/README.md**
 
 Mark M9 as complete, note test count.
 
