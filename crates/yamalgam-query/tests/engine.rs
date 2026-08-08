@@ -1,8 +1,8 @@
 //! End-to-end tests for jaq filter compilation and execution.
 
-use yamalgam_core::LoaderConfig;
-use yamalgam_query::YamlVal;
+use yamalgam_core::{LoaderConfig, ResourceLimit};
 use yamalgam_query::engine::{self, InputMeta, RunCtx};
+use yamalgam_query::{YamlVal, YgError};
 
 fn eval(filter: &str, input: &str) -> Vec<String> {
     let context = RunCtx::new(LoaderConfig::moderate());
@@ -361,7 +361,13 @@ fn explode_aliases_obeys_alias_expansion_limit() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("alias expansions"));
+    assert!(matches!(
+        error,
+        YgError::RuntimeLimit { error, .. }
+            if error.limit == ResourceLimit::AliasExpansions
+                && error.observed == 3
+                && error.maximum == 2
+    ));
 }
 
 #[test]
@@ -381,7 +387,13 @@ fn explode_aliases_obeys_materialized_entry_budget() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("collection size"));
+    assert!(matches!(
+        error,
+        YgError::RuntimeLimit { error, .. }
+            if error.limit == ResourceLimit::CollectionSize
+                && error.observed > error.maximum
+                && error.maximum == 2
+    ));
 }
 
 #[test]
@@ -402,10 +414,16 @@ fn explode_aliases_obeys_depth_limit() {
     )
     .unwrap_err();
 
-    assert!(error.to_string().contains("depth"));
+    assert!(matches!(
+        error,
+        YgError::RuntimeLimit { error, .. }
+            if error.limit == ResourceLimit::Depth
+                && error.observed == 2
+                && error.maximum == 1
+    ));
 }
 
-fn runtime_limit_error(filter_source: &str, config: LoaderConfig) -> String {
+fn runtime_limit_error(filter_source: &str, config: LoaderConfig) -> YgError {
     let filter = engine::compile_filter(filter_source, &[]).unwrap();
     let context = RunCtx::new(config);
     engine::run_filter(
@@ -415,7 +433,6 @@ fn runtime_limit_error(filter_source: &str, config: LoaderConfig) -> String {
         |_| Ok::<_, yamalgam_query::YgError>(()),
     )
     .unwrap_err()
-    .to_string()
 }
 
 #[test]
@@ -425,7 +442,17 @@ fn runtime_limits_bound_string_concatenation() {
 
     let error = runtime_limit_error(r#""abcd" + "efgh""#, config);
 
-    assert!(error.contains("scalar size"), "unexpected error: {error}");
+    assert_eq!(
+        error.to_string(),
+        "<stdin> document 1: scalar size 8 exceeds maximum of 7"
+    );
+    assert!(matches!(
+        &error,
+        YgError::RuntimeLimit { error, .. }
+            if error.limit == ResourceLimit::ScalarBytes
+                && error.observed == 8
+                && error.maximum == 7
+    ));
 }
 
 #[test]
@@ -443,7 +470,12 @@ fn runtime_limits_bound_collection_growth() {
         let error = runtime_limit_error(filter_source, config);
 
         assert!(
-            error.contains("collection size"),
+            matches!(
+                error,
+                YgError::RuntimeLimit { error, .. }
+                    if error.limit == ResourceLimit::CollectionSize
+                        && error.maximum == 3
+            ),
             "unexpected result for {filter_source}: {error}"
         );
     }
@@ -479,7 +511,11 @@ fn runtime_limits_bound_constructed_value_depth_before_comparison() {
 
     let error = runtime_limit_error("reduce range(4) as $i (null; [.]) | . == .", config);
 
-    assert!(error.contains("depth"), "unexpected error: {error}");
+    assert!(matches!(
+        error,
+        YgError::RuntimeLimit { error, .. }
+            if error.limit == ResourceLimit::Depth && error.maximum == 2
+    ));
 }
 
 #[test]

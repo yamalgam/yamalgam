@@ -268,9 +268,15 @@ where
                 Ok(error) => {
                     let message = error.to_string();
                     E::from(
-                        take_input_error(&pending_input_error, &message).unwrap_or_else(|| {
-                            contextualize_runtime_error(context, YgError::Runtime(message))
-                        }),
+                        take_input_error(&pending_input_error, &message)
+                            .or_else(|| {
+                                crate::runtime_limits::take_error().map(|error| {
+                                    contextualize_runtime_error(context, pending_error(error))
+                                })
+                            })
+                            .unwrap_or_else(|| {
+                                contextualize_runtime_error(context, YgError::Runtime(message))
+                            }),
                     )
                 }
                 Err(exception) => E::from(contextualize_runtime_error(
@@ -278,31 +284,54 @@ where
                     YgError::runtime(exception),
                 )),
             })?;
-            if let Some(message) = crate::runtime_limits::take_error() {
+            if let Some(error) = crate::runtime_limits::take_error() {
                 return Err(E::from(contextualize_runtime_error(
                     context,
-                    YgError::Runtime(message),
+                    pending_error(error),
                 )));
             }
             output
                 .check_depth(&context.config.limits)
-                .map_err(|message| {
+                .map_err(|error| {
                     E::from(contextualize_runtime_error(
                         context,
-                        YgError::Runtime(message),
+                        value_limit_error(error),
                     ))
                 })?;
             last = Some(jaq_core::ValT::as_bool(&output));
             visit(output)?;
         }
-        if let Some(message) = crate::runtime_limits::take_error() {
+        if let Some(error) = crate::runtime_limits::take_error() {
             return Err(E::from(contextualize_runtime_error(
                 context,
-                YgError::Runtime(message),
+                pending_error(error),
             )));
         }
     }
     Ok(last)
+}
+
+fn pending_error(error: crate::runtime_limits::PendingError) -> YgError {
+    match error {
+        crate::runtime_limits::PendingError::Limit(error) => {
+            YgError::runtime_limit(error, error.to_string())
+        }
+        crate::runtime_limits::PendingError::ResourceOverflow(resource) => {
+            YgError::resource_overflow(resource, format!("{resource} overflow"))
+        }
+        crate::runtime_limits::PendingError::Message(message) => YgError::Runtime(message),
+    }
+}
+
+fn value_limit_error(error: crate::value::ValueLimitError) -> YgError {
+    match error {
+        crate::value::ValueLimitError::Limit(error) => {
+            YgError::runtime_limit(error, error.to_string())
+        }
+        crate::value::ValueLimitError::ResourceOverflow(resource) => {
+            YgError::resource_overflow(resource, format!("{resource} overflow"))
+        }
+    }
 }
 
 fn take_input_error(
@@ -332,6 +361,34 @@ fn contextualize_runtime_error(context: &RunCtx, error: YgError) -> YgError {
                 "{source} document {}: {message}",
                 metadata.document_index + 1
             ))
+        }
+        YgError::RuntimeLimit { error, message } => {
+            let metadata = context.input_meta.borrow();
+            let source = metadata
+                .filename
+                .as_deref()
+                .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
+            YgError::runtime_limit(
+                error,
+                format!(
+                    "{source} document {}: {message}",
+                    metadata.document_index + 1
+                ),
+            )
+        }
+        YgError::ResourceOverflow { resource, message } => {
+            let metadata = context.input_meta.borrow();
+            let source = metadata
+                .filename
+                .as_deref()
+                .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
+            YgError::resource_overflow(
+                resource,
+                format!(
+                    "{source} document {}: {message}",
+                    metadata.document_index + 1
+                ),
+            )
         }
         error => error,
     }

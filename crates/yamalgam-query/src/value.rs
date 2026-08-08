@@ -99,10 +99,10 @@ impl ExpansionBudget {
         self.aliases = self
             .aliases
             .checked_add(1)
-            .ok_or_else(|| jaq_core::Error::str("alias expansion count overflow"))?;
+            .ok_or_else(|| crate::runtime_limits::jaq_overflow_error("alias expansion count"))?;
         limits
             .check_alias_expansions(self.aliases)
-            .map_err(jaq_core::Error::str)
+            .map_err(crate::runtime_limits::jaq_limit_error)
     }
 
     fn count_entries(
@@ -113,10 +113,10 @@ impl ExpansionBudget {
         self.entries = self
             .entries
             .checked_add(count)
-            .ok_or_else(|| jaq_core::Error::str("materialized entry count overflow"))?;
+            .ok_or_else(|| crate::runtime_limits::jaq_overflow_error("materialized entry count"))?;
         limits
             .check_collection_size(self.entries)
-            .map_err(jaq_core::Error::str)
+            .map_err(crate::runtime_limits::jaq_limit_error)
     }
 }
 
@@ -206,8 +206,19 @@ fn drop_values(values: impl IntoIterator<Item = YamlVal>) {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ValueLimitError {
+    #[error("{0}")]
+    Limit(#[from] yamalgam_core::LimitExceeded),
+    #[error("{0} overflow")]
+    ResourceOverflow(&'static str),
+}
+
 impl YamlVal {
-    pub(crate) fn check_depth(&self, limits: &yamalgam_core::ResourceLimits) -> Result<(), String> {
+    pub(crate) fn check_depth(
+        &self,
+        limits: &yamalgam_core::ResourceLimits,
+    ) -> Result<(), ValueLimitError> {
         #[cfg(test)]
         crate::record_depth_walk();
 
@@ -216,7 +227,7 @@ impl YamlVal {
             limits.check_depth(depth)?;
             let child_depth = depth
                 .checked_add(1)
-                .ok_or_else(|| "value depth overflow".to_owned())?;
+                .ok_or(ValueLimitError::ResourceOverflow("value depth"))?;
             match &value.data {
                 Data::Seq(items) => {
                     stack.extend(items.iter().map(|item| (item, child_depth)));
@@ -614,7 +625,9 @@ impl YamlVal {
         budget: &mut ExpansionBudget,
         depth: usize,
     ) -> jaq_core::ValR<Self> {
-        limits.check_depth(depth).map_err(jaq_core::Error::str)?;
+        limits
+            .check_depth(depth)
+            .map_err(crate::runtime_limits::jaq_limit_error)?;
         if self
             .meta()
             .is_some_and(|metadata| metadata.alias_of.is_some())
@@ -627,7 +640,7 @@ impl YamlVal {
                 budget.count_entries(items.len(), limits)?;
                 let child_depth = depth
                     .checked_add(1)
-                    .ok_or_else(|| jaq_core::Error::str("value depth overflow"))?;
+                    .ok_or_else(|| crate::runtime_limits::jaq_overflow_error("value depth"))?;
                 let items = items
                     .iter()
                     .map(|item| item.explode_aliases_bounded(limits, budget, child_depth))
@@ -638,7 +651,7 @@ impl YamlVal {
                 budget.count_entries(mapping.0.len(), limits)?;
                 let child_depth = depth
                     .checked_add(1)
-                    .ok_or_else(|| jaq_core::Error::str("value depth overflow"))?;
+                    .ok_or_else(|| crate::runtime_limits::jaq_overflow_error("value depth"))?;
                 let mapping = mapping
                     .0
                     .iter()
@@ -864,21 +877,26 @@ impl FromIterator<Self> for YamlVal {
         let mut items = Vec::new();
         for item in iter {
             let Some(size) = items.len().checked_add(1) else {
-                if !crate::runtime_limits::record_error("collection size overflow".into()) {
+                if !crate::runtime_limits::record_overflow("collection size") {
                     items.push(item);
                 }
                 break;
             };
-            if let Err(message) = crate::runtime_limits::check_collection_size(size)
-                && crate::runtime_limits::record_error(message)
+            if let Err(error) = crate::runtime_limits::check_collection_size(size)
+                && crate::runtime_limits::record_limit(error)
             {
                 break;
             }
             items.push(item);
         }
         let value = Self::seq(items);
-        if let Err(message) = value.check_depth(&crate::runtime_limits::current())
-            && crate::runtime_limits::record_error(message)
+        if let Err(error) = value.check_depth(&crate::runtime_limits::current())
+            && match error {
+                ValueLimitError::Limit(error) => crate::runtime_limits::record_limit(error),
+                ValueLimitError::ResourceOverflow(resource) => {
+                    crate::runtime_limits::record_overflow(resource)
+                }
+            }
         {
             Self::null()
         } else {

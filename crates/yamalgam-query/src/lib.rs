@@ -61,5 +61,12 @@ pub fn parse_json_with_config(
     source: &str,
     config: &yamalgam_core::LoaderConfig,
 ) -> Result<YamlVal, YgError> {
-    json::parse(source, config).map_err(YgError::Runtime)
+    json::parse(source, config).map_err(|error| match error {
+        json::JsonError::Limit(error) => YgError::input_limit(error, error.to_string()),
+        json::JsonError::Build(error) => YgError::from(error),
+        json::JsonError::ResourceOverflow(resource) => {
+            YgError::resource_overflow(resource, format!("{resource} overflow"))
+        }
+        other => YgError::Runtime(other.to_string()),
+    })
 }

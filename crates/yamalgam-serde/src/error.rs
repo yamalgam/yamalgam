@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use yamalgam_core::Span;
+use yamalgam_core::{LimitExceeded, Span};
 use yamalgam_parser::ParseError;
 use yamalgam_parser::ResolveError;
 
@@ -32,7 +32,10 @@ pub enum Error {
         span: Option<Span>,
     },
     /// Resource limit exceeded.
-    LimitExceeded(String),
+    LimitExceeded(LimitExceeded),
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    ResourceOverflow(&'static str),
     /// Multiple documents found in single-document API.
     MoreThanOneDocument,
     /// Custom error from serde Deserialize impls.
@@ -63,7 +66,8 @@ impl Error {
                 name: name.clone(),
                 span: *span,
             },
-            Self::LimitExceeded(msg) => Self::LimitExceeded(msg.clone()),
+            Self::LimitExceeded(error) => Self::LimitExceeded(*error),
+            Self::ResourceOverflow(resource) => Self::ResourceOverflow(resource),
             Self::MoreThanOneDocument => Self::MoreThanOneDocument,
             Self::Custom(msg) => Self::Custom(msg.clone()),
         }
@@ -88,7 +92,10 @@ impl fmt::Display for Error {
                 write!(f, "undefined alias: *{name}")?;
                 write_position(f, *span)
             }
-            Self::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
+            Self::LimitExceeded(error) => write!(f, "limit exceeded: {error}"),
+            Self::ResourceOverflow(resource) => {
+                write!(f, "limit exceeded: {resource} overflow")
+            }
             Self::MoreThanOneDocument => write!(f, "more than one document in input"),
             Self::Custom(msg) => write!(f, "{msg}"),
         }
@@ -113,6 +120,7 @@ impl std::error::Error for Error {
             Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Resolve(e) => Some(e),
+            Self::LimitExceeded(error) => Some(error),
             _ => None,
         }
     }

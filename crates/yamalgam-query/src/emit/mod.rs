@@ -19,7 +19,11 @@ use crate::value::{Data, YamlVal, YgMap};
 pub enum EmitError {
     /// A configured resource limit was exceeded.
     #[error("{0}")]
-    Limit(String),
+    Limit(#[source] yamalgam_core::LimitExceeded),
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    #[error("{0} overflow")]
+    ResourceOverflow(&'static str),
     /// Distinct YAML mapping keys would collapse to one JSON object name.
     #[error("JSON object key {0:?} would be duplicated after string conversion")]
     DuplicateJsonKey(String),
@@ -139,7 +143,9 @@ fn validate_value(
                 if emits_reference {
                     continue;
                 }
-                expanded_aliases = expanded_aliases.saturating_add(1);
+                expanded_aliases = expanded_aliases
+                    .checked_add(1)
+                    .ok_or(EmitError::ResourceOverflow("alias expansion count"))?;
                 options
                     .limits
                     .check_alias_expansions(expanded_aliases)
@@ -159,16 +165,22 @@ fn validate_value(
                     .limits
                     .check_collection_size(items.len())
                     .map_err(EmitError::Limit)?;
-                stack.extend(items.iter().rev().map(|item| (item, depth + 1)));
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or(EmitError::ResourceOverflow("value depth"))?;
+                stack.extend(items.iter().rev().map(|item| (item, child_depth)));
             }
             Data::Map(mapping) => {
                 options
                     .limits
                     .check_collection_size(mapping.0.len())
                     .map_err(EmitError::Limit)?;
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or(EmitError::ResourceOverflow("value depth"))?;
                 for (key, value) in ordered_entries(mapping, options.sort_keys).rev() {
-                    stack.push((value, depth + 1));
-                    stack.push((key, depth + 1));
+                    stack.push((value, child_depth));
+                    stack.push((key, child_depth));
                 }
             }
             Data::Null | Data::Bool(_) | Data::Int(_) | Data::Float(_) => {}

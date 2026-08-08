@@ -676,7 +676,11 @@ fn exit_for(error: &YgError) -> ExitCode {
         YgError::Usage(_) | YgError::FilterSyntax(_) => ExitCode::from(2),
         YgError::FilterCompile(_) => ExitCode::from(3),
         YgError::InputRead(_) => ExitCode::from(2),
-        YgError::InputParse(_) | YgError::Runtime(_) => ExitCode::from(5),
+        YgError::InputParse(_)
+        | YgError::InputLimit { .. }
+        | YgError::Runtime(_)
+        | YgError::RuntimeLimit { .. }
+        | YgError::ResourceOverflow { .. } => ExitCode::from(5),
         YgError::Halt(code) => ExitCode::from(halt_exit_code(*code)),
         YgError::BrokenPipe => ExitCode::SUCCESS,
         _ => ExitCode::from(5),

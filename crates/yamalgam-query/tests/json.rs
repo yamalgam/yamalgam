@@ -1,8 +1,8 @@
 //! Strict JSON boundary tests.
 
-use yamalgam_core::LoaderConfig;
+use yamalgam_core::{LoaderConfig, ResourceLimit};
 use yamalgam_parser::CollectionStyle;
-use yamalgam_query::{EmitOpts, NodeStyle, parse_json_with_config};
+use yamalgam_query::{EmitOpts, NodeStyle, YgError, parse_json_with_config};
 
 fn parse(source: &str) -> Result<yamalgam_query::YamlVal, yamalgam_query::YgError> {
     parse_json_with_config(source, &LoaderConfig::moderate())
@@ -86,12 +86,22 @@ fn strict_json_enforces_collection_limits() {
 
     let error = parse_json_with_config("[1,2]", &config).unwrap_err();
 
-    assert!(error.to_string().contains("collection size"));
+    assert_eq!(error.to_string(), "collection size 2 exceeds maximum of 1");
+    assert!(matches!(
+        &error,
+        YgError::InputLimit { error, .. }
+            if error.limit == ResourceLimit::CollectionSize
+                && error.observed == 2
+                && error.maximum == 1
+    ));
 
     let error = parse_json_with_config("[1,{invalid]", &config).unwrap_err();
 
-    assert!(
-        error.to_string().contains("collection size"),
-        "oversized collection should fail before parsing its next value: {error}"
-    );
+    assert!(matches!(
+        &error,
+        YgError::InputLimit { error, .. }
+            if error.limit == ResourceLimit::CollectionSize
+                && error.observed == 2
+                && error.maximum == 1
+    ));
 }

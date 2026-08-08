@@ -296,7 +296,10 @@ impl<'input> Deserializer<'input> {
                                     };
                                     self.stash(e)
                                 })?;
-                            self.alias_expansions += 1;
+                            self.alias_expansions =
+                                self.alias_expansions.checked_add(1).ok_or_else(|| {
+                                    self.stash(Error::ResourceOverflow("alias expansion count"))
+                                })?;
                             self.limits
                                 .check_alias_expansions(self.alias_expansions)
                                 .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
@@ -325,7 +328,10 @@ impl<'input> Deserializer<'input> {
                     self.stash(e)
                 })?;
 
-                self.alias_expansions += 1;
+                self.alias_expansions = self
+                    .alias_expansions
+                    .checked_add(1)
+                    .ok_or_else(|| self.stash(Error::ResourceOverflow("alias expansion count")))?;
                 self.limits
                     .check_alias_expansions(self.alias_expansions)
                     .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
@@ -345,7 +351,10 @@ impl<'input> Deserializer<'input> {
 
     /// Register an anchor, checking resource limits.
     fn register_anchor(&mut self, name: String, events: Vec<Event<'input>>) -> Result<(), Error> {
-        self.anchor_count += 1;
+        self.anchor_count = self
+            .anchor_count
+            .checked_add(1)
+            .ok_or_else(|| self.stash(Error::ResourceOverflow("anchor count")))?;
         self.limits
             .check_anchor_count(self.anchor_count)
             .map_err(|m| self.stash(Error::LimitExceeded(m)))?;

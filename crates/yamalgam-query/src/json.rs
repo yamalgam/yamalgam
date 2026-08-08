@@ -1,20 +1,31 @@
 //! Strict JSON validation and native value construction.
 
-use yamalgam_core::{LoaderConfig, ResourceLimits, TagResolution};
+use yamalgam_core::{LimitExceeded, LoaderConfig, ResourceLimits, TagResolution};
 
-use crate::YamlVal;
+use crate::{BuildError, YamlVal};
 
-pub fn parse(source: &str, config: &LoaderConfig) -> Result<YamlVal, String> {
+#[derive(Debug, thiserror::Error)]
+pub enum JsonError {
+    #[error("{0}")]
+    Syntax(String),
+    #[error("{0}")]
+    Limit(#[from] LimitExceeded),
+    #[error(transparent)]
+    Build(#[from] BuildError),
+    #[error("{0} overflow")]
+    ResourceOverflow(&'static str),
+}
+
+pub fn parse(source: &str, config: &LoaderConfig) -> Result<YamlVal, JsonError> {
     Validator::new(source, &config.limits).validate()?;
 
     let config = config.clone().with_tag_resolution(TagResolution::Json);
-    let mut documents =
-        crate::build::parse_str_with_config(source, &config).map_err(|error| error.to_string())?;
+    let mut documents = crate::build::parse_str_with_config(source, &config)?;
     if documents.len() != 1 {
-        return Err(format!(
+        return Err(JsonError::Syntax(format!(
             "expected one JSON value, parsed {} documents",
             documents.len()
-        ));
+        )));
     }
     Ok(documents.remove(0))
 }
@@ -36,7 +47,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         }
     }
 
-    fn validate(mut self) -> Result<(), String> {
+    fn validate(mut self) -> Result<(), JsonError> {
         self.limits.check_input_size(self.bytes.len())?;
         self.skip_whitespace();
         if self.peek().is_none() {
@@ -50,7 +61,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         Ok(())
     }
 
-    fn value(&mut self, depth: usize) -> Result<(), String> {
+    fn value(&mut self, depth: usize) -> Result<(), JsonError> {
         self.limits.check_depth(depth)?;
         match self.peek() {
             Some(b'n') => self.literal(b"null"),
@@ -65,17 +76,18 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         }
     }
 
-    fn literal(&mut self, literal: &[u8]) -> Result<(), String> {
+    fn literal(&mut self, literal: &[u8]) -> Result<(), JsonError> {
         let start = self.offset;
         if !self.remaining().starts_with(literal) {
             return self.fail("invalid JSON literal");
         }
         self.offset += literal.len();
         self.require_value_boundary()?;
-        self.limits.check_scalar_size(self.offset - start)
+        self.limits.check_scalar_size(self.offset - start)?;
+        Ok(())
     }
 
-    fn number(&mut self) -> Result<(), String> {
+    fn number(&mut self) -> Result<(), JsonError> {
         let start = self.offset;
         self.consume_if(b'-');
 
@@ -116,10 +128,11 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         if !value.is_finite() {
             return self.fail("JSON number is outside the finite f64 range");
         }
-        self.limits.check_scalar_size(text.len())
+        self.limits.check_scalar_size(text.len())?;
+        Ok(())
     }
 
-    fn string(&mut self, is_key: bool) -> Result<(), String> {
+    fn string(&mut self, is_key: bool) -> Result<(), JsonError> {
         self.expect(b'"', "expected a JSON string")?;
         let mut decoded_bytes = 0usize;
 
@@ -140,13 +153,13 @@ impl<'input, 'limits> Validator<'input, 'limits> {
                     self.offset += 1;
                     decoded_bytes = decoded_bytes
                         .checked_add(self.escape_len()?)
-                        .ok_or_else(|| self.error("decoded JSON string length overflow"))?;
+                        .ok_or(JsonError::ResourceOverflow("decoded JSON string length"))?;
                 }
                 Some(byte) if byte.is_ascii() => {
                     self.offset += 1;
                     decoded_bytes = decoded_bytes
                         .checked_add(1)
-                        .ok_or_else(|| self.error("decoded JSON string length overflow"))?;
+                        .ok_or(JsonError::ResourceOverflow("decoded JSON string length"))?;
                 }
                 Some(_) => {
                     let character = self.source[self.offset..]
@@ -156,7 +169,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
                     self.offset += character.len_utf8();
                     decoded_bytes = decoded_bytes
                         .checked_add(character.len_utf8())
-                        .ok_or_else(|| self.error("decoded JSON string length overflow"))?;
+                        .ok_or(JsonError::ResourceOverflow("decoded JSON string length"))?;
                 }
                 None => return self.fail("unterminated JSON string"),
             }
@@ -164,7 +177,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         }
     }
 
-    fn escape_len(&mut self) -> Result<usize, String> {
+    fn escape_len(&mut self) -> Result<usize, JsonError> {
         match self.next() {
             Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => Ok(1),
             Some(b'u') => {
@@ -191,7 +204,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         }
     }
 
-    fn hex_quad(&mut self) -> Result<u16, String> {
+    fn hex_quad(&mut self) -> Result<u16, JsonError> {
         let mut value = 0u16;
         for _ in 0..4 {
             let Some(digit) = self.next().and_then(hex_value) else {
@@ -202,7 +215,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         Ok(value)
     }
 
-    fn array(&mut self, depth: usize) -> Result<(), String> {
+    fn array(&mut self, depth: usize) -> Result<(), JsonError> {
         self.expect(b'[', "expected '['")?;
         self.skip_whitespace();
         if self.consume_if(b']') {
@@ -213,9 +226,12 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         loop {
             count = count
                 .checked_add(1)
-                .ok_or_else(|| self.error("JSON array length overflow"))?;
+                .ok_or(JsonError::ResourceOverflow("JSON array length"))?;
             self.limits.check_collection_size(count)?;
-            self.value(depth + 1)?;
+            let child_depth = depth
+                .checked_add(1)
+                .ok_or(JsonError::ResourceOverflow("JSON value depth"))?;
+            self.value(child_depth)?;
             self.skip_whitespace();
             if self.consume_if(b']') {
                 return Ok(());
@@ -228,7 +244,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         }
     }
 
-    fn object(&mut self, depth: usize) -> Result<(), String> {
+    fn object(&mut self, depth: usize) -> Result<(), JsonError> {
         self.expect(b'{', "expected '{'")?;
         self.skip_whitespace();
         if self.consume_if(b'}') {
@@ -239,9 +255,12 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         loop {
             count = count
                 .checked_add(1)
-                .ok_or_else(|| self.error("JSON object length overflow"))?;
+                .ok_or(JsonError::ResourceOverflow("JSON object length"))?;
             self.limits.check_collection_size(count)?;
-            self.limits.check_depth(depth + 1)?;
+            let child_depth = depth
+                .checked_add(1)
+                .ok_or(JsonError::ResourceOverflow("JSON value depth"))?;
+            self.limits.check_depth(child_depth)?;
             if self.peek() != Some(b'"') {
                 return self.fail("JSON object keys must be double-quoted strings");
             }
@@ -249,7 +268,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
             self.skip_whitespace();
             self.expect(b':', "expected ':' after JSON object key")?;
             self.skip_whitespace();
-            self.value(depth + 1)?;
+            self.value(child_depth)?;
             self.skip_whitespace();
             if self.consume_if(b'}') {
                 return Ok(());
@@ -262,7 +281,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         }
     }
 
-    fn require_value_boundary(&self) -> Result<(), String> {
+    fn require_value_boundary(&self) -> Result<(), JsonError> {
         if matches!(
             self.peek(),
             None | Some(b' ' | b'\t' | b'\n' | b'\r' | b',' | b']' | b'}')
@@ -285,7 +304,7 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         }
     }
 
-    fn expect(&mut self, byte: u8, message: &str) -> Result<(), String> {
+    fn expect(&mut self, byte: u8, message: &str) -> Result<(), JsonError> {
         if self.consume_if(byte) {
             Ok(())
         } else {
@@ -316,12 +335,12 @@ impl<'input, 'limits> Validator<'input, 'limits> {
         &self.bytes[self.offset..]
     }
 
-    fn fail<T>(&self, message: &str) -> Result<T, String> {
+    fn fail<T>(&self, message: &str) -> Result<T, JsonError> {
         Err(self.error(message))
     }
 
-    fn error(&self, message: &str) -> String {
-        format!("{message} at byte {}", self.offset)
+    fn error(&self, message: &str) -> JsonError {
+        JsonError::Syntax(format!("{message} at byte {}", self.offset))
     }
 }
 

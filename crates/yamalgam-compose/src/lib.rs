@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use yamalgam_core::tag_resolution::TagResolver;
-use yamalgam_core::{LoaderConfig, Mapping, ResourceLimits, TagResolution, Value};
+use yamalgam_core::{LimitExceeded, LoaderConfig, Mapping, ResourceLimits, TagResolution, Value};
 use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
 };
@@ -25,7 +25,10 @@ pub enum ComposeError {
     /// An event was encountered that is not valid in the current context.
     UnexpectedEvent(String),
     /// A resource limit was exceeded during composition.
-    LimitExceeded(String),
+    LimitExceeded(LimitExceeded),
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    ResourceOverflow(&'static str),
 }
 
 impl std::fmt::Display for ComposeError {
@@ -34,7 +37,10 @@ impl std::fmt::Display for ComposeError {
             Self::Resolve(e) => write!(f, "{e}"),
             Self::UndefinedAlias(name) => write!(f, "undefined alias: *{name}"),
             Self::UnexpectedEvent(msg) => write!(f, "unexpected event: {msg}"),
-            Self::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
+            Self::LimitExceeded(error) => write!(f, "limit exceeded: {error}"),
+            Self::ResourceOverflow(resource) => {
+                write!(f, "limit exceeded: {resource} overflow")
+            }
         }
     }
 }
@@ -43,7 +49,8 @@ impl std::error::Error for ComposeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Resolve(e) => Some(e),
-            Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) | Self::LimitExceeded(_) => None,
+            Self::LimitExceeded(error) => Some(error),
+            Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) | Self::ResourceOverflow(_) => None,
         }
     }
 }
@@ -405,15 +412,15 @@ where
             }
 
             Event::Alias { name, .. } => {
-                self.alias_expansion_count =
-                    self.alias_expansion_count.checked_add(1).ok_or_else(|| {
-                        ComposeError::LimitExceeded("alias expansion count overflow".into())
-                    })?;
-                if let Err(msg) = self
+                self.alias_expansion_count = self
+                    .alias_expansion_count
+                    .checked_add(1)
+                    .ok_or_else(|| ComposeError::ResourceOverflow("alias expansion count"))?;
+                if let Err(error) = self
                     .config
                     .check_alias_expansions(self.alias_expansion_count)
                 {
-                    return Err(ComposeError::LimitExceeded(msg));
+                    return Err(ComposeError::LimitExceeded(error));
                 }
                 let name_str = name.into_owned();
                 let anchored = self
@@ -521,7 +528,7 @@ where
     fn next_collection_size(&self, current: usize) -> Result<usize, ComposeError> {
         let next = current
             .checked_add(1)
-            .ok_or_else(|| ComposeError::LimitExceeded("collection size overflow".into()))?;
+            .ok_or(ComposeError::ResourceOverflow("collection size"))?;
         self.config
             .check_collection_size(next)
             .map_err(ComposeError::LimitExceeded)?;
@@ -550,7 +557,7 @@ where
 fn child_depth(depth: usize) -> Result<usize, ComposeError> {
     depth
         .checked_add(1)
-        .ok_or_else(|| ComposeError::LimitExceeded("depth overflow".into()))
+        .ok_or(ComposeError::ResourceOverflow("depth"))
 }
 
 fn materialized_weight(value: &Value) -> Result<usize, ComposeError> {
@@ -560,14 +567,12 @@ fn materialized_weight(value: &Value) -> Result<usize, ComposeError> {
     while let Some(value) = pending.pop() {
         total = total
             .checked_add(std::mem::size_of::<Value>())
-            .ok_or_else(|| {
-                ComposeError::LimitExceeded("anchor materialized weight overflow".into())
-            })?;
+            .ok_or(ComposeError::ResourceOverflow("anchor materialized weight"))?;
         match value {
             Value::String(string) => {
-                total = total.checked_add(string.len()).ok_or_else(|| {
-                    ComposeError::LimitExceeded("anchor materialized weight overflow".into())
-                })?;
+                total = total
+                    .checked_add(string.len())
+                    .ok_or(ComposeError::ResourceOverflow("anchor materialized weight"))?;
             }
             Value::Sequence(items) => pending.extend(items),
             Value::Mapping(mapping) => {
@@ -590,7 +595,7 @@ fn checked_materialized_total(
 ) -> Result<usize, ComposeError> {
     let next = current
         .checked_add(increment)
-        .ok_or_else(|| ComposeError::LimitExceeded("alias materialization size overflow".into()))?;
+        .ok_or(ComposeError::ResourceOverflow("alias materialization size"))?;
     limits
         .check_output_size(next)
         .map_err(ComposeError::LimitExceeded)?;
@@ -616,8 +621,8 @@ fn collect_merge_pairs(
     config: &ResourceLimits,
     depth: usize,
 ) -> Result<(), ComposeError> {
-    if let Err(msg) = config.check_merge_depth(depth) {
-        return Err(ComposeError::LimitExceeded(msg));
+    if let Err(error) = config.check_merge_depth(depth) {
+        return Err(ComposeError::LimitExceeded(error));
     }
     match val {
         Value::Mapping(m) => {
@@ -658,7 +663,7 @@ fn push_merge_pair(
     let next = pairs
         .len()
         .checked_add(1)
-        .ok_or_else(|| ComposeError::LimitExceeded("collection size overflow".into()))?;
+        .ok_or(ComposeError::ResourceOverflow("collection size"))?;
     config
         .check_collection_size(next)
         .map_err(ComposeError::LimitExceeded)?;
@@ -735,6 +740,7 @@ pub fn from_str_single_with_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yamalgam_core::ResourceLimit;
 
     const DEEP_WEIGHT_WORKER: &str = "YAMALGAM_DEEP_WEIGHT_WORKER";
 
@@ -749,7 +755,10 @@ mod tests {
             | ComposeError::Resolve(ResolveError::LimitExceeded(_))
             | ComposeError::Resolve(ResolveError::Parse(ParseError::LimitExceeded(_))) => {}
             ComposeError::Resolve(ResolveError::Parse(ParseError::Scan(error)))
-                if error.kind == yamalgam_scanner::scanner::ScanErrorKind::LimitExceeded => {}
+                if matches!(
+                    error.kind,
+                    yamalgam_scanner::scanner::ScanErrorKind::LimitExceeded(_)
+                ) => {}
             other => panic!("expected a resource-limit error, got {other:?}"),
         }
     }
@@ -899,7 +908,8 @@ mod tests {
         assert!(compose_with_unchecked_parser(input, &output_config(Some(weight * 2))).is_ok());
         assert!(matches!(
             compose_with_unchecked_parser(input, &output_config(Some(weight * 2 - 1))),
-            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
         ));
     }
 
@@ -917,7 +927,8 @@ mod tests {
 
         assert!(matches!(
             compose_with_unchecked_parser(input, &output_config(Some(small + large - 1))),
-            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
         ));
     }
 
@@ -925,8 +936,7 @@ mod tests {
     fn alias_materialization_arithmetic_overflow_is_a_limit_error() {
         assert!(matches!(
             checked_materialized_total(usize::MAX, 1, &ResourceLimits::none()),
-            Err(ComposeError::LimitExceeded(message))
-                if message == "alias materialization size overflow"
+            Err(ComposeError::ResourceOverflow("alias materialization size"))
         ));
     }
 
@@ -950,7 +960,8 @@ mod tests {
         below.limits.max_anchor_count = Some(1);
         assert!(matches!(
             compose_with_unchecked_parser(input, &below),
-            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
         ));
     }
 
@@ -972,7 +983,8 @@ mod tests {
         assert!(compose_with_unchecked_parser(input, &output_config(Some(weight * 2))).is_ok());
         assert!(matches!(
             compose_with_unchecked_parser(input, &output_config(Some(weight * 2 - 1))),
-            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
         ));
     }
 

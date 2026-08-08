@@ -1,6 +1,6 @@
 //! Resolved-value and presentation-metadata semantics for `YamlVal`.
 
-use yamalgam_core::{LoaderConfig, TagResolution};
+use yamalgam_core::{LoaderConfig, ResourceLimit, TagResolution};
 use yamalgam_parser::resolve::smallvec;
 use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
 use yamalgam_query::{
@@ -312,7 +312,10 @@ fn builder_enforces_anchor_count_limit() {
     config.limits.max_anchor_count = Some(1);
 
     let error = parse_str_with_config("a: &one 1\nb: &two 2\n", &config).unwrap_err();
-    assert!(matches!(error, BuildError::Limit(message) if message.contains("anchor count")));
+    assert!(matches!(
+        error,
+        BuildError::Limit(error) if error.limit == ResourceLimit::AnchorCount
+    ));
 }
 
 #[test]
@@ -321,7 +324,10 @@ fn builder_enforces_alias_expansion_limit() {
     config.limits.max_alias_expansions = Some(1);
 
     let error = parse_str_with_config("a: &one 1\nb: *one\nc: *one\n", &config).unwrap_err();
-    assert!(matches!(error, BuildError::Limit(message) if message.contains("alias expansions")));
+    assert!(matches!(
+        error,
+        BuildError::Limit(error) if error.limit == ResourceLimit::AliasExpansions
+    ));
 }
 
 #[test]
@@ -330,14 +336,16 @@ fn builder_enforces_collection_size_limit() {
     config.limits.max_collection_size = Some(1);
 
     let sequence_error = parse_str_with_config("[1, 2]\n", &config).unwrap_err();
-    assert!(
-        matches!(sequence_error, BuildError::Limit(message) if message.contains("collection size"))
-    );
+    assert!(matches!(
+        sequence_error,
+        BuildError::Limit(error) if error.limit == ResourceLimit::CollectionSize
+    ));
 
     let mapping_error = parse_str_with_config("{a: 1, a: 2}\n", &config).unwrap_err();
-    assert!(
-        matches!(mapping_error, BuildError::Limit(message) if message.contains("collection size"))
-    );
+    assert!(matches!(
+        mapping_error,
+        BuildError::Limit(error) if error.limit == ResourceLimit::CollectionSize
+    ));
 }
 
 #[test]
@@ -349,7 +357,7 @@ fn builder_enforces_resulting_alias_value_depth() {
     let error = parse_str_with_config(document, &rejecting).unwrap_err();
     let message = error.to_string();
     assert!(
-        matches!(error, BuildError::Limit(message) if message.contains("depth")),
+        matches!(error, BuildError::Limit(error) if error.limit == ResourceLimit::Depth),
         "unexpected error: {message}"
     );
 

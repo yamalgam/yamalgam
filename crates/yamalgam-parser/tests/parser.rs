@@ -1097,14 +1097,26 @@ fn directive_then_document_end_is_error() {
 
 #[test]
 fn max_depth_rejects_deep_nesting() {
-    use yamalgam_core::LoaderConfig;
+    use yamalgam_core::{LoaderConfig, ResourceLimit};
 
     let mut config = LoaderConfig::strict();
     config.limits.max_depth = Some(3);
 
     let input = "a:\n  b:\n    c:\n      d:\n        e: too deep";
-    let result: Vec<_> = Parser::with_config(input, &config).collect();
-    assert!(result.iter().any(|r| r.is_err()));
+    let error = Parser::with_config(input, &config)
+        .find_map(Result::err)
+        .expect("deep nesting should exceed the configured limit");
+    let limit = match error {
+        ParseError::LimitExceeded(error) => error,
+        ParseError::Scan(ScanError {
+            kind: ScanErrorKind::LimitExceeded(error),
+            ..
+        }) => error,
+        other => panic!("expected a structured depth limit, got {other:?}"),
+    };
+    assert_eq!(limit.limit, ResourceLimit::Depth);
+    assert_eq!(limit.observed, 4);
+    assert_eq!(limit.maximum, 3);
 }
 
 #[test]

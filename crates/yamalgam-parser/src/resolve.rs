@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::{fmt, io};
 
 pub use smallvec::{SmallVec, smallvec};
-use yamalgam_core::LoaderConfig;
+use yamalgam_core::{LimitExceeded, LoaderConfig};
 
 use crate::error::ParseError;
 use crate::event::Event;
@@ -54,7 +54,7 @@ pub enum ResolveError {
         chain: Vec<String>,
     },
     /// A resource limit was exceeded during resolution.
-    LimitExceeded(String),
+    LimitExceeded(LimitExceeded),
     /// External resolution was enabled without a resolver implementation.
     UnsupportedResolutionPolicy {
         /// Whether include resolution was enabled.
@@ -86,7 +86,7 @@ impl ResolveError {
             Self::Cycle { chain } => Self::Cycle {
                 chain: chain.clone(),
             },
-            Self::LimitExceeded(message) => Self::LimitExceeded(message.clone()),
+            Self::LimitExceeded(error) => Self::LimitExceeded(*error),
             Self::UnsupportedResolutionPolicy { include, refs } => {
                 Self::UnsupportedResolutionPolicy {
                     include: *include,
@@ -122,7 +122,7 @@ impl fmt::Display for ResolveError {
             Self::Cycle { chain } => {
                 write!(f, "circular reference: {}", chain.join(" -> "))
             }
-            Self::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
+            Self::LimitExceeded(error) => write!(f, "limit exceeded: {error}"),
             Self::UnsupportedResolutionPolicy { include, refs } => write!(
                 f,
                 "enabled resolution policy is unsupported without a resolver (include: {include}, refs: {refs})"
@@ -139,9 +139,8 @@ impl std::error::Error for ResolveError {
             Self::Include { source, .. } => Some(source),
             Self::Ref { source, .. } => Some(source.as_ref()),
             Self::Custom(e) => Some(e.as_ref()),
-            Self::Cycle { .. }
-            | Self::LimitExceeded(_)
-            | Self::UnsupportedResolutionPolicy { .. } => None,
+            Self::LimitExceeded(error) => Some(error),
+            Self::Cycle { .. } | Self::UnsupportedResolutionPolicy { .. } => None,
         }
     }
 }
@@ -313,6 +312,7 @@ mod tests {
     use super::*;
     use crate::Parser;
     use yamalgam_core::LoaderConfig;
+    use yamalgam_core::ResourceLimit;
 
     fn map_parse_error<'input>(
         result: Result<Event<'input>, ParseError>,
@@ -423,7 +423,7 @@ mod tests {
             ResolveError::Cycle {
                 chain: vec!["a".into(), "b".into(), "a".into()],
             },
-            ResolveError::LimitExceeded("resolver budget".into()),
+            ResolveError::LimitExceeded(LimitExceeded::new(ResourceLimit::Depth, 2, 1)),
             ResolveError::UnsupportedResolutionPolicy {
                 include: true,
                 refs: false,
@@ -441,10 +441,17 @@ mod tests {
             );
         }
 
-        let parse = ResolveError::Parse(ParseError::LimitExceeded("parse budget".into()));
+        let parse = ResolveError::Parse(ParseError::LimitExceeded(LimitExceeded::new(
+            ResourceLimit::Depth,
+            2,
+            1,
+        )));
         assert!(matches!(
             parse.clone_structured(),
-            ResolveError::Parse(ParseError::LimitExceeded(message)) if message == "parse budget"
+            ResolveError::Parse(ParseError::LimitExceeded(error))
+                if error.limit == ResourceLimit::Depth
+                    && error.observed == 2
+                    && error.maximum == 1
         ));
 
         let include = ResolveError::Include {

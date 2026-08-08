@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 
-use yamalgam_core::{ResourceLimits, Span};
+use yamalgam_core::{LimitExceeded, ResourceLimits, Span};
 
 use crate::Atom;
 use crate::reader::Reader;
@@ -49,6 +49,13 @@ impl ScanError {
             message: message.into(),
         }
     }
+
+    fn limit(error: LimitExceeded) -> Self {
+        Self {
+            kind: ScanErrorKind::LimitExceeded(error),
+            message: error.to_string(),
+        }
+    }
 }
 
 /// Classification of scanner failures for typed error handling.
@@ -82,7 +89,10 @@ pub enum ScanErrorKind {
     /// Content appeared where the document structure does not allow it.
     UnexpectedContent,
     /// A configured resource limit was exceeded.
-    LimitExceeded,
+    LimitExceeded(LimitExceeded),
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    ResourceOverflow(&'static str),
 }
 
 impl std::fmt::Display for ScanError {
@@ -91,7 +101,14 @@ impl std::fmt::Display for ScanError {
     }
 }
 
-impl std::error::Error for ScanError {}
+impl std::error::Error for ScanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            ScanErrorKind::LimitExceeded(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// A potential simple key saved on the simple key stack.
 ///
@@ -202,6 +219,18 @@ pub struct Scanner<'input> {
 }
 
 impl<'input> Scanner<'input> {
+    fn current_depth(&self) -> Result<usize, ScanError> {
+        self.indent_stack
+            .len()
+            .checked_add(self.flow_level as usize)
+            .ok_or_else(|| {
+                ScanError::new(
+                    ScanErrorKind::ResourceOverflow("scan depth accounting"),
+                    "scan depth accounting overflow",
+                )
+            })
+    }
+
     /// Create a new scanner over decoded UTF-8 input.
     ///
     /// Uses [`ResourceLimits::none()`] — no depth or size limits.
@@ -503,14 +532,15 @@ impl<'input> Scanner<'input> {
         }
         self.indent_stack.push(self.indent);
         // Enforce max_depth on combined block + flow nesting.
-        if let Err(msg) = self
-            .config
-            .check_depth(self.indent_stack.len() + self.flow_level as usize)
-        {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        let depth = match self.current_depth() {
+            Ok(depth) => depth,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        if let Err(error) = self.config.check_depth(depth) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
         self.indent = column;
@@ -967,16 +997,24 @@ impl<'input> Scanner<'input> {
             // Track the block indent when entering flow context.
             self.flow_indent = self.indent;
         }
-        self.flow_level += 1;
+        let Some(flow_level) = self.flow_level.checked_add(1) else {
+            self.error = Some(ScanError::new(
+                ScanErrorKind::ResourceOverflow("flow depth accounting"),
+                "flow depth accounting overflow",
+            ));
+            return;
+        };
+        self.flow_level = flow_level;
         // Enforce max_depth on combined nesting (block indent + flow level).
-        if let Err(msg) = self
-            .config
-            .check_depth(self.indent_stack.len() + self.flow_level as usize)
-        {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        let depth = match self.current_depth() {
+            Ok(depth) => depth,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        if let Err(error) = self.config.check_depth(depth) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
         self.flow_is_mapping.push(c == '{');
@@ -1224,11 +1262,9 @@ impl<'input> Scanner<'input> {
                 // before the key token in the queue.
                 if let Some(pos) = self.queue_position(sk.token_id) {
                     // Enforce max_key_bytes limit on the key's scalar data.
-                    if let Err(msg) = self.config.check_key_size(self.queue[pos].atom.data.len()) {
-                        self.error = Some(ScanError {
-                            kind: ScanErrorKind::LimitExceeded,
-                            message: msg,
-                        });
+                    if let Err(error) = self.config.check_key_size(self.queue[pos].atom.data.len())
+                    {
+                        self.error = Some(ScanError::limit(error));
                         return;
                     }
 
@@ -1253,14 +1289,15 @@ impl<'input> Scanner<'input> {
                         }
                         self.indent_stack.push(self.indent);
                         // Enforce max_depth on combined block + flow nesting.
-                        if let Err(msg) = self
-                            .config
-                            .check_depth(self.indent_stack.len() + self.flow_level as usize)
-                        {
-                            self.error = Some(ScanError {
-                                kind: ScanErrorKind::LimitExceeded,
-                                message: msg,
-                            });
+                        let depth = match self.current_depth() {
+                            Ok(depth) => depth,
+                            Err(error) => {
+                                self.error = Some(error);
+                                return;
+                            }
+                        };
+                        if let Err(error) = self.config.check_depth(depth) {
+                            self.error = Some(ScanError::limit(error));
                             return;
                         }
                         self.indent = sk.mark.column as i32;
@@ -1577,11 +1614,8 @@ impl<'input> Scanner<'input> {
         }
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(text.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(text.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 
@@ -1983,11 +2017,8 @@ impl<'input> Scanner<'input> {
         }
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(content.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(content.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 
@@ -2175,11 +2206,8 @@ impl<'input> Scanner<'input> {
         };
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(data.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 
@@ -2474,11 +2502,8 @@ impl<'input> Scanner<'input> {
         };
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(data.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 

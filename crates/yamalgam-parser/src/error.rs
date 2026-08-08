@@ -1,6 +1,6 @@
 //! Parser error types.
 
-use yamalgam_core::Span;
+use yamalgam_core::{LimitExceeded, Span};
 use yamalgam_scanner::TokenKind;
 use yamalgam_scanner::scanner::ScanError;
 
@@ -59,7 +59,12 @@ pub enum ParseError {
 
     /// A resource limit was exceeded (depth, size, etc.).
     #[error("limit exceeded: {0}")]
-    LimitExceeded(String),
+    LimitExceeded(#[source] LimitExceeded),
+
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    #[error("limit exceeded: {0} overflow")]
+    ResourceOverflow(&'static str),
 
     /// External resolution was enabled without a resolver implementation.
     #[error(

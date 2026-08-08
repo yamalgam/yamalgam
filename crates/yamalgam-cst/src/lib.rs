@@ -561,11 +561,11 @@ impl<'input> CstBuilder<'input> {
     /// Open a collection if doing so stays within the configured depth.
     fn open_collection(&mut self, kind: NodeKind, span: Span) -> bool {
         let Some(depth) = self.collection_depth.checked_add(1) else {
-            self.handle_error(ParseError::LimitExceeded("depth overflow".into()));
+            self.handle_error(ParseError::ResourceOverflow("depth"));
             return false;
         };
-        if let Err(message) = self.limits.check_depth(depth) {
-            self.handle_error(ParseError::LimitExceeded(message));
+        if let Err(error) = self.limits.check_depth(depth) {
+            self.handle_error(ParseError::LimitExceeded(error));
             return false;
         }
         self.insert_whitespace_before(span);
@@ -1058,16 +1058,25 @@ mod tests {
 
     #[test]
     fn builder_report_preserves_generated_limit_error() {
+        use yamalgam_core::{LimitExceeded, ResourceLimit};
+
         let input = "[[0]]";
         let report =
             CstBuilder::new_with_config(input, &depth_config(1)).build_report(Parser::new(input));
 
         assert_eq!(report.cst.to_text(), input);
         assert!(contains_node_kind(&report.cst, NodeKind::Error));
-        assert!(matches!(
-            report.diagnostics.as_slice(),
-            [ParseError::LimitExceeded(_)]
-        ));
+        let [ParseError::LimitExceeded(limit)] = report.diagnostics.as_slice() else {
+            panic!("expected one structured limit diagnostic");
+        };
+        assert_eq!(limit.limit, ResourceLimit::Depth);
+        assert_eq!(limit.observed, 2);
+        assert_eq!(limit.maximum, 1);
+        assert_eq!(
+            std::error::Error::source(&report.diagnostics[0])
+                .and_then(|source| source.downcast_ref::<LimitExceeded>()),
+            Some(limit)
+        );
     }
 
     #[test]

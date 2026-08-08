@@ -54,56 +54,57 @@ impl core::ops::Add for YamlVal {
     fn add(self, rhs: Self) -> Self::Output {
         use Data::{Float, Int, Map, Null, Seq, Str};
 
-        let data = match (self.data, rhs.data) {
-            (Null, data) | (data, Null) => data,
-            (Int(left), Int(right)) => {
-                int_op(left, right, i64::checked_add, |left, right| left + right)
-            }
-            (Int(left), Float(right)) => Float(left as f64 + right),
-            (Float(left), Int(right)) => Float(left + right as f64),
-            (Float(left), Float(right)) => Float(left + right),
-            (Str(left), Str(right)) => {
-                let size = left
-                    .len()
-                    .checked_add(right.len())
-                    .ok_or_else(|| Error::str("string size overflow"))?;
-                crate::runtime_limits::check_scalar_size(size).map_err(Error::str)?;
-                let mut output = String::with_capacity(size);
-                output.push_str(&left);
-                output.push_str(&right);
-                Str(Rc::from(output))
-            }
-            (Seq(mut left), Seq(right)) => {
-                let size = left
-                    .len()
-                    .checked_add(right.len())
-                    .ok_or_else(|| Error::str("collection size overflow"))?;
-                crate::runtime_limits::check_collection_size(size).map_err(Error::str)?;
-                Rc::make_mut(&mut left).extend(right.iter().cloned());
-                Seq(left)
-            }
-            (Map(mut left), Map(right)) => {
-                let added = right
-                    .0
-                    .keys()
-                    .filter(|key| !left.0.contains_key(*key))
-                    .count();
-                let size = left
-                    .0
-                    .len()
-                    .checked_add(added)
-                    .ok_or_else(|| Error::str("collection size overflow"))?;
-                crate::runtime_limits::check_collection_size(size).map_err(Error::str)?;
-                Rc::make_mut(&mut left).0.extend(
-                    right
+        let data =
+            match (self.data, rhs.data) {
+                (Null, data) | (data, Null) => data,
+                (Int(left), Int(right)) => {
+                    int_op(left, right, i64::checked_add, |left, right| left + right)
+                }
+                (Int(left), Float(right)) => Float(left as f64 + right),
+                (Float(left), Int(right)) => Float(left + right as f64),
+                (Float(left), Float(right)) => Float(left + right),
+                (Str(left), Str(right)) => {
+                    let size = left
+                        .len()
+                        .checked_add(right.len())
+                        .ok_or_else(|| crate::runtime_limits::jaq_overflow_error("string size"))?;
+                    crate::runtime_limits::check_scalar_size(size)
+                        .map_err(crate::runtime_limits::jaq_limit_error)?;
+                    let mut output = String::with_capacity(size);
+                    output.push_str(&left);
+                    output.push_str(&right);
+                    Str(Rc::from(output))
+                }
+                (Seq(mut left), Seq(right)) => {
+                    let size = left.len().checked_add(right.len()).ok_or_else(|| {
+                        crate::runtime_limits::jaq_overflow_error("collection size")
+                    })?;
+                    crate::runtime_limits::check_collection_size(size)
+                        .map_err(crate::runtime_limits::jaq_limit_error)?;
+                    Rc::make_mut(&mut left).extend(right.iter().cloned());
+                    Seq(left)
+                }
+                (Map(mut left), Map(right)) => {
+                    let added = right
                         .0
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone())),
-                );
-                Map(left)
-            }
-            (left, right) => return Err(math_error(left, Math::Add, right)),
-        };
+                        .keys()
+                        .filter(|key| !left.0.contains_key(*key))
+                        .count();
+                    let size = left.0.len().checked_add(added).ok_or_else(|| {
+                        crate::runtime_limits::jaq_overflow_error("collection size")
+                    })?;
+                    crate::runtime_limits::check_collection_size(size)
+                        .map_err(crate::runtime_limits::jaq_limit_error)?;
+                    Rc::make_mut(&mut left).0.extend(
+                        right
+                            .0
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone())),
+                    );
+                    Map(left)
+                }
+                (left, right) => return Err(math_error(left, Math::Add, right)),
+            };
         Ok(value(data))
     }
 }
@@ -152,8 +153,9 @@ impl core::ops::Mul for YamlVal {
                 let size = string
                     .len()
                     .checked_mul(count)
-                    .ok_or_else(|| Error::str("string size overflow"))?;
-                crate::runtime_limits::check_scalar_size(size).map_err(Error::str)?;
+                    .ok_or_else(|| crate::runtime_limits::jaq_overflow_error("string size"))?;
+                crate::runtime_limits::check_scalar_size(size)
+                    .map_err(crate::runtime_limits::jaq_limit_error)?;
                 Str(Rc::from(string.repeat(count)))
             }
             (Str(_), Int(_)) | (Int(_), Str(_)) => Null,

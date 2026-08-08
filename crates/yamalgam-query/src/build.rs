@@ -241,7 +241,7 @@ impl<'config> Builder<'config> {
                     let size = items
                         .len()
                         .checked_add(1)
-                        .ok_or_else(|| BuildError::Limit("sequence entry count overflow".into()))?;
+                        .ok_or(BuildError::ResourceOverflow("sequence entry count"))?;
                     self.config
                         .limits
                         .check_collection_size(size)
@@ -276,7 +276,7 @@ impl<'config> Builder<'config> {
                     }
                     entries = entries
                         .checked_add(1)
-                        .ok_or_else(|| BuildError::Limit("mapping entry count overflow".into()))?;
+                        .ok_or(BuildError::ResourceOverflow("mapping entry count"))?;
                     self.config
                         .limits
                         .check_collection_size(entries)
@@ -306,7 +306,10 @@ impl<'config> Builder<'config> {
                 )
             }
             Event::Alias { name, span } => {
-                self.alias_expansions += 1;
+                self.alias_expansions = self
+                    .alias_expansions
+                    .checked_add(1)
+                    .ok_or(BuildError::ResourceOverflow("alias expansion count"))?;
                 self.config
                     .limits
                     .check_alias_expansions(self.alias_expansions)
@@ -320,7 +323,7 @@ impl<'config> Builder<'config> {
                 })?;
                 let materialized_depth = depth
                     .checked_add(node.subtree_height)
-                    .ok_or_else(|| BuildError::Limit("value depth overflow".into()))?;
+                    .ok_or(BuildError::ResourceOverflow("value depth"))?;
                 self.config
                     .limits
                     .check_depth(materialized_depth)
@@ -381,7 +384,7 @@ impl<'config> Builder<'config> {
                 .anchors
                 .len()
                 .checked_add(additional)
-                .ok_or_else(|| BuildError::Limit("anchor count overflow".into()))?;
+                .ok_or(BuildError::ResourceOverflow("anchor count"))?;
             self.config
                 .limits
                 .check_anchor_count(anchor_count)
@@ -408,14 +411,14 @@ impl<'config> Builder<'config> {
 fn child_depth(depth: usize) -> Result<usize, BuildError> {
     depth
         .checked_add(1)
-        .ok_or_else(|| BuildError::Limit("value depth overflow".into()))
+        .ok_or(BuildError::ResourceOverflow("value depth"))
 }
 
 fn collection_height(max_child_height: Option<usize>) -> Result<usize, BuildError> {
     max_child_height.map_or(Ok(0), |height| {
         height
             .checked_add(1)
-            .ok_or_else(|| BuildError::Limit("value depth overflow".into()))
+            .ok_or(BuildError::ResourceOverflow("value depth"))
     })
 }
 
@@ -489,6 +492,7 @@ fn resolve_yaml12_non_string(text: &str) -> Option<Data> {
 mod tests {
     use super::*;
     use crate::{depth_walk_calls, reset_depth_walk_calls};
+    use yamalgam_core::ResourceLimit;
 
     fn parse_with_builder_config(
         input: &str,
@@ -544,7 +548,7 @@ mod tests {
             rejecting.limits.max_depth = Some(3);
             assert!(matches!(
                 parse_with_builder_config(document, &rejecting),
-                Err(BuildError::Limit(message)) if message.contains("depth")
+                Err(BuildError::Limit(error)) if error.limit == ResourceLimit::Depth
             ));
 
             let mut accepting = LoaderConfig::unchecked();
@@ -582,7 +586,10 @@ mod tests {
 
         let error = parse_with_builder_config(&format!("{document}other: &other 2\n"), &config)
             .unwrap_err();
-        assert!(matches!(error, BuildError::Limit(message) if message.contains("anchor count")));
+        assert!(matches!(
+            error,
+            BuildError::Limit(error) if error.limit == ResourceLimit::AnchorCount
+        ));
     }
 
     #[test]

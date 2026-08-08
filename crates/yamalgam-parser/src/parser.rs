@@ -219,8 +219,8 @@ where
     // cref: fy-parse.c:5673-5686 (fy_parse_state_push)
     fn push_state(&mut self, state: ParserState) -> Result<(), ParseError> {
         self.state_stack.push(state);
-        if let Err(msg) = self.config.check_depth(self.state_stack.len()) {
-            return Err(ParseError::LimitExceeded(msg));
+        if let Err(error) = self.config.check_depth(self.state_stack.len()) {
+            return Err(ParseError::LimitExceeded(error));
         }
         Ok(())
     }

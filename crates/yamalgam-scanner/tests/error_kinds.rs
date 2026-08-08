@@ -3,7 +3,9 @@
 //! Every [`ScanError`] carries a [`ScanErrorKind`] so callers can match on
 //! error families without string-matching the message.
 
-use yamalgam_core::LoaderConfig;
+use std::error::Error as _;
+
+use yamalgam_core::{LimitExceeded, LoaderConfig, ResourceLimit};
 use yamalgam_scanner::scanner::{ScanError, ScanErrorKind, Scanner};
 
 /// Scan `input` until the first error and return it.
@@ -92,5 +94,15 @@ fn depth_limit_is_limit_exceeded() {
     let err = Scanner::with_config("[[[[1]]]]\n", &config)
         .find_map(Result::err)
         .expect("depth limit should trip");
-    assert_eq!(err.kind, ScanErrorKind::LimitExceeded, "{}", err.message);
+    let ScanErrorKind::LimitExceeded(limit) = &err.kind else {
+        panic!("expected a structured limit error, got {err:?}");
+    };
+    assert_eq!(limit.limit, ResourceLimit::Depth);
+    assert_eq!(limit.observed, 3);
+    assert_eq!(limit.maximum, 2);
+    assert_eq!(
+        err.source()
+            .and_then(|source| source.downcast_ref::<LimitExceeded>()),
+        Some(limit)
+    );
 }

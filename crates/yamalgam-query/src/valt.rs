@@ -34,19 +34,19 @@ impl jaq_core::ValT for YamlVal {
         let mut mapping = YgMap::default();
         for (key, value) in iter {
             if !mapping.0.contains_key(&key) {
-                let size = mapping
-                    .0
-                    .len()
-                    .checked_add(1)
-                    .ok_or_else(|| Error::str("collection size overflow"))?;
-                crate::runtime_limits::check_collection_size(size).map_err(Error::str)?;
+                let size =
+                    mapping.0.len().checked_add(1).ok_or_else(|| {
+                        crate::runtime_limits::jaq_overflow_error("collection size")
+                    })?;
+                crate::runtime_limits::check_collection_size(size)
+                    .map_err(crate::runtime_limits::jaq_limit_error)?;
             }
             mapping.0.insert(key, value);
         }
         let value = yaml_value(Data::Map(Rc::new(mapping)));
         value
             .check_depth(&crate::runtime_limits::current())
-            .map_err(Error::str)?;
+            .map_err(crate::runtime_limits::jaq_value_error)?;
         Ok(value)
     }
 
@@ -166,12 +166,11 @@ impl jaq_core::ValT for YamlVal {
                 for value in previous {
                     for result in f(value) {
                         let value = result?;
-                        let size = updated
-                            .len()
-                            .checked_add(1)
-                            .ok_or_else(|| Exn::from(Error::str("collection size overflow")))?;
+                        let size = updated.len().checked_add(1).ok_or_else(|| {
+                            Exn::from(crate::runtime_limits::jaq_overflow_error("collection size"))
+                        })?;
                         crate::runtime_limits::check_collection_size(size)
-                            .map_err(Error::str)
+                            .map_err(crate::runtime_limits::jaq_limit_error)
                             .map_err(Exn::from)?;
                         updated.push(value);
                     }
@@ -185,13 +184,11 @@ impl jaq_core::ValT for YamlVal {
                 for (key, value) in previous {
                     if let Some(value) = f(value).next() {
                         let value = value?;
-                        let size = updated
-                            .0
-                            .len()
-                            .checked_add(1)
-                            .ok_or_else(|| Exn::from(Error::str("collection size overflow")))?;
+                        let size = updated.0.len().checked_add(1).ok_or_else(|| {
+                            Exn::from(crate::runtime_limits::jaq_overflow_error("collection size"))
+                        })?;
                         crate::runtime_limits::check_collection_size(size)
-                            .map_err(Error::str)
+                            .map_err(crate::runtime_limits::jaq_limit_error)
                             .map_err(Exn::from)?;
                         updated.0.insert(key, value);
                     }
@@ -238,8 +235,8 @@ impl jaq_core::ValT for YamlVal {
                         let error = Error::str(format_args!("index {index} out of bounds"));
                         return opt.fail(self, |_| Exn::from(error));
                     };
-                    if let Err(message) = crate::runtime_limits::check_collection_size(size) {
-                        let error = Error::str(message);
+                    if let Err(limit) = crate::runtime_limits::check_collection_size(size) {
+                        let error = crate::runtime_limits::jaq_limit_error(limit);
                         return opt.fail(self, |_| Exn::from(error));
                     }
                     let mut items = vec![Self::null(); position];
@@ -302,8 +299,8 @@ impl jaq_core::ValT for YamlVal {
                         let error = Error::str(format_args!("index {index} out of bounds"));
                         return opt.fail(self, |_| Exn::from(error));
                     };
-                    if let Err(message) = crate::runtime_limits::check_collection_size(size) {
-                        let error = Error::str(message);
+                    if let Err(limit) = crate::runtime_limits::check_collection_size(size) {
+                        let error = crate::runtime_limits::jaq_limit_error(limit);
                         return opt.fail(self, |_| Exn::from(error));
                     }
                     let items = Rc::make_mut(items);
@@ -395,12 +392,28 @@ impl jaq_core::ValT for YamlVal {
                     ..crate::EmitOpts::compact()
                 };
                 crate::emit::to_json(&yaml_value(data), &options).map_or_else(
-                    |error| {
-                        let message = error.to_string();
-                        if crate::runtime_limits::record_error(message.clone()) {
-                            Self::str("")
-                        } else {
-                            Self::str(format!("<yg: {message}>"))
+                    |error| match error {
+                        crate::EmitError::Limit(limit) => {
+                            if crate::runtime_limits::record_limit(limit) {
+                                Self::str("")
+                            } else {
+                                Self::str(format!("<yg: {limit}>"))
+                            }
+                        }
+                        crate::EmitError::ResourceOverflow(resource) => {
+                            if crate::runtime_limits::record_overflow(resource) {
+                                Self::str("")
+                            } else {
+                                Self::str(format!("<yg: {resource} overflow>"))
+                            }
+                        }
+                        other => {
+                            let message = other.to_string();
+                            if crate::runtime_limits::record_error(message.clone()) {
+                                Self::str("")
+                            } else {
+                                Self::str(format!("<yg: {message}>"))
+                            }
                         }
                     },
                     Self::str,

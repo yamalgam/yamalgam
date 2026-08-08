@@ -2,7 +2,7 @@
 
 use yamalgam_core::{ResourceLimits, TagResolution};
 use yamalgam_query::{
-    EmitFormat, EmitOpts, YamlVal,
+    EmitError, EmitFormat, EmitOpts, YamlVal,
     emit::{emit, to_json, to_yaml},
     parse_str,
 };
@@ -205,8 +205,18 @@ fn emitters_bound_constructed_depth_and_output_size() {
         max_depth: Some(2),
         ..ResourceLimits::none()
     };
-    assert!(to_json(&deep, &depth_options).is_err());
-    assert!(to_yaml(&deep, &depth_options).is_err());
+    for error in [
+        to_json(&deep, &depth_options).unwrap_err(),
+        to_yaml(&deep, &depth_options).unwrap_err(),
+    ] {
+        assert!(matches!(
+            error,
+            EmitError::Limit(error)
+                if error.limit == yamalgam_core::ResourceLimit::Depth
+                    && error.observed == 3
+                    && error.maximum == 2
+        ));
+    }
 
     let wide = YamlVal::seq(vec![YamlVal::str("12345"), YamlVal::str("67890")]);
     let mut size_options = EmitOpts::compact();
@@ -214,8 +224,17 @@ fn emitters_bound_constructed_depth_and_output_size() {
         max_output_bytes: Some(10),
         ..ResourceLimits::none()
     };
-    assert!(to_json(&wide, &size_options).is_err());
-    assert!(to_yaml(&wide, &size_options).is_err());
+    for error in [
+        to_json(&wide, &size_options).unwrap_err(),
+        to_yaml(&wide, &size_options).unwrap_err(),
+    ] {
+        assert!(matches!(
+            error,
+            EmitError::Limit(error)
+                if error.limit == yamalgam_core::ResourceLimit::OutputBytes
+                    && error.maximum == 10
+        ));
+    }
 }
 
 #[test]
