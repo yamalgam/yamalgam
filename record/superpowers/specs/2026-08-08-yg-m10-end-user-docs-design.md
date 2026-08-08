@@ -26,6 +26,8 @@ know its limits:
 - jq support is broad, but YAML rules and the chosen regex engine differ in
   known ways.
 - Users install from the workspace until release packages are ready.
+- Reusable filter programs need a clear file name convention that does not
+  imply exact jq behavior or collide with an existing file type.
 
 The guides must make those limits clear without letting future work bury the
 happy path.
@@ -65,6 +67,29 @@ Each file has one job:
 The root README will keep its short product pitch and link to the new starting
 point. The YAML specs under `docs/spec/` will not move or change.
 
+Reusable filter programs will use `.ygq`, short for "yg query." The documented
+form is `yg -f program.ygq input.yaml`. The `-f` option will remain extension
+agnostic for jq parity, pipes, and temporary files.
+
+Markdown examples will use jq as the fence language and `.ygq` as the file
+name passed through `mdcode` metadata:
+
+````markdown
+```jq file=examples/select-image.ygq
+.services.api.image
+```
+````
+
+This gives rendered docs jq syntax highlighting while `mdcode` extracts the
+canonical file name. Named shell blocks will run the extracted filters and YAML
+fixtures in a temporary directory. `mdcode` is a contributor check, not a
+runtime dependency for `yg` users.
+
+Editors should associate `*.ygq` with jq syntax support. We will not create a
+Tree-sitter grammar while `yg` uses jq grammar through jaq and adds behavior
+through native filters. A distinct grammar becomes valid only if the accepted
+query syntax diverges from jq.
+
 The source-of-truth order is:
 
 1. Current CLI behavior and `yg --help` output.
@@ -76,8 +101,8 @@ The source-of-truth order is:
    only where tests or code confirm it.
 
 We will run every command example against the current binary. We will show
-output when it helps users spot success. Checks will cover Markdown, offline
-links, Bito readability, and focused CLI tests.
+output when it helps users spot success. Checks will cover `mdcode` examples,
+Markdown, offline links, Bito readability, and focused CLI tests.
 
 ## Alternatives considered
 
@@ -99,6 +124,26 @@ The spec helps with language design and jq parity work. It is the wrong entry
 point for task-focused users. Keeping it as the only reference would preserve
 the current gap.
 
+### Other filter file extensions
+
+`.yg` is short but has an established ransomware search collision. `.jq` gets
+good tool support but implies exact jq behavior. `.jqy` belongs to JSONiq.
+`.ygq` states that the file is a `yg` query without claiming a new grammar.
+
+### A custom Tree-sitter grammar
+
+M10 adds YAML-aware values and native filters, not query syntax. A custom
+grammar would duplicate jq grammar, drift from the jaq parser, and add a new
+maintenance surface without improving M10 correctness.
+
+### Separate example fixtures or doctests
+
+Keeping `.ygq` fixtures beside the guides or copying examples into Rust or
+shell tests would avoid `mdcode` metadata and another contributor tool. It
+would also create a second copy of each example that could drift from the
+published docs. `mdcode` keeps the fenced example canonical and extracts it
+for named shell checks, so we accept the contributor-only dependency.
+
 ## Consequences
 
 - Users gain a direct path from installation to useful queries.
@@ -107,6 +152,10 @@ the current gap.
 - Multiple focused files cost more to maintain than one page.
 - Hand-written CLI reference can drift. Examples and options must be checked
   against the binary when the CLI changes.
+- `.ygq` files need one-time jq file association in editors that do not know
+  the extension.
+- `mdcode` adds a contributor tool, but turns copy-paste examples into checks
+  that can fail when behavior changes.
 - A docs site and generated reference remain deferred until the CLI is closer
   to release.
 
