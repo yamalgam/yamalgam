@@ -2,12 +2,12 @@
 audit: 2026-08-08-15-m10-fresh
 last_updated: 2026-08-08
 status:
-  fixed: 2
+  fixed: 3
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 3
+  open: 2
 ---
 
 # Actions Taken: Full Repository Static Audit
@@ -51,3 +51,24 @@ failure mode.
 Verification: focused regression passed; `just check` passed with 1,930 tests,
 Clippy with warnings denied, Cargo Deny, formatting, and doc tests. Independent
 code review returned PASS.
+
+---
+
+## 2026-08-08 — Enforce dependency policy for the fuzz graph
+
+**Disposition:** fixed
+**Addresses:** [fuzz-workspace-escapes-dependency-policy](README.md#fuzz-workspace-escapes-dependency-policy)
+**Commit:** `9d008a116bdd59b92baaf39393b2c8c8c3e56f48`
+**Author:** Codex
+
+The excluded fuzz package now declares the project license, and Cargo Deny
+allows NCSA only for `libfuzzer-sys`, whose expression combines that license
+with MIT or Apache-2.0. The canonical local, release, and CI gates now check the
+root and fuzz graphs with their lockfiles enforced. Regenerating the fuzz lock
+cut it from 776 to 254 lines and retained a current 28-package graph.
+
+Verification: both locked Cargo Deny graphs passed; `cargo audit --file
+fuzz/Cargo.lock`, nightly all-target fuzz-package check, locked metadata, and
+Actionlint passed. `just check` passed with 1,930 tests, Clippy with warnings
+denied, formatting, both dependency graphs, and doc tests. Independent code
+review returned PASS.
