@@ -48,7 +48,7 @@ pub enum Value {
 /// Backed by a `Vec<(Value, Value)>`. Insert replaces an existing key rather
 /// than appending a duplicate. A private side index accelerates equality-safe
 /// scalar keys while preserving ordered entries as the semantic state.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 // y[impl model.repr.node.mapping]
 // y[impl model.repr.uniqueness]
 // y[impl model.serial.key-order.serialization-detail]
@@ -243,12 +243,6 @@ impl Mapping {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-}
-
-impl Default for Mapping {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
