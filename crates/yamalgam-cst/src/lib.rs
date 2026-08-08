@@ -130,6 +130,20 @@ pub enum CstElement<'input> {
     Token(CstToken<'input>),
 }
 
+/// A recovered CST together with structured diagnostics produced while
+/// building it.
+///
+/// The CST remains lossless even when diagnostics are present. Use
+/// [`parse_to_cst_report`] when callers need both recovery and the original
+/// parser errors.
+#[derive(Clone, Debug)]
+pub struct CstReport<'input> {
+    /// Recovered concrete syntax tree.
+    pub cst: CstNode<'input>,
+    /// Structured parser or builder errors encountered during recovery.
+    pub diagnostics: Vec<ParseError>,
+}
+
 // ---------------------------------------------------------------------------
 // CstNode API
 // ---------------------------------------------------------------------------
@@ -240,6 +254,7 @@ pub struct CstBuilder<'input> {
     last_offset: usize,
     limits: ResourceLimits,
     collection_depth: usize,
+    diagnostics: Vec<ParseError>,
 }
 
 impl<'input> CstBuilder<'input> {
@@ -253,6 +268,7 @@ impl<'input> CstBuilder<'input> {
             last_offset: 0,
             limits: ResourceLimits::moderate(),
             collection_depth: 0,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -267,6 +283,7 @@ impl<'input> CstBuilder<'input> {
             last_offset: 0,
             limits: ResourceLimits::none(),
             collection_depth: 0,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -279,6 +296,7 @@ impl<'input> CstBuilder<'input> {
             last_offset: 0,
             limits: config.limits.clone(),
             collection_depth: 0,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -286,9 +304,21 @@ impl<'input> CstBuilder<'input> {
     ///
     /// On parse errors, wraps remaining source in an error node.
     pub fn build(
-        mut self,
+        self,
         events: impl Iterator<Item = Result<Event<'input>, ParseError>>,
     ) -> CstNode<'input> {
+        self.build_report(events).cst
+    }
+
+    /// Consume an event stream and build a lossless CST recovery report.
+    ///
+    /// Parser errors and builder-generated resource-limit errors are retained
+    /// in [`CstReport::diagnostics`] while the remaining source is wrapped in
+    /// an error node.
+    pub fn build_report(
+        mut self,
+        events: impl Iterator<Item = Result<Event<'input>, ParseError>>,
+    ) -> CstReport<'input> {
         for result in events {
             match result {
                 Ok(event) => {
@@ -329,11 +359,15 @@ impl<'input> CstBuilder<'input> {
             self.close_node();
         }
 
-        self.stack.pop().unwrap_or_else(|| CstNode {
+        let cst = self.stack.pop().unwrap_or_else(|| CstNode {
             kind: NodeKind::Stream,
             span: Span::default(),
             children: Vec::new(),
-        })
+        });
+        CstReport {
+            cst,
+            diagnostics: self.diagnostics,
+        }
     }
 
     fn process_event(&mut self, event: Event<'input>) -> bool {
@@ -623,7 +657,7 @@ impl<'input> CstBuilder<'input> {
             }
             self.last_offset = self.source.len();
         }
-        let _ = error; // consumed
+        self.diagnostics.push(error);
     }
 }
 
@@ -637,14 +671,31 @@ impl<'input> CstBuilder<'input> {
 /// of the input — `cst.to_text() == input` (round-trip property). Applies
 /// [`LoaderConfig::default`] resource limits.
 pub fn parse_to_cst(input: &str) -> CstNode<'_> {
-    parse_to_cst_with_config(input, &LoaderConfig::default())
+    parse_to_cst_report(input).cst
+}
+
+/// Parse a YAML string to a lossless CST recovery report.
+///
+/// Applies [`LoaderConfig::default`] resource limits. The returned tree
+/// preserves every input byte, while [`CstReport::diagnostics`] retains any
+/// structured parser or builder errors.
+pub fn parse_to_cst_report(input: &str) -> CstReport<'_> {
+    parse_to_cst_report_with_config(input, &LoaderConfig::default())
 }
 
 /// Parse trusted YAML to a CST without resource limits.
 ///
 /// Prefer [`parse_to_cst`] for ordinary input.
 pub fn parse_to_cst_unchecked(input: &str) -> CstNode<'_> {
-    parse_to_cst_with_config(input, &LoaderConfig::unchecked())
+    parse_to_cst_report_unchecked(input).cst
+}
+
+/// Parse trusted YAML to a lossless CST recovery report without resource
+/// limits.
+///
+/// Prefer [`parse_to_cst_report`] for ordinary input.
+pub fn parse_to_cst_report_unchecked(input: &str) -> CstReport<'_> {
+    parse_to_cst_report_with_config(input, &LoaderConfig::unchecked())
 }
 
 /// Parse a YAML string to a CST with caller-selected loader configuration.
@@ -655,8 +706,17 @@ pub fn parse_to_cst_with_config<'input>(
     input: &'input str,
     config: &LoaderConfig,
 ) -> CstNode<'input> {
+    parse_to_cst_report_with_config(input, config).cst
+}
+
+/// Parse a YAML string to a lossless CST recovery report with caller-selected
+/// loader configuration.
+pub fn parse_to_cst_report_with_config<'input>(
+    input: &'input str,
+    config: &LoaderConfig,
+) -> CstReport<'input> {
     let parser = Parser::with_config(input, config);
-    CstBuilder::new_with_config(input, config).build(parser)
+    CstBuilder::new_with_config(input, config).build_report(parser)
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +874,20 @@ mod tests {
     }
 
     #[test]
+    fn builder_report_preserves_generated_limit_error() {
+        let input = "[[0]]";
+        let report =
+            CstBuilder::new_with_config(input, &depth_config(1)).build_report(Parser::new(input));
+
+        assert_eq!(report.cst.to_text(), input);
+        assert!(contains_node_kind(&report.cst, NodeKind::Error));
+        assert!(matches!(
+            report.diagnostics.as_slice(),
+            [ParseError::LimitExceeded(_)]
+        ));
+    }
+
+    #[test]
     fn empty_input_round_trip() {
         let input = "";
         let cst = parse_to_cst(input);
@@ -955,6 +1029,22 @@ mod tests {
         // Should still produce a tree (with error node).
         assert_eq!(cst.kind, NodeKind::Stream);
         assert_eq!(cst.to_text(), input);
+    }
+
+    #[test]
+    fn cst_report_preserves_structured_parse_error() {
+        use yamalgam_scanner::scanner::ScanErrorKind;
+
+        let input = "'unterminated";
+        let report = parse_to_cst_report(input);
+
+        assert_eq!(report.cst.to_text(), input);
+        assert!(contains_node_kind(&report.cst, NodeKind::Error));
+        assert!(matches!(
+            report.diagnostics.as_slice(),
+            [ParseError::Scan(error)] if error.kind == ScanErrorKind::UnterminatedScalar
+        ));
+        assert_eq!(parse_to_cst(input).to_text(), input);
     }
 
     #[test]
