@@ -297,17 +297,48 @@ fn invalid_json_config_shows_error() {
 }
 
 #[test]
-fn unknown_config_field_is_ignored() {
-    // Figment ignores unknown fields by default with serde
+fn unknown_config_field_fails_loudly() {
     let tmp = TempDir::new().unwrap();
-    fs::write(
-        tmp.path().join(".yamalgam.toml"),
-        "log_level = \"info\"\nunknown_field = \"should be ignored\"\nanother_unknown = 42\n",
-    )
-    .unwrap();
+    fs::write(tmp.path().join(".yamalgam.toml"), "log_lvel = \"debug\"\n").unwrap();
 
-    let json = info_json(tmp.path());
-    assert_eq!(json["config"]["log_level"], "info");
+    cmd()
+        .args(["-C", tmp.path().to_str().unwrap(), "info"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("unknown field").and(predicate::str::contains("log_lvel")),
+        );
+}
+
+#[test]
+fn config_templates_only_advertise_supported_fields() {
+    let templates = [
+        include_str!("../../../config/yamalgam.toml.example"),
+        include_str!("../../../config/yamalgam.yaml.example"),
+    ];
+
+    for template in templates {
+        assert!(template.contains("log_level"));
+        assert!(template.contains("log_dir"));
+        for unsupported in [
+            "otel_endpoint",
+            "YAMALGAM_ENV",
+            "api_url",
+            "experimental",
+            "telemetry",
+            "[output]",
+            "output:",
+            "format =",
+            "format:",
+            "color =",
+            "color:",
+        ] {
+            assert!(
+                !template.contains(unsupported),
+                "template advertises unsupported setting {unsupported:?}"
+            );
+        }
+    }
 }
 
 // =============================================================================
