@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 23
+  fixed: 24
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 4
+  open: 3
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -473,5 +473,34 @@ reversed, and update-range behavior remains green. All 128 query tests,
 workspace clippy, and the full repository check with 1,927 tests pass.
 Independent review confirmed UTF-8 boundary and range semantics. This localized
 allocation cleanup did not require an ADR.
+
+---
+
+## 2026-08-08 — Parser resolver upstreams specialized
+
+**Disposition:** fixed
+**Addresses:** [parser-consumers-erase-concrete-hot-path-types](README.md#parser-consumers-erase-concrete-hot-path-types)
+**Commit:** 4cb060b6047530da7f2083a7500318b5b972e9e7
+**Author:** Codex
+
+`ResolvedEvents` now accepts a concrete upstream iterator type while retaining
+the prior boxed stream as its default. Existing two-parameter type annotations
+and mixed-source boxed callers remain valid. Ordinary composer, serde, CST,
+and query parser paths pass one named concrete adapter per crate. Serde keeps
+its outer event-stream and tag-resolver boxes because profiling did not justify
+expanding those public type boundaries.
+
+ADR-0012 records the measured specialization boundary. A permanent Divan
+benchmark asserts boxed and typed event and composition parity, then compares
+both production paths on small and medium inputs. Three valid 100-sample runs
+showed typed event medians 12.6–14.9% faster and typed composition medians
+6.0–8.5% faster. The benchmark profile retains all medians and setup details.
+
+The compatibility regression covers both the explicit legacy boxed type and
+the inferred concrete type. All 460 focused consumer tests and the full
+repository check with 1,928 tests plus doc tests pass. Independent review caught
+an initially incomplete benchmark coercion before commit; the corrected
+`BoxedResolveStream` baseline, calculations, and final implementation passed
+re-review.
 
 ---
