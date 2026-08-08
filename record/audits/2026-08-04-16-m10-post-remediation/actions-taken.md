@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 10
+  fixed: 11
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 17
+  open: 16
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -198,5 +198,27 @@ field diagnostic. A template contract test prevents the removed OpenTelemetry,
 environment-mode, API, feature, telemetry, format, and color placeholders from
 returning without matching implementation. Configuration integration tests,
 the full workspace test suite, clippy, and doc tests pass.
+
+---
+
+## 2026-08-08 — Indentless sequence spans made synthetic
+
+**Disposition:** fixed
+**Addresses:** [lossless-cst-corrupts-eight-valid-flow-documents](README.md#lossless-cst-corrupts-eight-valid-flow-documents)
+**Commit:** f0bf38f4adcad0e8f07ce62b86e6e502a6de75dc
+**Author:** Codex
+
+The eight valid documents were corrupted by indentless block-sequence boundary
+events, not flow-collection closing events. Their synthetic `SequenceStart`
+and `SequenceEnd` events reused the next visible token's span, so CST
+reconstruction emitted the first block-entry dash twice and, for an explicit
+mapping key, emitted the following value indicator twice.
+
+Indentless sequence boundaries now use zero-width spans at the corresponding
+source position, leaving the visible dash and colon spans owned solely by
+`BlockEntry` and `ValueIndicator`. Parser regressions prove that ownership at
+both boundaries. The complete round-trip allowlist was removed, all 351 valid
+YAML Test Suite documents now round-trip byte-for-byte, and the full repository
+check passes 1,896 tests plus clippy, dependency policy, and doc tests.
 
 ---
