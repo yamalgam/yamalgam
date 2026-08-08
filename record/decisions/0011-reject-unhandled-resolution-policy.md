@@ -29,7 +29,10 @@ resolution reaches that no-op path?
   policy.
 - Parser and scanner APIs must remain policy-neutral because they produce the
   event stream that a later resolver consumes.
-- Existing consumer error and CST recovery APIs should remain source compatible.
+- Existing high-level entry-point signatures and CST recovery report types
+  should remain unchanged.
+- Public error enums need an explicit compatibility posture before more
+  resolver variants arrive in M11.
 
 ## Considered Options
 
@@ -47,6 +50,14 @@ The failure is a structured `ResolveError::UnsupportedResolutionPolicy` that
 records both enabled capability flags. `ResolvedEvents` stops after a resolver
 failure so one unsupported request produces one diagnostic. Upstream parser
 errors retain their existing recovery behavior.
+
+`ParseError` and `ResolveError` are currently public, exhaustively matchable
+enums. Adding the two required typed variants is therefore a source-breaking
+change for downstream exhaustive matches. The repository has no release tags
+and remains at 0.1.0, so this decision accepts that break before the first
+tagged release and marks both enums `#[non_exhaustive]`. Callers must add a
+wildcard arm now; future diagnostic variants can then be added without another
+exhaustive-match break. No project version is changed as part of this decision.
 
 Every ordinary composer, serde, CST, and query loading path already uses
 `NoopResolver`, so the adapter enforces the boundary consistently. Explicit
@@ -72,10 +83,14 @@ public type or panicking. The resolved CST report retains the original
 - Good, because applications can implement and test custom policy-aware
   resolvers now.
 - Good, because existing high-level entry-point signatures remain unchanged.
+- Good, because future parser and resolver diagnostics no longer break
+  downstream exhaustive matches.
 - Bad, because custom resolver entry points trust the supplied resolver to
   enforce policy correctly.
 - Bad, because the compatibility CST report mirrors one resolver error variant
   in `ParseError` until its diagnostic surface is unified.
+- Bad, because downstream exhaustive matches over either public error enum must
+  add a wildcard arm once during the pre-release 0.1.0 cycle.
 
 ### Confirmation
 
@@ -84,6 +99,8 @@ public type or panicking. The resolved CST report retains the original
 - A custom resolver observes enabled policy and continues successfully.
 - Disabled policy preserves every existing default and unchecked path.
 - CST recovery still reproduces every input byte.
+- Both public error enums reject downstream exhaustive matching at compile
+  time, preventing future variants from repeating this source break.
 
 ## More Information
 

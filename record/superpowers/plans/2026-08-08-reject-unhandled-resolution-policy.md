@@ -12,7 +12,9 @@ shared config-aware `ResolvedEvents` adapter. A structured resolver error carrie
 the enabled include/ref flags. Resolver-origin failures terminate the adapter;
 upstream parser recovery is unchanged. The compatibility CST report maps this
 specific failure to an equivalent `ParseError` variant, while resolved reports
-retain `ResolveError`.
+retain `ResolveError`. Because both public error enums were exhaustively
+matchable, this pre-release change also marks them `#[non_exhaustive]` and
+records the one-time source break explicitly in ADR-0011.
 
 **ADR:** `record/decisions/0011-reject-unhandled-resolution-policy.md`.
 
@@ -34,7 +36,9 @@ retain `ResolveError`.
 3. Override config-aware no-op dispatch to reject enabled policy.
 4. Terminate `ResolvedEvents` after a resolver-origin error so the unsupported
    request yields one error; preserve continued upstream parse-error recovery.
-5. Add the compatibility `ParseError` variant used by ordinary CST reports.
+5. Add the compatibility `ParseError` variant used by ordinary CST reports and
+   mark both public error enums `#[non_exhaustive]` so later diagnostic variants
+   do not repeat the exhaustive-match break.
 6. Prove a custom resolver still receives enabled policy and succeeds.
 
 ## Task 2: Prove every consumer exposes the failure

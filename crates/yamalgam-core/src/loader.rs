@@ -6,7 +6,9 @@
 //! - **Resource limits** — bounds on input size, nesting depth, alias
 //!   expansions, and other vectors for denial-of-service attacks.
 //! - **Resolution policy** — whether `!include` directives and `$ref`
-//!   references are followed, and under what constraints.
+//!   references may be followed, and under what constraints. Ordinary
+//!   high-level loading paths reject enabled policy until built-in resolvers
+//!   ship; resolver-aware paths delegate enforcement to the supplied resolver.
 //!
 //! Four preset constructors cover common use cases:
 //!
@@ -348,6 +350,12 @@ impl ResolutionPolicy {
             },
         }
     }
+
+    /// Returns `true` when include or reference resolution is enabled.
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        self.include.enabled || self.refs.enabled
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +451,19 @@ mod tests {
         assert!(cfg.resolution.include.deny.is_empty());
         assert!(cfg.resolution.refs.allow_schemes.is_empty());
         assert!(cfg.resolution.refs.allow_hosts.is_empty());
+    }
+
+    #[test]
+    fn resolution_policy_reports_enabled_capabilities() {
+        let mut policy = ResolutionPolicy::disabled();
+        assert!(!policy.is_enabled());
+
+        policy.include.enabled = true;
+        assert!(policy.is_enabled());
+
+        policy.include.enabled = false;
+        policy.refs.enabled = true;
+        assert!(policy.is_enabled());
     }
 
     #[test]

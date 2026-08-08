@@ -25,6 +25,7 @@ use crate::event::Event;
 pub type ResolvedEventBuf<'input> = SmallVec<[Event<'input>; 1]>;
 
 /// Errors that can occur during event resolution.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum ResolveError {
     /// A parse error propagated from the upstream parser.
@@ -50,6 +51,13 @@ pub enum ResolveError {
     },
     /// A resource limit was exceeded during resolution.
     LimitExceeded(String),
+    /// External resolution was enabled without a resolver implementation.
+    UnsupportedResolutionPolicy {
+        /// Whether include resolution was enabled.
+        include: bool,
+        /// Whether reference resolution was enabled.
+        refs: bool,
+    },
     /// An application-defined resolution error.
     Custom(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -75,6 +83,12 @@ impl ResolveError {
                 chain: chain.clone(),
             },
             Self::LimitExceeded(message) => Self::LimitExceeded(message.clone()),
+            Self::UnsupportedResolutionPolicy { include, refs } => {
+                Self::UnsupportedResolutionPolicy {
+                    include: *include,
+                    refs: *refs,
+                }
+            }
             Self::Custom(source) => Self::Custom(Box::new(ClonedError(source.to_string()))),
         }
     }
@@ -105,6 +119,10 @@ impl fmt::Display for ResolveError {
                 write!(f, "circular reference: {}", chain.join(" -> "))
             }
             Self::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
+            Self::UnsupportedResolutionPolicy { include, refs } => write!(
+                f,
+                "enabled resolution policy is unsupported without a resolver (include: {include}, refs: {refs})"
+            ),
             Self::Custom(e) => write!(f, "{e}"),
         }
     }
@@ -117,7 +135,9 @@ impl std::error::Error for ResolveError {
             Self::Include { source, .. } => Some(source),
             Self::Ref { source, .. } => Some(source.as_ref()),
             Self::Custom(e) => Some(e.as_ref()),
-            Self::Cycle { .. } | Self::LimitExceeded(_) => None,
+            Self::Cycle { .. }
+            | Self::LimitExceeded(_)
+            | Self::UnsupportedResolutionPolicy { .. } => None,
         }
     }
 }
@@ -139,6 +159,12 @@ impl From<ParseError> for ResolveError {
 ///
 /// The passthrough case stays allocation-free: [`ResolvedEventBuf`] holds one
 /// event inline (ADR-0010).
+///
+/// Resolver-aware entry points delegate enforcement of enabled
+/// [`LoaderConfig::resolution`](yamalgam_core::LoaderConfig::resolution) policy
+/// to the supplied implementation. [`NoopResolver`] rejects enabled external
+/// resolution because built-in include and reference resolvers are not yet
+/// available (ADR-0011).
 pub trait Resolver<'input> {
     /// Process a single event and return the resulting events.
     fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError>;
@@ -159,12 +185,31 @@ pub trait Resolver<'input> {
 }
 
 /// A resolver that passes all events through unchanged.
+///
+/// When include or reference resolution is enabled in the selected
+/// [`LoaderConfig`], this resolver returns
+/// [`ResolveError::UnsupportedResolutionPolicy`] instead of silently ignoring
+/// the requested capability.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopResolver;
 
 impl<'input> Resolver<'input> for NoopResolver {
     fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError> {
         Ok(smallvec![event])
+    }
+
+    fn on_event_with_config(
+        &mut self,
+        event: Event<'input>,
+        config: &LoaderConfig,
+    ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+        if config.resolution.is_enabled() {
+            return Err(ResolveError::UnsupportedResolutionPolicy {
+                include: config.resolution.include.enabled,
+                refs: config.resolution.refs.enabled,
+            });
+        }
+        self.on_event(event)
     }
 }
 
@@ -179,6 +224,7 @@ pub struct ResolvedEvents<'input, R: Resolver<'input>> {
     resolver: R,
     buffer: VecDeque<Event<'input>>,
     config: LoaderConfig,
+    resolver_failed: bool,
 }
 
 impl<'input, R: Resolver<'input>> ResolvedEvents<'input, R> {
@@ -203,6 +249,7 @@ impl<'input, R: Resolver<'input>> ResolvedEvents<'input, R> {
             resolver,
             buffer: VecDeque::new(),
             config: config.clone(),
+            resolver_failed: false,
         }
     }
 }
@@ -211,6 +258,10 @@ impl<'input, R: Resolver<'input>> Iterator for ResolvedEvents<'input, R> {
     type Item = Result<Event<'input>, ResolveError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.resolver_failed {
+            return None;
+        }
+
         // Drain buffered events first.
         if let Some(event) = self.buffer.pop_front() {
             return Some(Ok(event));
@@ -237,7 +288,10 @@ impl<'input, R: Resolver<'input>> Iterator for ResolvedEvents<'input, R> {
                     self.buffer.extend(drain);
                     return Some(Ok(first));
                 }
-                Err(e) => return Some(Err(e)),
+                Err(e) => {
+                    self.resolver_failed = true;
+                    return Some(Err(e));
+                }
             }
         }
     }
@@ -292,6 +346,28 @@ mod tests {
     }
 
     #[test]
+    fn noop_resolver_rejects_enabled_resolution_policy_once() {
+        let mut config = LoaderConfig::moderate();
+        config.resolution.include.enabled = true;
+        config.resolution.refs.enabled = true;
+        let parser = Parser::with_config("value", &config);
+        let mut events = ResolvedEvents::new_with_config(
+            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            NoopResolver,
+            &config,
+        );
+
+        assert!(matches!(
+            events.next(),
+            Some(Err(ResolveError::UnsupportedResolutionPolicy {
+                include: true,
+                refs: true,
+            }))
+        ));
+        assert!(events.next().is_none());
+    }
+
+    #[test]
     fn resolve_error_from_parse_error() {
         let input = "'bad";
         let results: Vec<Result<Event<'_>, ResolveError>> = Parser::new(input)
@@ -319,6 +395,10 @@ mod tests {
                 chain: vec!["a".into(), "b".into(), "a".into()],
             },
             ResolveError::LimitExceeded("resolver budget".into()),
+            ResolveError::UnsupportedResolutionPolicy {
+                include: true,
+                refs: false,
+            },
             ResolveError::Custom(Box::new(io::Error::other("custom resolver"))),
         ];
 
@@ -390,5 +470,26 @@ mod tests {
 
         assert!(!events.is_empty());
         assert_eq!(observed_depth.get(), Some(7));
+    }
+
+    #[test]
+    fn custom_resolver_accepts_enabled_resolution_policy() {
+        let mut config = LoaderConfig::moderate();
+        config.resolution.include.enabled = true;
+        let observed_depth = Rc::new(Cell::new(None));
+        let parser = Parser::with_config("value", &config);
+
+        let events = ResolvedEvents::new_with_config(
+            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            ConfigProbe {
+                observed_depth: Rc::clone(&observed_depth),
+            },
+            &config,
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+        assert!(!events.is_empty());
+        assert_eq!(observed_depth.get(), config.limits.max_depth);
     }
 }

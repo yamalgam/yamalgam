@@ -820,6 +820,9 @@ pub fn parse_to_cst_report_with_config<'input>(
             .into_iter()
             .map(|error| match error {
                 ResolveError::Parse(error) => error,
+                ResolveError::UnsupportedResolutionPolicy { include, refs } => {
+                    ParseError::UnsupportedResolutionPolicy { include, refs }
+                }
                 other => unreachable!("NoopResolver returned a resolver error: {other}"),
             })
             .collect(),
@@ -1064,6 +1067,25 @@ mod tests {
         assert!(matches!(
             report.diagnostics.as_slice(),
             [ParseError::LimitExceeded(_)]
+        ));
+    }
+
+    #[test]
+    fn configured_noop_cst_rejects_enabled_resolution_policy_losslessly() {
+        let input = "value";
+        let mut config = LoaderConfig::moderate();
+        config.resolution.include.enabled = true;
+        config.resolution.refs.enabled = true;
+
+        let report = parse_to_cst_report_with_config(input, &config);
+
+        assert_eq!(report.cst.to_text(), input);
+        assert!(matches!(
+            report.diagnostics.as_slice(),
+            [ParseError::UnsupportedResolutionPolicy {
+                include: true,
+                refs: true,
+            }]
         ));
     }
 

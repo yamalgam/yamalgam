@@ -251,7 +251,8 @@ fn resolver_rewrite_reaches_query_builder() {
     let documents = parse_str_with_resolver("magic", RewriteMagic).unwrap();
     assert_eq!(documents, vec![YamlVal::int(42)]);
 
-    let config = LoaderConfig::moderate().with_tag_resolution(TagResolution::Failsafe);
+    let mut config = LoaderConfig::moderate().with_tag_resolution(TagResolution::Failsafe);
+    config.resolution.include.enabled = true;
     let documents = parse_str_with_resolver_and_config("magic", RewriteMagic, &config).unwrap();
     assert_eq!(documents, vec![YamlVal::str("42")]);
 }
@@ -277,6 +278,22 @@ fn resolver_failure_stays_typed_in_query_builder() {
         "got {error:?}"
     );
     assert_eq!(error.to_string(), "query resolver failed");
+}
+
+#[test]
+fn configured_noop_query_builder_rejects_enabled_resolution_policy() {
+    let mut config = LoaderConfig::moderate();
+    config.resolution.include.enabled = true;
+
+    assert!(matches!(
+        parse_str_with_config("value", &config),
+        Err(BuildError::Resolve(
+            ResolveError::UnsupportedResolutionPolicy {
+                include: true,
+                refs: false,
+            }
+        ))
+    ));
 }
 
 #[test]

@@ -1254,6 +1254,22 @@ production:
     }
 
     #[test]
+    fn configured_noop_composer_rejects_enabled_resolution_policy() {
+        let mut config = LoaderConfig::moderate();
+        config.resolution.include.enabled = true;
+
+        assert!(matches!(
+            Composer::from_str_with_config("value", &config),
+            Err(ComposeError::Resolve(
+                ResolveError::UnsupportedResolutionPolicy {
+                    include: true,
+                    refs: false,
+                }
+            ))
+        ));
+    }
+
+    #[test]
     fn compose_with_yaml11_booleans() {
         use yamalgam_core::{LoaderConfig, TagResolution};
         let config = LoaderConfig::unchecked().with_tag_resolution(TagResolution::Yaml11);
