@@ -738,6 +738,45 @@ struct IdentityInventory {
     aliases: IndexMap<String, Vec<Vec<YamlVal>>>,
 }
 
+enum IdentityPathPart<'value> {
+    Index(usize),
+    Key(&'value YamlVal),
+    MapKey(&'value YamlVal),
+}
+
+impl IdentityPathPart<'_> {
+    fn materialize(&self) -> YamlVal {
+        #[cfg(test)]
+        record_path_part_materialization();
+
+        match self {
+            Self::Index(index) => YamlVal::from(*index),
+            Self::Key(key) => (*key).clone(),
+            Self::MapKey(key) => YamlVal::map(vec![(YamlVal::str("$key"), (*key).clone())]),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PATH_PART_MATERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_path_part_materialization() {
+    PATH_PART_MATERIALIZATIONS.set(PATH_PART_MATERIALIZATIONS.get().saturating_add(1));
+}
+
+#[cfg(test)]
+fn reset_path_part_materializations() {
+    PATH_PART_MATERIALIZATIONS.set(0);
+}
+
+#[cfg(test)]
+fn path_part_materializations() -> usize {
+    PATH_PART_MATERIALIZATIONS.get()
+}
+
 impl IdentityInventory {
     fn collect(value: &YamlVal) -> Self {
         let mut inventory = Self {
@@ -748,7 +787,7 @@ impl IdentityInventory {
         inventory
     }
 
-    fn visit(&mut self, value: &YamlVal, path: &mut Vec<YamlVal>) {
+    fn visit<'value>(&mut self, value: &'value YamlVal, path: &mut Vec<IdentityPathPart<'value>>) {
         if let Some(alias) = value
             .meta()
             .and_then(|metadata| metadata.alias_of.as_deref())
@@ -756,7 +795,7 @@ impl IdentityInventory {
             self.aliases
                 .entry(alias.to_owned())
                 .or_default()
-                .push(path.clone());
+                .push(path.iter().map(IdentityPathPart::materialize).collect());
             return;
         }
         if let Some(anchor) = value.meta().and_then(|metadata| metadata.anchor.as_ref()) {
@@ -766,17 +805,17 @@ impl IdentityInventory {
         match &value.data {
             Data::Seq(items) => {
                 for (index, item) in items.iter().enumerate() {
-                    path.push(YamlVal::from(index));
+                    path.push(IdentityPathPart::Index(index));
                     self.visit(item, path);
                     path.pop();
                 }
             }
             Data::Map(mapping) => {
                 for (key, value) in &mapping.0 {
-                    path.push(YamlVal::map(vec![(YamlVal::str("$key"), key.clone())]));
+                    path.push(IdentityPathPart::MapKey(key));
                     self.visit(key, path);
                     path.pop();
-                    path.push(key.clone());
+                    path.push(IdentityPathPart::Key(key));
                     self.visit(value, path);
                     path.pop();
                 }
@@ -1208,7 +1247,12 @@ fn hash_number<H: Hasher>(value: f64, state: &mut H) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Data, YamlVal, YgMap, entries_are_shallow};
+    use std::rc::Rc;
+
+    use super::{
+        Data, IdentityInventory, Meta, YamlVal, YgMap, entries_are_shallow,
+        path_part_materializations, reset_path_part_materializations,
+    };
 
     fn mapping(value: &YamlVal) -> &YgMap {
         let Data::Map(mapping) = &value.data else {
@@ -1243,5 +1287,39 @@ mod tests {
 
         assert_eq!(mapping(&value).get_str("1"), Some(&YamlVal::str("string")));
         assert_eq!(mapping(&value).get_str("missing"), None);
+    }
+
+    #[test]
+    fn identity_inventory_materializes_paths_only_for_aliases() {
+        let alias_free = YamlVal::map(vec![
+            (YamlVal::str("first"), YamlVal::int(1)),
+            (YamlVal::str("second"), YamlVal::int(2)),
+        ]);
+
+        reset_path_part_materializations();
+        IdentityInventory::collect(&alias_free);
+        assert_eq!(path_part_materializations(), 0);
+
+        let alias = YamlVal::int(1).with_meta(Meta {
+            alias_of: Some(Rc::from("target")),
+            ..Meta::default()
+        });
+        let with_alias = YamlVal::map(vec![(
+            YamlVal::str("outer"),
+            YamlVal::seq(vec![YamlVal::map(vec![(YamlVal::str("inner"), alias)])]),
+        )]);
+
+        reset_path_part_materializations();
+        let inventory = IdentityInventory::collect(&with_alias);
+
+        assert_eq!(path_part_materializations(), 3);
+        assert_eq!(
+            inventory.aliases["target"],
+            vec![vec![
+                YamlVal::str("outer"),
+                YamlVal::int(0),
+                YamlVal::str("inner"),
+            ]]
+        );
     }
 }
