@@ -1,10 +1,15 @@
 ---
-status: accepted
+status: superseded
 date: 2026-03-08
 decision-makers: [Clay Loveless]
+superseded-by: [ADR-0010]
 ---
 
 # 0007: Resolver trait for composable event-stream middleware
+
+> Superseded by
+> [ADR-0010](../../record/decisions/0010-use-stateful-event-resolver-adapters.md),
+> which records the stateful event adapter implemented by the repository.
 
 ## Context and Problem Statement
 
