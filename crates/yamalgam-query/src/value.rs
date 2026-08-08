@@ -208,6 +208,9 @@ fn drop_values(values: impl IntoIterator<Item = YamlVal>) {
 
 impl YamlVal {
     pub(crate) fn check_depth(&self, limits: &yamalgam_core::ResourceLimits) -> Result<(), String> {
+        #[cfg(test)]
+        crate::record_depth_walk();
+
         let mut stack = vec![(self, 0_usize)];
         while let Some((value, depth)) = stack.pop() {
             limits.check_depth(depth)?;

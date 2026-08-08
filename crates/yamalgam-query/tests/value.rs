@@ -325,17 +325,22 @@ fn builder_enforces_collection_size_limit() {
 
 #[test]
 fn builder_enforces_resulting_alias_value_depth() {
-    let mut config = LoaderConfig::unchecked();
-    config.limits.max_depth = Some(3);
     let document = concat!("a: &a0 [0]\n", "b: &a1 [*a0]\n", "c: &a2 [*a1]\n",);
 
-    let error = parse_str_with_config(document, &config).unwrap_err();
+    let mut rejecting = LoaderConfig::unchecked();
+    rejecting.limits.max_depth = Some(3);
+    let error = parse_str_with_config(document, &rejecting).unwrap_err();
     let message = error.to_string();
-
     assert!(
         matches!(error, BuildError::Limit(message) if message.contains("depth")),
         "unexpected error: {message}"
     );
+
+    let mut accepting = LoaderConfig::unchecked();
+    accepting.limits.max_depth = Some(4);
+    let documents = parse_str_with_config(document, &accepting).unwrap();
+    let alias = &documents[0].get_str("c").unwrap().as_sequence().unwrap()[0];
+    assert_eq!(alias.meta().unwrap().alias_of.as_deref(), Some("a1"));
 }
 
 #[test]

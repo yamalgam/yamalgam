@@ -140,13 +140,15 @@ impl Documents<'_, '_> {
                             self.done = true;
                             Ok(Some(YamlVal::null()))
                         }
-                        Some(first) => Ok(Some(self.builder.node(first, &mut self.events, 0)?)),
+                        Some(first) => {
+                            Ok(Some(self.builder.node(first, &mut self.events, 0)?.value))
+                        }
                     };
                 }
                 Event::DocumentEnd { .. } => {}
                 first => {
                     self.builder.start_document();
-                    return Ok(Some(self.builder.node(first, &mut self.events, 0)?));
+                    return Ok(Some(self.builder.node(first, &mut self.events, 0)?.value));
                 }
             }
         }
@@ -172,9 +174,15 @@ impl<'input> Iterator for SemanticEvents<'input> {
     }
 }
 
+#[derive(Clone)]
+struct BuiltNode {
+    value: YamlVal,
+    subtree_height: usize,
+}
+
 struct Builder<'config> {
     config: &'config LoaderConfig,
-    anchors: HashMap<String, YamlVal>,
+    anchors: HashMap<String, BuiltNode>,
     alias_expansions: usize,
 }
 
@@ -197,7 +205,7 @@ impl<'config> Builder<'config> {
         first: Event<'input>,
         events: &mut impl Iterator<Item = Result<Event<'input>, ResolveError>>,
         depth: usize,
-    ) -> Result<YamlVal, BuildError> {
+    ) -> Result<BuiltNode, BuildError> {
         self.config
             .limits
             .check_depth(depth)
@@ -216,12 +224,13 @@ impl<'config> Builder<'config> {
             } => {
                 let raw: Rc<str> = Rc::from(value.as_ref());
                 let data = self.resolve_scalar(Rc::clone(&raw), style, tag.as_deref());
-                self.finish(data, anchor, tag, NodeStyle::Scalar(style), Some(raw))
+                self.finish(data, anchor, tag, NodeStyle::Scalar(style), Some(raw), 0)
             }
             Event::SequenceStart {
                 anchor, tag, style, ..
             } => {
                 let mut items = Vec::new();
+                let mut max_child_height = None;
                 loop {
                     let event = next_event(events)?;
                     if matches!(event, Event::SequenceEnd { .. }) {
@@ -235,7 +244,13 @@ impl<'config> Builder<'config> {
                         .limits
                         .check_collection_size(size)
                         .map_err(BuildError::Limit)?;
-                    items.push(self.node(event, events, depth + 1)?);
+                    let child = self.node(event, events, child_depth(depth)?)?;
+                    max_child_height = Some(
+                        max_child_height.map_or(child.subtree_height, |height: usize| {
+                            height.max(child.subtree_height)
+                        }),
+                    );
+                    items.push(child.value);
                 }
                 self.finish(
                     Data::Seq(Rc::new(YgSeq(items))),
@@ -243,12 +258,14 @@ impl<'config> Builder<'config> {
                     tag,
                     NodeStyle::Collection(style),
                     None,
+                    collection_height(max_child_height)?,
                 )
             }
             Event::MappingStart {
                 anchor, tag, style, ..
             } => {
                 let mut map = YgMap::default();
+                let mut entry_heights: Vec<(usize, usize)> = Vec::new();
                 let mut entries = 0usize;
                 loop {
                     let event = next_event(events)?;
@@ -262,18 +279,28 @@ impl<'config> Builder<'config> {
                         .limits
                         .check_collection_size(entries)
                         .map_err(BuildError::Limit)?;
-                    let mut key = self.node(event, events, depth + 1)?;
-                    self.tag_merge_key(&mut key);
+                    let entry_depth = child_depth(depth)?;
+                    let mut key = self.node(event, events, entry_depth)?;
+                    self.tag_merge_key(&mut key.value);
                     let value_event = next_event(events)?;
-                    let value = self.node(value_event, events, depth + 1)?;
-                    map.0.insert(key, value);
+                    let value = self.node(value_event, events, entry_depth)?;
+
+                    if let Some(index) = map.0.get_index_of(&key.value) {
+                        map.0.insert(key.value, value.value);
+                        entry_heights[index].1 = value.subtree_height;
+                    } else {
+                        map.0.insert(key.value, value.value);
+                        entry_heights.push((key.subtree_height, value.subtree_height));
+                    }
                 }
+                let max_child_height = entry_heights.into_iter().flat_map(<[_; 2]>::from).max();
                 self.finish(
                     Data::Map(Rc::new(map)),
                     anchor,
                     tag,
                     NodeStyle::Collection(style),
                     None,
+                    collection_height(max_child_height)?,
                 )
             }
             Event::Alias { name, span } => {
@@ -283,16 +310,24 @@ impl<'config> Builder<'config> {
                     .check_alias_expansions(self.alias_expansions)
                     .map_err(BuildError::Limit)?;
 
-                let mut value = self.anchors.get(name.as_ref()).cloned().ok_or_else(|| {
+                let mut node = self.anchors.get(name.as_ref()).cloned().ok_or_else(|| {
                     BuildError::UnknownAlias {
                         name: name.to_string(),
                         span,
                     }
                 })?;
-                let meta = value.meta_mut();
+                let materialized_depth = depth
+                    .checked_add(node.subtree_height)
+                    .ok_or_else(|| BuildError::Limit("value depth overflow".into()))?;
+                self.config
+                    .limits
+                    .check_depth(materialized_depth)
+                    .map_err(BuildError::Limit)?;
+
+                let meta = node.value.meta_mut();
                 meta.anchor = None;
                 meta.alias_of = Some(Rc::from(name.as_ref()));
-                Ok(value)
+                Ok(node)
             }
             unexpected => Err(BuildError::Invariant(format!(
                 "unexpected parser event while building a node: {unexpected:?}"
@@ -321,7 +356,8 @@ impl<'config> Builder<'config> {
         tag: Option<Cow<'_, str>>,
         style: NodeStyle,
         raw: Option<Rc<str>>,
-    ) -> Result<YamlVal, BuildError> {
+        subtree_height: usize,
+    ) -> Result<BuiltNode, BuildError> {
         let meta = Meta {
             tag: tag.as_deref().map(Rc::from),
             anchor: anchor.as_deref().map(Rc::from),
@@ -329,19 +365,26 @@ impl<'config> Builder<'config> {
             style: Some(style),
             raw,
         };
-        let node = YamlVal {
-            data,
-            meta: Some(Rc::new(meta)),
+        let node = BuiltNode {
+            value: YamlVal {
+                data,
+                meta: Some(Rc::new(meta)),
+            },
+            subtree_height,
         };
-        node.check_depth(&self.config.limits)
-            .map_err(BuildError::Limit)?;
 
         if let Some(name) = anchor {
-            self.anchors.insert(name.into_owned(), node.clone());
+            let additional = usize::from(!self.anchors.contains_key(name.as_ref()));
+            let anchor_count = self
+                .anchors
+                .len()
+                .checked_add(additional)
+                .ok_or_else(|| BuildError::Limit("anchor count overflow".into()))?;
             self.config
                 .limits
-                .check_anchor_count(self.anchors.len())
+                .check_anchor_count(anchor_count)
                 .map_err(BuildError::Limit)?;
+            self.anchors.insert(name.into_owned(), node.clone());
         }
 
         Ok(node)
@@ -358,6 +401,20 @@ impl<'config> Builder<'config> {
             key.meta_mut().tag = Some(Rc::from("tag:yaml.org,2002:merge"));
         }
     }
+}
+
+fn child_depth(depth: usize) -> Result<usize, BuildError> {
+    depth
+        .checked_add(1)
+        .ok_or_else(|| BuildError::Limit("value depth overflow".into()))
+}
+
+fn collection_height(max_child_height: Option<usize>) -> Result<usize, BuildError> {
+    max_child_height.map_or(Ok(0), |height| {
+        height
+            .checked_add(1)
+            .ok_or_else(|| BuildError::Limit("value depth overflow".into()))
+    })
 }
 
 fn next_optional_event<'input>(
@@ -429,6 +486,102 @@ fn resolve_yaml12_non_string(text: &str) -> Option<Data> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{depth_walk_calls, reset_depth_walk_calls};
+
+    fn parse_with_builder_config(
+        input: &str,
+        config: &LoaderConfig,
+    ) -> Result<Vec<YamlVal>, BuildError> {
+        let parser = Parser::with_config(input, &LoaderConfig::unchecked());
+        Documents {
+            events: SemanticEvents {
+                inner: Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            },
+            builder: Builder::new(config),
+            done: false,
+        }
+        .collect()
+    }
+
+    #[test]
+    fn builder_does_not_rewalk_completed_values() {
+        reset_depth_walk_calls();
+
+        let documents = parse_str(concat!(
+            "a: &a0 [0]\n",
+            "b: &a1 [*a0]\n",
+            "c: {nested: [*a1]}\n",
+        ))
+        .expect("nested aliases should parse");
+
+        assert_eq!(documents.len(), 1);
+        assert_eq!(depth_walk_calls(), 0, "builder rewalked a completed value");
+    }
+
+    #[test]
+    fn builder_treats_anchored_empty_collections_as_height_zero() {
+        let document = concat!(
+            "empty_seq: &seq []\n",
+            "empty_map: &map {}\n",
+            "seq_use: [[*seq]]\n",
+            "map_use: [[*map]]\n",
+        );
+        let mut config = LoaderConfig::unchecked();
+        config.limits.max_depth = Some(3);
+
+        assert!(parse_with_builder_config(document, &config).is_ok());
+    }
+
+    #[test]
+    fn builder_counts_mapping_key_and_value_heights() {
+        for document in [
+            "base: &base {[0]: 1}\nuse: [*base]\n",
+            "base: &base {key: [0]}\nuse: [*base]\n",
+        ] {
+            let mut rejecting = LoaderConfig::unchecked();
+            rejecting.limits.max_depth = Some(3);
+            assert!(matches!(
+                parse_with_builder_config(document, &rejecting),
+                Err(BuildError::Limit(message)) if message.contains("depth")
+            ));
+
+            let mut accepting = LoaderConfig::unchecked();
+            accepting.limits.max_depth = Some(4);
+            assert!(parse_with_builder_config(document, &accepting).is_ok());
+        }
+    }
+
+    #[test]
+    fn builder_height_ignores_overwritten_mapping_values() {
+        let document = "base: &base {key: [[0]], key: 1}\nuse: [[*base]]\n";
+        let mut config = LoaderConfig::unchecked();
+        config.limits.max_depth = Some(4);
+
+        let documents = parse_with_builder_config(document, &config).unwrap();
+        assert_eq!(
+            documents[0].get_str("base").unwrap().get_str("key"),
+            Some(&YamlVal::int(1))
+        );
+    }
+
+    #[test]
+    fn builder_redefines_anchor_value_and_height_without_growing_count() {
+        let document = concat!("old: &same [[0]]\n", "new: &same 1\n", "use: [[*same]]\n",);
+        let mut config = LoaderConfig::unchecked();
+        config.limits.max_depth = Some(3);
+        config.limits.max_anchor_count = Some(1);
+
+        let documents = parse_with_builder_config(document, &config).unwrap();
+        let alias = &documents[0].get_str("use").unwrap().as_sequence().unwrap()[0]
+            .as_sequence()
+            .unwrap()[0];
+        assert_eq!(alias, &YamlVal::int(1));
+        assert_eq!(alias.meta().unwrap().alias_of.as_deref(), Some("same"));
+
+        let error = parse_with_builder_config(&format!("{document}other: &other 2\n"), &config)
+            .unwrap_err();
+        assert!(matches!(error, BuildError::Limit(message) if message.contains("anchor count")));
+    }
 
     #[test]
     fn string_scalars_share_resolved_and_raw_allocation() {

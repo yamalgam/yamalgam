@@ -17,6 +17,26 @@
 // r[impl ext]
 // r[impl phases]
 
+#[cfg(test)]
+thread_local! {
+    static DEPTH_WALK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_depth_walk() {
+    DEPTH_WALK_CALLS.set(DEPTH_WALK_CALLS.get().saturating_add(1));
+}
+
+#[cfg(test)]
+fn reset_depth_walk_calls() {
+    DEPTH_WALK_CALLS.set(0);
+}
+
+#[cfg(test)]
+fn depth_walk_calls() -> usize {
+    DEPTH_WALK_CALLS.get()
+}
+
 pub mod build;
 pub mod emit;
 pub mod engine;
