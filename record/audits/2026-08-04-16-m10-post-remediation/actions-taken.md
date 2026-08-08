@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 13
+  fixed: 14
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 14
+  open: 13
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -270,5 +270,26 @@ slot. Regressions prove the builder performs zero whole-tree depth walks and
 cover exact boundaries for nested aliases, empty collections, mapping keys and
 values, duplicate replacement, and anchor redefinition. All 126 query tests and
 the full repository check pass.
+
+---
+
+## 2026-08-08 — Serde peek clones removed
+
+**Disposition:** fixed
+**Addresses:** [serde-peek-clones-owned-event](README.md#serde-peek-clones-owned-event)
+**Commit:** fd023914d307b0e1cb2a218622afa9cb916ac7f1
+**Author:** Codex
+
+Unit deserialization now reduces a borrowed peek to a one-byte copyable
+discriminant before consuming the original event. Null probing temporarily
+moves the next event and restores it to the replay buffer, and enum
+deserialization consumes its event directly. `EnumAccess` moves the variant
+name into serde's seed instead of cloning the `Cow` and retains only the state
+needed for variant payload access.
+
+The former peek-clone-consume and scalar-Cow clone patterns are absent. A
+custom resolver regression forces owned scalar payloads through unit, null and
+non-null option, and enum paths, while the existing borrowed-string and anchor
+coverage remains green. All 140 serde tests and the full repository check pass.
 
 ---
