@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 11
+  fixed: 12
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 16
+  open: 15
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -220,5 +220,30 @@ source position, leaving the visible dash and colon spans owned solely by
 both boundaries. The complete round-trip allowlist was removed, all 351 valid
 YAML Test Suite documents now round-trip byte-for-byte, and the full repository
 check passes 1,896 tests plus clippy, dependency policy, and doc tests.
+
+---
+
+## 2026-08-08 — Resolver middleware exposed across consumers
+
+**Disposition:** fixed
+**Addresses:** [resolver-middleware-cannot-reach-most-documented-consumers](README.md#resolver-middleware-cannot-reach-most-documented-consumers)
+**Commit:** 99d1983099cf6c5cf02c15fa4ddb275d27d1fdf5
+**Author:** Codex
+
+The parser's stateful event resolver now receives the selected loader
+configuration, preserves structured resolver errors, and feeds shared public
+resolver-aware entry points in composer, serde, CST, and query. Existing
+resolver implementations remain source-compatible, ordinary constructors use
+the no-op resolver, and configured and explicitly unchecked paths pass their
+exact policy to middleware. ADR-0010 records the implemented callback-and-
+adapter contract and supersedes the earlier stream-transformer design.
+
+CST resolver paths retain the complete original source under suppression,
+expansion, reordering, failure, and invalid visible spans. Nonzero spans are
+validated for ordering, source bounds, and UTF-8 boundaries before slicing or
+advancing byte coverage, while zero-width synthetic events remain supported.
+Regressions cover every downstream consumer, exact configuration propagation,
+typed failures, and lossless CST behavior. The full repository check and all
+351 YAML Test Suite compliance cases pass.
 
 ---
