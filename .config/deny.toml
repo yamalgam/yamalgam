@@ -35,11 +35,18 @@ allow = [
     "CDLA-Permissive-2.0",  # webpki-roots (Mozilla root certificates)
 ]
 
+# libfuzzer-sys combines the project-standard MIT/Apache terms with the NCSA
+# license for LLVM's libFuzzer runtime. Keep that allowance crate-specific.
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
+
 # How to handle license detection confidence
 confidence-threshold = 0.8
 
 # Don't warn about licenses in allow list that aren't currently used
 unused-allowed-license = "allow"
+unused-license-exception = "allow"
 
 # ==============================================================================
 # Security Advisories - Vulnerability Management

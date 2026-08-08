@@ -19,7 +19,8 @@ fix:
 
 # Check dependencies for security advisories and license compliance
 deny:
-  cargo deny --all-features --config .config/deny.toml check
+  cargo deny --all-features --locked --config .config/deny.toml check
+  cargo deny --manifest-path fuzz/Cargo.toml --all-features --locked --config .config/deny.toml check
 
 # Compiler-derived unsafe census for the shipped yg dependency graph.
 unsafe-census:
@@ -186,7 +187,7 @@ release-check:
     # Security/license check
     echo ""
     echo "🔐 Running cargo-deny..."
-    cargo deny --all-features --config .config/deny.toml check
+    just deny
     echo "✅ Dependencies OK"
     # Build release
     echo ""
