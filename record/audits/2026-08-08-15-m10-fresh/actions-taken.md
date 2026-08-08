@@ -2,12 +2,12 @@
 audit: 2026-08-08-15-m10-fresh
 last_updated: 2026-08-08
 status:
-  fixed: 4
+  fixed: 5
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 1
+  open: 0
 ---
 
 # Actions Taken: Full Repository Static Audit
@@ -94,3 +94,27 @@ their public propagation paths, including jaq runtime operations and nested
 scanner/parser context. `just check` passed with 1,932 tests, Clippy with
 warnings denied, both Cargo Deny graphs, formatting, and doc tests. Independent
 code review returned PASS.
+
+---
+
+## 2026-08-08 — Preserve scalar presentation metadata
+
+**Disposition:** fixed
+**Addresses:** [scanner-never-populates-atom-presentation-metadata](README.md#scanner-never-populates-atom-presentation-metadata)
+**Commit:** `b9d2407d0ae9c0ecd47b213be5989f880c888d1e`
+**Author:** Codex
+
+The scanner now records block chomping modes and derives scalar content and
+scan-context flags, including safe direct-output eligibility. Parser events and
+query values preserve that metadata through their public boundaries. The YAML
+emitter consumes block chomp and direct-output metadata while normalizing stale
+public metadata whenever preserving it would change the scalar value. ADR-0002's
+confirmation now points to the deterministic regressions that enforce this
+contract.
+
+Verification: regressions cover strip, clip, and keep chomping; empty and
+line-break-only block scalars; whitespace and escape flags; parser and query
+propagation; direct-output styles; and semantic emit/reparse equality. `just
+check` passed with 1,939 tests, Clippy with warnings denied, both Cargo Deny
+graphs, formatting, and doc tests. ADR lint passed. Independent code review
+returned PASS.
