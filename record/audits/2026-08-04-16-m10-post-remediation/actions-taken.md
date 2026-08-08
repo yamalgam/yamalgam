@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 12
+  fixed: 13
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 15
+  open: 14
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -245,5 +245,30 @@ advancing byte coverage, while zero-width synthetic events remain supported.
 Regressions cover every downstream consumer, exact configuration propagation,
 typed failures, and lossless CST behavior. The full repository check and all
 351 YAML Test Suite compliance cases pass.
+
+---
+
+## 2026-08-08 — Query builder subtree heights cached
+
+**Disposition:** fixed
+**Addresses:** [query-builder-rewalks-every-completed-node](README.md#query-builder-rewalks-every-completed-node)
+**Commit:** 6ffeac4ef775036eefedbec282643adb6013a105
+**Author:** Codex
+
+The private query builder now carries each completed value's subtree height
+through the existing recursive build. Scalars and empty collections have
+height zero; nonempty sequences and mappings derive height from their surviving
+children with checked arithmetic. Anchors cache the value-height pair, so an
+alias validates its placement depth plus the cached target height without
+allocating a traversal stack or revisiting completed descendants.
+
+Mapping height bookkeeping remains aligned with final `IndexMap` entries:
+duplicate keys retain the original key height and replace the value height, so
+overwritten values cannot cause false depth failures. Same-name anchor
+redefinition replaces both value and height without consuming another anchor
+slot. Regressions prove the builder performs zero whole-tree depth walks and
+cover exact boundaries for nested aliases, empty collections, mapping keys and
+values, duplicate replacement, and anchor redefinition. All 126 query tests and
+the full repository check pass.
 
 ---
