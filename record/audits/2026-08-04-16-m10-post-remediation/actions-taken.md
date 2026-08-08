@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 15
+  fixed: 16
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 12
+  open: 11
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -311,5 +311,24 @@ A regression uses a resolver borrowing a stack-local lookup table through both
 the bounded and explicitly unchecked custom entry points. All 58 composer tests,
 workspace clippy, and the full repository check with 1,918 tests pass. The
 change is a private storage and public-bound refinement, so no ADR was needed.
+
+---
+
+## 2026-08-08 — Mapping iteration standardized
+
+**Disposition:** fixed
+**Addresses:** [mapping-omits-intoiterator](README.md#mapping-omits-intoiterator)
+**Commit:** e24479a23bfeeb8dc04d8cba28a81ccb19f79e61
+**Author:** Codex
+
+`Mapping` now implements `IntoIterator` for owned, shared-borrowed, and
+mutable-borrowed values while preserving insertion order. Mutable iteration
+exposes immutable keys and mutable values, matching standard map behavior and
+preventing callers from invalidating the private scalar-key side index.
+
+Regression coverage consumes a mapping, borrows it in a standard loop, mutates
+values through `&mut Mapping`, and verifies indexed lookup remains correct.
+All 68 core tests, workspace clippy, and the full repository check with 1,919
+tests pass. This standard trait addition did not require an ADR.
 
 ---
