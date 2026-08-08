@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 21
+  fixed: 22
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 6
+  open: 5
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -430,5 +430,27 @@ The focused serde doc-test run passes one test with zero ignored, and the full
 repository check passes 1,926 workspace tests plus all doc tests. Independent
 review confirmed the example is complete, public, and idiomatic. This
 documentation test correction did not require an ADR.
+
+---
+
+## 2026-08-08 — Identity paths materialized on demand
+
+**Disposition:** fixed
+**Addresses:** [identity-inventory-allocates-path-node-per-map-key](README.md#identity-inventory-allocates-path-node-per-map-key)
+**Commit:** c40f99da91299b1565bea3c82f87ba47be61d494
+**Author:** Codex
+
+Identity inventory traversal now keeps sequence indices and borrowed mapping
+keys in a reusable private path-part vector. It materializes the public
+`YamlVal` path encoding only when an alias is actually recorded, preserving
+numeric indices, ordinary mapping-key components, and the existing
+`{"$key": key}` encoding for aliases encountered in key position.
+
+A test-only counter proves alias-free mapping traversal materializes zero path
+nodes and that a nested encountered alias materializes exactly its three output
+components. Existing mapping-key alias coverage preserves the public format.
+All 128 query tests, workspace clippy, and the full repository check with 1,927
+tests pass. Independent review confirmed the borrowed lifetimes and traversal
+semantics. This private hot-path refactor did not require an ADR.
 
 ---
