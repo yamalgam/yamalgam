@@ -2,10 +2,11 @@
 
 use yamalgam_core::{ResourceLimits, TagResolution};
 use yamalgam_query::{
-    EmitError, EmitFormat, EmitOpts, YamlVal,
+    EmitError, EmitFormat, EmitOpts, Meta, NodeStyle, ScalarPresentation, YamlVal,
     emit::{emit, to_json, to_yaml},
     parse_str,
 };
+use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle};
 
 #[test]
 fn emit_dispatches_by_format() {
@@ -245,6 +246,56 @@ fn yaml_multiline_strings_use_literal_blocks() {
         to_yaml(&value, &EmitOpts::default()).unwrap(),
         "key: |\n  line1\n  line2\n"
     );
+}
+
+#[test]
+fn yaml_preserves_block_scalar_chomp_modes() {
+    for source in [
+        "|-\n",
+        "|\n",
+        "|+\n",
+        "|+\n\n",
+        "|-\n  line\n",
+        "|\n  line\n",
+        "|+\n  line\n\n",
+    ] {
+        let value = parse_str(source).unwrap().remove(0);
+        assert_eq!(
+            to_yaml(&value, &EmitOpts::default()).unwrap(),
+            source,
+            "source: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn yaml_chomp_normalization_never_changes_scalar_content() {
+    for (text, requested, expected) in [
+        ("line", Chomp::Keep, "|-\n  line\n"),
+        ("\n", Chomp::Clip, "|+\n\n"),
+    ] {
+        let value = YamlVal::str(text).with_meta(Meta {
+            style: Some(NodeStyle::Scalar(ScalarStyle::Literal)),
+            raw: Some(text.into()),
+            scalar_presentation: Some(ScalarPresentation {
+                chomp: requested,
+                flags: AtomFlags::empty(),
+            }),
+            ..Meta::default()
+        });
+        let emitted = to_yaml(&value, &EmitOpts::default()).unwrap();
+
+        assert_eq!(emitted, expected);
+        assert_eq!(parse_str(&emitted).unwrap(), vec![value]);
+    }
+}
+
+#[test]
+fn yaml_preserves_direct_output_scalar_styles() {
+    for source in ["plain\n", "'1'\n", "\"hello world\"\n"] {
+        let value = parse_str(source).unwrap().remove(0);
+        assert_eq!(to_yaml(&value, &EmitOpts::default()).unwrap(), source);
+    }
 }
 
 #[test]

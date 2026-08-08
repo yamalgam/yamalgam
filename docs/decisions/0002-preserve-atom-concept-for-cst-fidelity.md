@@ -38,7 +38,10 @@ The Rust representation uses `bitflags` instead of 24 bare booleans, enums inste
 
 ### Confirmation
 
-We verify atom metadata correctness through the comparison MCP server: for each YAML Test Suite case, the token snapshots include style, chomp, and flag values, compared against libfyaml's output.
+The comparison MCP plan in ADR-0003 was later deprecated. Deterministic scanner
+regressions now verify chomp and flag derivation, parser regressions verify that
+metadata survives the event boundary, and query regressions verify value-layer
+propagation plus emitter use of block chomp and `DIRECT_OUTPUT` metadata.
 
 ## Pros and Cons of the Options
 

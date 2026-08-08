@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use indexmap::{Equivalent, IndexMap, IndexSet};
 use yamalgam_parser::CollectionStyle;
-use yamalgam_scanner::ScalarStyle;
+use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle};
 
 /// Presentation style of a YAML node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +15,15 @@ pub enum NodeStyle {
     Scalar(ScalarStyle),
     /// Collection presentation as block or flow.
     Collection(CollectionStyle),
+}
+
+/// Scanner-derived presentation metadata for a scalar node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScalarPresentation {
+    /// Block scalar chomping mode.
+    pub chomp: Chomp,
+    /// Content and scanner-context flags.
+    pub flags: AtomFlags,
 }
 
 /// YAML node metadata, excluded from resolved equality, ordering, and hashing.
@@ -31,6 +40,8 @@ pub struct Meta {
     pub style: Option<NodeStyle>,
     /// Raw scalar text before schema resolution.
     pub raw: Option<Rc<str>>,
+    /// Scanner-derived metadata for scalar nodes.
+    pub scalar_presentation: Option<ScalarPresentation>,
 }
 
 /// Order-preserving YAML mapping with order-sensitive equality.
@@ -371,6 +382,7 @@ impl YamlVal {
             metadata.anchor = None;
             metadata.alias_of = None;
             metadata.raw = None;
+            metadata.scalar_presentation = None;
         }
         &mut self.data
     }
@@ -564,7 +576,9 @@ impl YamlVal {
                 )));
             }
         };
-        self.meta_mut().style = Some(style);
+        let metadata = self.meta_mut();
+        metadata.style = Some(style);
+        metadata.scalar_presentation = None;
         Ok(self)
     }
 

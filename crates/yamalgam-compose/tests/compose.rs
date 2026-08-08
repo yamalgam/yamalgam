@@ -8,6 +8,7 @@ use yamalgam_compose::{Composer, from_str, from_str_single};
 use yamalgam_core::{LoaderConfig, Value};
 use yamalgam_parser::resolve::smallvec;
 use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
+use yamalgam_scanner::AtomFlags;
 
 #[test]
 fn parse_simple_mapping() {
@@ -89,7 +90,9 @@ impl<'input> Resolver<'input> for UppercaseResolver {
                 tag,
                 value,
                 style,
+                chomp,
                 span,
+                ..
             } => {
                 let upper = value.to_uppercase();
                 Ok(smallvec![Event::Scalar {
@@ -97,6 +100,8 @@ impl<'input> Resolver<'input> for UppercaseResolver {
                     tag,
                     value: Cow::Owned(upper),
                     style,
+                    chomp,
+                    flags: AtomFlags::empty(),
                     span,
                 }])
             }

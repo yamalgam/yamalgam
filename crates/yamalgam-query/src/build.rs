@@ -14,7 +14,7 @@ use yamalgam_parser::{
 use yamalgam_scanner::ScalarStyle;
 
 use crate::error::BuildError;
-use crate::value::{Data, Meta, NodeStyle, YamlVal, YgMap, YgSeq};
+use crate::value::{Data, Meta, NodeStyle, ScalarPresentation, YamlVal, YgMap, YgSeq};
 
 fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
     result.map_err(ResolveError::Parse)
@@ -182,6 +182,12 @@ struct BuiltNode {
     subtree_height: usize,
 }
 
+struct Presentation {
+    style: NodeStyle,
+    raw: Option<Rc<str>>,
+    scalar: Option<ScalarPresentation>,
+}
+
 struct Builder<'config> {
     config: &'config LoaderConfig,
     anchors: HashMap<String, BuiltNode>,
@@ -222,11 +228,23 @@ impl<'config> Builder<'config> {
                 tag,
                 value,
                 style,
+                chomp,
+                flags,
                 ..
             } => {
                 let raw: Rc<str> = Rc::from(value.as_ref());
                 let data = self.resolve_scalar(Rc::clone(&raw), style, tag.as_deref());
-                self.finish(data, anchor, tag, NodeStyle::Scalar(style), Some(raw), 0)
+                self.finish(
+                    data,
+                    anchor,
+                    tag,
+                    Presentation {
+                        style: NodeStyle::Scalar(style),
+                        raw: Some(raw),
+                        scalar: Some(ScalarPresentation { chomp, flags }),
+                    },
+                    0,
+                )
             }
             Event::SequenceStart {
                 anchor, tag, style, ..
@@ -258,8 +276,11 @@ impl<'config> Builder<'config> {
                     Data::Seq(Rc::new(YgSeq(items))),
                     anchor,
                     tag,
-                    NodeStyle::Collection(style),
-                    None,
+                    Presentation {
+                        style: NodeStyle::Collection(style),
+                        raw: None,
+                        scalar: None,
+                    },
                     collection_height(max_child_height)?,
                 )
             }
@@ -300,8 +321,11 @@ impl<'config> Builder<'config> {
                     Data::Map(Rc::new(map)),
                     anchor,
                     tag,
-                    NodeStyle::Collection(style),
-                    None,
+                    Presentation {
+                        style: NodeStyle::Collection(style),
+                        raw: None,
+                        scalar: None,
+                    },
                     collection_height(max_child_height)?,
                 )
             }
@@ -359,16 +383,16 @@ impl<'config> Builder<'config> {
         data: Data,
         anchor: Option<Cow<'_, str>>,
         tag: Option<Cow<'_, str>>,
-        style: NodeStyle,
-        raw: Option<Rc<str>>,
+        presentation: Presentation,
         subtree_height: usize,
     ) -> Result<BuiltNode, BuildError> {
         let meta = Meta {
             tag: tag.as_deref().map(Rc::from),
             anchor: anchor.as_deref().map(Rc::from),
             alias_of: None,
-            style: Some(style),
-            raw,
+            style: Some(presentation.style),
+            raw: presentation.raw,
+            scalar_presentation: presentation.scalar,
         };
         let node = BuiltNode {
             value: YamlVal {

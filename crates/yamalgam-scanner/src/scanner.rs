@@ -31,6 +31,13 @@ enum State {
     Done,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ScalarMetadata {
+    chomp: Chomp,
+    has_escape: bool,
+    chomp_explicit: bool,
+}
+
 /// Error type for scanner failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanError {
@@ -316,21 +323,50 @@ impl<'input> Scanner<'input> {
         }
     }
 
-    /// Build a scalar token with owned or borrowed data and explicit style.
+    /// Build a scalar token with content and scanner-derived presentation metadata.
     fn scalar_token(
+        &self,
         data: Cow<'input, str>,
         style: ScalarStyle,
+        metadata: ScalarMetadata,
         start: yamalgam_core::Mark,
         end: yamalgam_core::Mark,
     ) -> Token<'input> {
+        let mut flags = scalar_content_flags(&data);
+        let multiline = end.line > start.line;
+        if multiline {
+            flags |= AtomFlags::IS_MULTILINE;
+        }
+        if end.offset == self.reader.input().len() {
+            flags |= AtomFlags::ENDS_WITH_EOF;
+        }
+        if metadata.has_escape {
+            flags |= AtomFlags::HAS_ESC;
+        }
+        if metadata.chomp_explicit {
+            flags |= AtomFlags::CHOMP_EXPLICIT;
+        }
+        if style == ScalarStyle::Plain && data == "<<" {
+            flags |= AtomFlags::IS_MERGE_KEY;
+        }
+        if style == ScalarStyle::Plain && multiline {
+            flags |= AtomFlags::SIMPLE_KEY_ALLOWED;
+        }
+        if !matches!(style, ScalarStyle::Literal | ScalarStyle::Folded)
+            && !multiline
+            && matches!(&data, Cow::Borrowed(_))
+        {
+            flags |= AtomFlags::DIRECT_OUTPUT;
+        }
+
         Token {
             kind: TokenKind::Scalar,
             atom: Atom {
                 data,
                 span: Span { start, end },
                 style,
-                chomp: Chomp::default(),
-                flags: AtomFlags::empty(),
+                chomp: metadata.chomp,
+                flags,
             },
         }
     }
@@ -1619,7 +1655,17 @@ impl<'input> Scanner<'input> {
             return;
         }
 
-        let scalar = Self::scalar_token(text, ScalarStyle::Plain, start_mark, end_mark);
+        let scalar = self.scalar_token(
+            text,
+            ScalarStyle::Plain,
+            ScalarMetadata {
+                chomp: Chomp::Clip,
+                has_escape: false,
+                chomp_explicit: false,
+            },
+            start_mark,
+            end_mark,
+        );
         let id = self.enqueue(scalar);
         self.save_simple_key_full(id, start_mark, content_end_line, false);
         // Multi-line plain scalars consume newlines internally. In block
@@ -1847,15 +1893,18 @@ impl<'input> Scanner<'input> {
 
         // Parse header: optional chomp and/or indent digit (either order).
         let mut chomp = Chomp::Clip;
+        let mut chomp_explicit = false;
         let mut explicit_indent: Option<usize> = None;
         for _ in 0..2 {
             match self.reader.peek() {
                 Some('+') => {
                     chomp = Chomp::Keep;
+                    chomp_explicit = true;
                     self.reader.advance();
                 }
                 Some('-') => {
                     chomp = Chomp::Strip;
+                    chomp_explicit = true;
                     self.reader.advance();
                 }
                 Some(c) if c.is_ascii_digit() && c != '0' => {
@@ -2028,7 +2077,17 @@ impl<'input> Scanner<'input> {
         } else {
             ScalarStyle::Folded
         };
-        let scalar = Self::scalar_token(Cow::Owned(content), style, start_mark, end_mark);
+        let scalar = self.scalar_token(
+            Cow::Owned(content),
+            style,
+            ScalarMetadata {
+                chomp,
+                has_escape: false,
+                chomp_explicit,
+            },
+            start_mark,
+            end_mark,
+        );
         self.enqueue(scalar);
         // Block scalars always end at a line boundary, so the next token
         // on the new line can be a simple key.
@@ -2211,7 +2270,7 @@ impl<'input> Scanner<'input> {
             return;
         }
 
-        self.push_quoted_scalar(data, ScalarStyle::SingleQuoted, start_mark, end_mark);
+        self.push_quoted_scalar(data, ScalarStyle::SingleQuoted, false, start_mark, end_mark);
     }
 
     /// Fetch a double-quoted scalar (`"..."`), processing escape sequences.
@@ -2259,6 +2318,7 @@ impl<'input> Scanner<'input> {
 
         let mut result = String::new();
         let mut needs_owned = false;
+        let mut has_escape = false;
         // Byte offset into `result` below which content is protected from
         // trailing-whitespace stripping.  Escape sequences like `\t` produce
         // content characters that must survive line-fold trimming (YAML §6.1).
@@ -2279,6 +2339,7 @@ impl<'input> Scanner<'input> {
                 }
                 Some('\\') => {
                     needs_owned = true;
+                    has_escape = true;
                     self.reader.advance(); // skip backslash
                     match self.reader.peek() {
                         Some('\\') => {
@@ -2507,7 +2568,13 @@ impl<'input> Scanner<'input> {
             return;
         }
 
-        self.push_quoted_scalar(data, ScalarStyle::DoubleQuoted, start_mark, end_mark);
+        self.push_quoted_scalar(
+            data,
+            ScalarStyle::DoubleQuoted,
+            has_escape,
+            start_mark,
+            end_mark,
+        );
     }
 
     fn push_unicode_escape(&mut self, output: &mut String, digits: usize) -> bool {
@@ -2574,10 +2641,21 @@ impl<'input> Scanner<'input> {
         &mut self,
         data: Cow<'input, str>,
         style: ScalarStyle,
+        has_escape: bool,
         start_mark: yamalgam_core::Mark,
         end_mark: yamalgam_core::Mark,
     ) {
-        let scalar = Self::scalar_token(data, style, start_mark, end_mark);
+        let scalar = self.scalar_token(
+            data,
+            style,
+            ScalarMetadata {
+                chomp: Chomp::Clip,
+                has_escape,
+                chomp_explicit: false,
+            },
+            start_mark,
+            end_mark,
+        );
         let id = self.enqueue(scalar);
         self.save_simple_key_ext(id, start_mark, true);
         // Multi-line quoted scalars consume newlines internally.
@@ -2924,6 +3002,60 @@ impl<'input> Scanner<'input> {
             self.fetch_plain_scalar();
         }
     }
+}
+
+/// Derive flags that describe the processed scalar content.
+fn scalar_content_flags(content: &str) -> AtomFlags {
+    let mut flags = AtomFlags::empty();
+    if content.is_empty() {
+        return AtomFlags::SIZE0;
+    }
+
+    let first = content.chars().next().expect("non-empty scalar");
+    let last = content.chars().next_back().expect("non-empty scalar");
+    let has_line_break = content.chars().any(is_linebreak);
+    let has_whitespace = content
+        .chars()
+        .any(|character| matches!(character, ' ' | '\t'));
+
+    if has_line_break {
+        flags |= AtomFlags::HAS_LB;
+    }
+    if has_whitespace {
+        flags |= AtomFlags::HAS_WS;
+    }
+    if matches!(first, ' ' | '\t') {
+        flags |= AtomFlags::STARTS_WITH_WS;
+    }
+    if is_linebreak(first) {
+        flags |= AtomFlags::STARTS_WITH_LB;
+    }
+    if matches!(last, ' ' | '\t') {
+        flags |= AtomFlags::ENDS_WITH_WS;
+    }
+    if is_linebreak(last) {
+        flags |= AtomFlags::ENDS_WITH_LB;
+    }
+    if content
+        .chars()
+        .rev()
+        .take_while(|&c| is_linebreak(c))
+        .count()
+        > 1
+    {
+        flags |= AtomFlags::TRAILING_LB;
+    }
+    if content
+        .chars()
+        .all(|character| matches!(character, ' ' | '\t') || is_linebreak(character))
+    {
+        flags |= AtomFlags::EMPTY;
+    }
+    if !content.is_ascii() {
+        flags |= AtomFlags::HIGH_ASCII;
+    }
+
+    flags
 }
 
 /// Returns `true` if the character is a blank (space or tab) or absent (EOF/newline).

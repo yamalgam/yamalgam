@@ -2,7 +2,7 @@
 //!
 //! Implements the yg query language (`docs/spec/yg-query-language-spec-draft-01.md`)
 //! on top of jaq 3. The value type carries YAML metadata—tag, anchor, style,
-//! and raw scalar text—through filter pipelines.
+//! chomp, scalar flags, and raw scalar text—through filter pipelines.
 //!
 //! Value storage is intentionally sealed behind [`YamlVal`]:
 //! ```compile_fail
@@ -54,7 +54,7 @@ pub use build::{
 };
 pub use emit::{EmitError, EmitFormat, EmitOpts};
 pub use error::{BuildError, YgError};
-pub use value::{Meta, NodeStyle, YamlVal};
+pub use value::{Meta, NodeStyle, ScalarPresentation, YamlVal};
 
 /// Parse one strict JSON value under the supplied resource limits.
 pub fn parse_json_with_config(

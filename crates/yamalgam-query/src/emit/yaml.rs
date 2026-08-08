@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use yamalgam_parser::CollectionStyle;
-use yamalgam_scanner::ScalarStyle;
+use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle};
 
 use crate::emit::{EmitError, EmitFormat, EmitOpts, ordered_entries, validate_value};
 use crate::value::{
@@ -46,7 +46,32 @@ enum Position {
 
 enum Rendered<'value> {
     Inline(Cow<'value, str>),
-    Literal(Cow<'value, str>),
+    Literal {
+        text: Cow<'value, str>,
+        chomp: Chomp,
+    },
+}
+
+fn inferred_chomp(text: &str) -> Chomp {
+    if (!text.is_empty() && text.bytes().all(|byte| byte == b'\n')) || text.ends_with("\n\n") {
+        Chomp::Keep
+    } else if text.ends_with('\n') {
+        Chomp::Clip
+    } else {
+        Chomp::Strip
+    }
+}
+
+fn compatible_chomp(text: &str, requested: Chomp) -> Chomp {
+    if text.is_empty() {
+        return requested;
+    }
+    let trailing_breaks = text.chars().rev().take_while(|&c| c == '\n').count();
+    match (requested, trailing_breaks) {
+        (Chomp::Strip, 0) | (Chomp::Keep, 1..) => requested,
+        (Chomp::Clip, 1) if text.len() > 1 => requested,
+        _ => inferred_chomp(text),
+    }
 }
 
 struct Context<'options> {
@@ -168,8 +193,8 @@ impl Context<'_> {
                 output.push_str(&text);
                 output.push('\n');
             }
-            Rendered::Literal(text) => {
-                output.push_str(&self.literal_header(&text));
+            Rendered::Literal { text, chomp } => {
+                output.push_str(&self.literal_header(&text, chomp));
                 output.push('\n');
                 self.literal_content(output, &text, depth + 1);
             }
@@ -193,8 +218,8 @@ impl Context<'_> {
         output.push_str(&prefix);
         match self.scalar(value, position) {
             Rendered::Inline(text) => output.push_str(&text),
-            Rendered::Literal(text) => {
-                output.push_str(&self.literal_header(&text));
+            Rendered::Literal { text, chomp } => {
+                output.push_str(&self.literal_header(&text, chomp));
                 output.push('\n');
                 self.literal_content(output, &text, depth + 1);
             }
@@ -241,7 +266,7 @@ impl Context<'_> {
             _ => match self.scalar(value, Position::Flow) {
                 Rendered::Inline(text) => output.push_str(&text),
                 // `Position::Flow` prevents `string` from selecting block-literal style.
-                Rendered::Literal(_) => unreachable!("flow scalars cannot be literal blocks"),
+                Rendered::Literal { .. } => unreachable!("flow scalars cannot be literal blocks"),
             },
         }
     }
@@ -273,20 +298,38 @@ impl Context<'_> {
         value: &YamlVal,
         position: Position,
     ) -> Rendered<'value> {
+        let metadata = value.meta();
+        let source_style = metadata.and_then(|meta| meta.style);
+        let presentation = metadata.and_then(|meta| meta.scalar_presentation);
         let block_allowed = !self.options.compact
             && matches!(
                 position,
                 Position::Root | Position::SequenceItem | Position::MappingValue
             );
-        let literal_safe = string
+        let source_block = matches!(
+            source_style,
+            Some(NodeStyle::Scalar(
+                ScalarStyle::Literal | ScalarStyle::Folded
+            ))
+        );
+        let block_safe = string
+            .chars()
+            .all(|character| character == '\n' || !character.is_control());
+        let inferred_literal = string
             .strip_suffix('\n')
             .is_some_and(|content| !content.is_empty())
-            && !string.ends_with("\n\n")
-            && string
-                .chars()
-                .all(|character| character == '\n' || !character.is_control());
-        if string.contains('\n') && literal_safe && block_allowed {
-            return Rendered::Literal(Cow::Borrowed(string));
+            && !string.ends_with("\n\n");
+        if block_allowed && block_safe && (source_block || inferred_literal) {
+            return Rendered::Literal {
+                text: Cow::Borrowed(string),
+                chomp: presentation.map_or_else(
+                    || inferred_chomp(string),
+                    |value| compatible_chomp(string, value.chomp),
+                ),
+            };
+        }
+        if let Some(text) = self.direct_scalar(string, value, position) {
+            return Rendered::Inline(text);
         }
         if string.contains('\n')
             || needs_quotes(
@@ -298,7 +341,7 @@ impl Context<'_> {
             return Rendered::Inline(Cow::Owned(quote_double(string)));
         }
 
-        match value.meta().and_then(|meta| meta.style) {
+        match source_style {
             Some(NodeStyle::Scalar(ScalarStyle::SingleQuoted)) => {
                 Rendered::Inline(Cow::Owned(format!("'{}'", string.replace('\'', "''"))))
             }
@@ -306,6 +349,44 @@ impl Context<'_> {
                 Rendered::Inline(Cow::Owned(quote_double(string)))
             }
             _ => Rendered::Inline(Cow::Borrowed(string)),
+        }
+    }
+
+    fn direct_scalar<'value>(
+        &self,
+        string: &'value str,
+        value: &YamlVal,
+        position: Position,
+    ) -> Option<Cow<'value, str>> {
+        let metadata = value.meta()?;
+        let presentation = metadata.scalar_presentation?;
+        if !presentation.flags.contains(AtomFlags::DIRECT_OUTPUT)
+            || metadata.raw.as_deref() != Some(string)
+        {
+            return None;
+        }
+
+        match metadata.style? {
+            NodeStyle::Scalar(ScalarStyle::Plain)
+                if !needs_quotes(
+                    string,
+                    self.options.schema,
+                    matches!(position, Position::Flow),
+                ) =>
+            {
+                Some(Cow::Borrowed(string))
+            }
+            NodeStyle::Scalar(ScalarStyle::SingleQuoted) if !string.contains('\'') => {
+                Some(Cow::Owned(format!("'{string}'")))
+            }
+            NodeStyle::Scalar(ScalarStyle::DoubleQuoted)
+                if !string.chars().any(|character| {
+                    character == '"' || character == '\\' || character.is_control()
+                }) =>
+            {
+                Some(Cow::Owned(format!("\"{string}\"")))
+            }
+            _ => None,
         }
     }
 
@@ -389,23 +470,33 @@ impl Context<'_> {
     }
 
     fn literal_content(&mut self, output: &mut String, string: &str, depth: usize) {
+        if string.is_empty() {
+            return;
+        }
         let content = string.strip_suffix('\n').unwrap_or(string);
         for line in content.split('\n') {
-            self.indent(output, depth);
-            output.push_str(&self.paint(Cow::Borrowed(line), "32"));
+            if !line.is_empty() {
+                self.indent(output, depth);
+                output.push_str(&self.paint(Cow::Borrowed(line), "32"));
+            }
             output.push('\n');
         }
     }
 
-    fn literal_header(&self, string: &str) -> String {
+    fn literal_header(&self, string: &str, chomp: Chomp) -> String {
         let content = string.strip_suffix('\n').unwrap_or(string);
         let needs_indicator = content
             .split('\n')
             .any(|line| line.starts_with([' ', '\t']));
+        let chomp = match chomp {
+            Chomp::Strip => "-",
+            Chomp::Clip => "",
+            Chomp::Keep => "+",
+        };
         if needs_indicator && (1..=9).contains(&self.options.indent) {
-            format!("|{}", self.options.indent)
+            format!("|{}{chomp}", self.options.indent)
         } else {
-            "|".to_owned()
+            format!("|{chomp}")
         }
     }
 

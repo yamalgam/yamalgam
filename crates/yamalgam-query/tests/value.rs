@@ -7,7 +7,7 @@ use yamalgam_query::{
     BuildError, Meta, NodeStyle, YamlVal, parse_documents_with_config, parse_str,
     parse_str_with_config, parse_str_with_resolver, parse_str_with_resolver_and_config,
 };
-use yamalgam_scanner::ScalarStyle;
+use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle};
 
 #[test]
 fn kind_names_follow_yaml_terms() {
@@ -58,10 +58,25 @@ fn meta_accessors_preserve_yaml_presentation() {
         style: Some(NodeStyle::Scalar(ScalarStyle::DoubleQuoted)),
         raw: Some("x".into()),
         alias_of: None,
+        scalar_presentation: None,
     });
 
     assert_eq!(v.meta().and_then(|m| m.anchor.as_deref()), Some("base"));
     assert_eq!(v.tag_shorthand().as_deref(), Some("!!str"));
+}
+
+#[test]
+fn parsed_values_preserve_scalar_presentation_metadata() {
+    let value = parse_str("|+\n  line\n\n").unwrap().remove(0);
+    let presentation = value
+        .meta()
+        .and_then(|metadata| metadata.scalar_presentation)
+        .unwrap();
+
+    assert_eq!(presentation.chomp, Chomp::Keep);
+    assert!(presentation.flags.contains(AtomFlags::CHOMP_EXPLICIT));
+    assert!(presentation.flags.contains(AtomFlags::TRAILING_LB));
+    assert!(!presentation.flags.contains(AtomFlags::DIRECT_OUTPUT));
 }
 
 #[test]
@@ -233,12 +248,16 @@ impl<'input> Resolver<'input> for RewriteMagic {
                 tag,
                 value,
                 style,
+                chomp,
                 span,
+                ..
             } if value == "magic" => Ok(smallvec![Event::Scalar {
                 anchor,
                 tag,
                 value: "42".into(),
                 style,
+                chomp,
+                flags: AtomFlags::empty(),
                 span,
             }]),
             other => Ok(smallvec![other]),

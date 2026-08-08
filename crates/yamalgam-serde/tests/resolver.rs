@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use serde::Deserialize;
 use yamalgam_parser::resolve::smallvec;
-use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
+use yamalgam_parser::{AtomFlags, Event, ResolveError, ResolvedEventBuf, Resolver};
 use yamalgam_serde::{Error, from_str_with_resolver};
 
 struct RewriteMagic;
@@ -17,12 +17,16 @@ impl<'input> Resolver<'input> for RewriteMagic {
                 tag,
                 value,
                 style,
+                chomp,
                 span,
+                ..
             } if value == "magic" => Ok(smallvec![Event::Scalar {
                 anchor,
                 tag,
                 value: Cow::Borrowed("42"),
                 style,
+                chomp,
+                flags: AtomFlags::empty(),
                 span,
             }]),
             other => Ok(smallvec![other]),
@@ -69,12 +73,16 @@ impl<'input> Resolver<'input> for OwnScalars {
                 tag,
                 value,
                 style,
+                chomp,
+                flags,
                 span,
             } => Ok(smallvec![Event::Scalar {
                 anchor,
                 tag,
                 value: Cow::Owned(value.into_owned()),
                 style,
+                chomp,
+                flags,
                 span,
             }]),
             other => Ok(smallvec![other]),

@@ -988,12 +988,16 @@ fn strip_anchor(event: Event<'_>) -> Event<'_> {
             tag,
             value,
             style,
+            chomp,
+            flags,
             span,
         } => Event::Scalar {
             anchor: None,
             tag,
             value,
             style,
+            chomp,
+            flags,
             span,
         },
         Event::SequenceStart {

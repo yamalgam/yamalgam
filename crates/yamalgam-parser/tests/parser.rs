@@ -2,8 +2,8 @@
 
 use pretty_assertions::assert_eq;
 use yamalgam_parser::{CollectionStyle, Event, ParseError, Parser, ScalarStyle};
-use yamalgam_scanner::TokenKind;
 use yamalgam_scanner::scanner::{ScanError, ScanErrorKind, Scanner};
+use yamalgam_scanner::{AtomFlags, Chomp, TokenKind};
 
 #[test]
 fn empty_stream() {
@@ -343,6 +343,29 @@ fn block_scalar_folded() {
     } else {
         panic!("expected Scalar");
     }
+}
+
+#[test]
+fn scalar_events_preserve_scanner_presentation_metadata() {
+    let events = Parser::new("|+\n  hello\n\n")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let Event::Scalar { chomp, flags, .. } = events[2] else {
+        panic!("expected scalar event");
+    };
+    assert_eq!(chomp, Chomp::Keep);
+    assert!(flags.contains(AtomFlags::CHOMP_EXPLICIT));
+    assert!(flags.contains(AtomFlags::HAS_LB));
+    assert!(flags.contains(AtomFlags::IS_MULTILINE));
+    assert!(!flags.contains(AtomFlags::DIRECT_OUTPUT));
+
+    let events = Parser::new("'hello'")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let Event::Scalar { flags, .. } = events[2] else {
+        panic!("expected scalar event");
+    };
+    assert!(flags.contains(AtomFlags::DIRECT_OUTPUT));
 }
 
 // -- Alias tests --

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use yamalgam_core::{LoaderConfig, ResourceLimits, Span};
 use yamalgam_scanner::scanner::{ScanError, Scanner};
-use yamalgam_scanner::{ScalarStyle, Token, TokenKind};
+use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle, Token, TokenKind};
 
 use crate::error::ParseError;
 use crate::event::{CollectionStyle, Event};
@@ -238,6 +238,8 @@ where
             tag: None,
             value: Cow::Borrowed(""),
             style: ScalarStyle::Plain,
+            chomp: Chomp::Clip,
+            flags: AtomFlags::SIZE0,
             span,
         }
     }
@@ -555,6 +557,8 @@ where
                     tag,
                     value: t.atom.data,
                     style: t.atom.style,
+                    chomp: t.atom.chomp,
+                    flags: t.atom.flags,
                     span: t.atom.span,
                 }))
             }
@@ -635,6 +639,8 @@ where
                         tag,
                         value: Cow::Borrowed(""),
                         style: ScalarStyle::Plain,
+                        chomp: Chomp::Clip,
+                        flags: AtomFlags::SIZE0,
                         span,
                     }))
                 } else {
@@ -655,6 +661,8 @@ where
                     tag,
                     value: Cow::Borrowed(""),
                     style: ScalarStyle::Plain,
+                    chomp: Chomp::Clip,
+                    flags: AtomFlags::SIZE0,
                     span,
                 }))
             }
