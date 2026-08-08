@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 24
+  fixed: 25
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 3
+  open: 2
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -502,5 +502,31 @@ repository check with 1,928 tests plus doc tests pass. Independent review caught
 an initially incomplete benchmark coercion before commit; the corrected
 `BoxedResolveStream` baseline, calculations, and final implementation passed
 re-review.
+
+---
+
+## 2026-08-08 — Scanner diagnostics isolated from the hot path
+
+**Disposition:** fixed
+**Addresses:** [scanner-error-branches-remain-in-hot-functions](README.md#scanner-error-branches-remain-in-hot-functions)
+**Commit:** c44116a83f684c3ba547f1342b9aa4e64d3a5d36
+**Author:** Codex
+
+The three audited scanner diagnostics now construct their owned errors through
+a small `#[cold] #[inline(never)]` helper. Error kinds, messages, and return
+behavior are unchanged. Optimized ThinLTO inspection shows the inlined
+`fetch_next_token` hot symbol shrinking by 292 bytes; after the separate
+132-byte helper, total text is 160 bytes smaller.
+
+Three 100-sample baseline and candidate benchmark runs overlap, so this change
+makes no wall-clock throughput claim. A broader experiment routing every static
+scanner diagnostic through the helper grew the hot symbol by 8.7% because of
+different LLVM inlining decisions and was rejected. The retained profile records
+both results and the exact inspection method.
+
+All 192 scanner tests and the full repository check with 1,928 tests plus doc
+tests pass. Independent review confirmed exact diagnostic semantics, code-size
+arithmetic, benchmark restraint, and the deliberately narrow scope. This
+localized code-generation improvement did not require an ADR.
 
 ---
