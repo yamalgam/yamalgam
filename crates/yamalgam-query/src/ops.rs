@@ -191,9 +191,15 @@ impl core::ops::Div for YamlVal {
                 let parts = if string.is_empty() {
                     Vec::new()
                 } else if separator.is_empty() {
-                    string.chars().map(|c| Self::str(c.to_string())).collect()
+                    string
+                        .chars()
+                        .map(|c| Self::str(c.to_string()))
+                        .collect::<Vec<_>>()
                 } else {
-                    string.split(separator.as_ref()).map(Self::str).collect()
+                    string
+                        .split(separator.as_ref())
+                        .map(Self::str)
+                        .collect::<Vec<_>>()
                 };
                 return Ok(Self::seq(parts));
             }

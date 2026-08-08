@@ -103,7 +103,7 @@ impl RunCtx {
     /// Attach values for the globals declared while compiling the filter.
     #[must_use]
     pub fn with_variables(mut self, variables: impl IntoIterator<Item = YamlVal>) -> Self {
-        self.variables = variables.into_iter().collect();
+        self.variables = variables.into_iter().collect::<Vec<_>>();
         self
     }
 

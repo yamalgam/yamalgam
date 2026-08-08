@@ -584,7 +584,7 @@ fn append_input(
         let values = if args.slurp {
             vec![YamlVal::str(input)]
         } else {
-            input.lines().map(YamlVal::str).collect()
+            input.lines().map(YamlVal::str).collect::<Vec<_>>()
         };
         records.extend(
             values
