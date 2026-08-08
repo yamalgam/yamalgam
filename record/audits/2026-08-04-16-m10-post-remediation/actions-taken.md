@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 8
+  fixed: 9
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 19
+  open: 18
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -157,5 +157,26 @@ typed scanner error and a builder-local depth failure preserves
 `ParseError::LimitExceeded`, while both recovered trees reproduce their full
 source. Focused CST tests, the full workspace test suite, clippy, and doc tests
 pass.
+
+---
+
+## 2026-08-08 — Serde reader I/O errors preserved
+
+**Disposition:** fixed
+**Addresses:** [from-reader-erases-io-errors](README.md#from-reader-erases-io-errors)
+**Commit:** ada1c434113bda59da03d6640145b5c9e7a10098
+**Author:** Codex
+
+Serde deserialization errors now include a dedicated `Error::Io` variant that
+owns the original `std::io::Error`, preserves its `ErrorKind`, and exposes it
+through `std::error::Error::source`. Both bounded and explicitly unchecked
+reader entry points use the typed variant, while `Custom` remains reserved for
+serde data-model failures and the existing reader error text remains stable.
+
+The internal structured-clone path reconstructs I/O errors with the same kind
+and rendered message instead of degrading them to `Custom`. Regressions cover
+both reader entry points, source downcasting, error kind, display text, and the
+clone path. Focused serde tests, the full workspace test suite, clippy, and doc
+tests pass.
 
 ---
