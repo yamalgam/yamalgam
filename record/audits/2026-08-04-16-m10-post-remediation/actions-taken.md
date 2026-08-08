@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 26
+  fixed: 27
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 1
+  open: 0
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -547,5 +547,32 @@ the xtask CLI help smoke test pass; the full repository check passes 1,928 tests
 plus doc tests. Independent review confirmed the source search, lockfile scope,
 unchanged behavior, and clean fuzz lockfile. This manifest cleanup did not
 require an ADR.
+
+---
+
+## 2026-08-08 — YAMLStar benchmark peer retired
+
+**Disposition:** fixed
+**Addresses:** [yamlstar-pulls-unmaintained-dlopen-derive](README.md#yamlstar-pulls-unmaintained-dlopen-derive)
+**Commit:** c3cc09a0be1f82f7581f8dbd378fecc68e9df755
+**Author:** Codex
+
+The optional YAMLStar benchmark dependency, feature, wrapper, and three cases
+are removed. The lockfile no longer contains `yamlstar`, `dlopen`,
+`dlopen_derive`, or their obsolete proc-macro chain, and the repository no
+longer accepts RUSTSEC-2023-0051. The ordinary seven-peer benchmark matrix is
+unchanged.
+
+ADR-0013 records why Yamalgam retired an active upstream peer instead of
+carrying a local FFI fork solely for a non-default benchmark. It also states the
+conditions for restoring YAMLStar after its published Rust binding uses a
+maintained loader and its shared library is reproducible on benchmark hosts.
+
+`cargo audit` and Cargo Deny report no advisories, Cargo Machete reports no
+unused dependencies, and metadata contains none of the removed packages. All
+27 retained benchmark cases pass once and in a bounded three-sample run. The
+full repository check passes 1,928 tests plus doc tests. Independent review
+confirmed the removal scope, lockfile chain, current upstream evidence,
+seven-peer documentation, and ADR decision.
 
 ---
