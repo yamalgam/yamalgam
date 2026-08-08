@@ -137,7 +137,9 @@ impl<'input> Deserializer<'input> {
     /// Each call to `Iterator::next()` deserializes one document into `T`.
     /// Iteration stops at `StreamEnd` or on the first error.
     ///
-    /// ```ignore
+    /// ```
+    /// use yamalgam_serde::Deserializer;
+    ///
     /// let docs: Vec<i64> = Deserializer::from_str("---\n42\n---\n99")
     ///     .documents::<i64>()
     ///     .collect::<Result<_, _>>()
