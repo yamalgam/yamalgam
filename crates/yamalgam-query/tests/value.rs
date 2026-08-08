@@ -1,9 +1,11 @@
 //! Resolved-value and presentation-metadata semantics for `YamlVal`.
 
 use yamalgam_core::{LoaderConfig, TagResolution};
+use yamalgam_parser::resolve::smallvec;
+use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
 use yamalgam_query::{
     BuildError, Meta, NodeStyle, YamlVal, parse_documents_with_config, parse_str,
-    parse_str_with_config,
+    parse_str_with_config, parse_str_with_resolver, parse_str_with_resolver_and_config,
 };
 use yamalgam_scanner::ScalarStyle;
 
@@ -219,6 +221,62 @@ fn parser_builds_multiple_and_explicit_empty_documents() {
         docs,
         vec![YamlVal::int(1), YamlVal::int(2), YamlVal::null()]
     );
+}
+
+struct RewriteMagic;
+
+impl<'input> Resolver<'input> for RewriteMagic {
+    fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+        match event {
+            Event::Scalar {
+                anchor,
+                tag,
+                value,
+                style,
+                span,
+            } if value == "magic" => Ok(smallvec![Event::Scalar {
+                anchor,
+                tag,
+                value: "42".into(),
+                style,
+                span,
+            }]),
+            other => Ok(smallvec![other]),
+        }
+    }
+}
+
+#[test]
+fn resolver_rewrite_reaches_query_builder() {
+    let documents = parse_str_with_resolver("magic", RewriteMagic).unwrap();
+    assert_eq!(documents, vec![YamlVal::int(42)]);
+
+    let config = LoaderConfig::moderate().with_tag_resolution(TagResolution::Failsafe);
+    let documents = parse_str_with_resolver_and_config("magic", RewriteMagic, &config).unwrap();
+    assert_eq!(documents, vec![YamlVal::str("42")]);
+}
+
+struct FailOnScalar;
+
+impl<'input> Resolver<'input> for FailOnScalar {
+    fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+        if matches!(event, Event::Scalar { .. }) {
+            return Err(ResolveError::Custom(Box::new(std::io::Error::other(
+                "query resolver failed",
+            ))));
+        }
+        Ok(smallvec![event])
+    }
+}
+
+#[test]
+fn resolver_failure_stays_typed_in_query_builder() {
+    let error = parse_str_with_resolver("value", FailOnScalar).unwrap_err();
+    assert!(
+        matches!(error, BuildError::Resolve(ResolveError::Custom(_))),
+        "got {error:?}"
+    );
+    assert_eq!(error.to_string(), "query resolver failed");
 }
 
 #[test]

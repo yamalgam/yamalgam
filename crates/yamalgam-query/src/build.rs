@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use yamalgam_core::{LoaderConfig, TagResolution, TagResolver as _, Value};
-use yamalgam_parser::{Event, Parser};
+use yamalgam_parser::{Event, NoopResolver, Parser, ResolveError, ResolvedEvents, Resolver};
 use yamalgam_scanner::ScalarStyle;
 
 use crate::error::BuildError;
@@ -28,19 +28,64 @@ pub fn parse_str_with_config(
     parse_documents_with_config(input, config)?.collect()
 }
 
+/// Parse every document through custom resolver middleware using the moderate
+/// loader configuration.
+pub fn parse_str_with_resolver<'input, R>(
+    input: &'input str,
+    resolver: R,
+) -> Result<Vec<YamlVal>, BuildError>
+where
+    R: Resolver<'input> + 'input,
+{
+    parse_str_with_resolver_and_config(input, resolver, &LoaderConfig::moderate())
+}
+
+/// Parse every document through custom resolver middleware using a selected
+/// loader configuration.
+pub fn parse_str_with_resolver_and_config<'input, R>(
+    input: &'input str,
+    resolver: R,
+    config: &LoaderConfig,
+) -> Result<Vec<YamlVal>, BuildError>
+where
+    R: Resolver<'input> + 'input,
+{
+    parse_documents_with_resolver_and_config(input, resolver, config)?.collect()
+}
+
 /// Parse documents incrementally using an explicit loader configuration.
 pub fn parse_documents_with_config<'input, 'config>(
     input: &'input str,
     config: &'config LoaderConfig,
 ) -> Result<Documents<'input, 'config>, BuildError> {
+    parse_documents_with_resolver_and_config(input, NoopResolver, config)
+}
+
+/// Parse documents incrementally through custom resolver middleware using a
+/// selected loader configuration.
+pub fn parse_documents_with_resolver_and_config<'input, 'config, R>(
+    input: &'input str,
+    resolver: R,
+    config: &'config LoaderConfig,
+) -> Result<Documents<'input, 'config>, BuildError>
+where
+    R: Resolver<'input> + 'input,
+{
     config
         .limits
         .check_input_size(input.len())
         .map_err(BuildError::Limit)?;
 
+    let parser = Parser::with_config(input, config);
+    let events = ResolvedEvents::new_with_config(
+        Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+        resolver,
+        config,
+    );
+
     Ok(Documents {
         events: SemanticEvents {
-            inner: Parser::with_config(input, config),
+            inner: Box::new(events),
         },
         builder: Builder::new(config),
         done: false,
@@ -111,11 +156,11 @@ impl Documents<'_, '_> {
 }
 
 struct SemanticEvents<'input> {
-    inner: Parser<'input>,
+    inner: Box<dyn Iterator<Item = Result<Event<'input>, ResolveError>> + 'input>,
 }
 
 impl<'input> Iterator for SemanticEvents<'input> {
-    type Item = Result<Event<'input>, yamalgam_parser::ParseError>;
+    type Item = Result<Event<'input>, ResolveError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -150,7 +195,7 @@ impl<'config> Builder<'config> {
     fn node<'input>(
         &mut self,
         first: Event<'input>,
-        events: &mut impl Iterator<Item = Result<Event<'input>, yamalgam_parser::ParseError>>,
+        events: &mut impl Iterator<Item = Result<Event<'input>, ResolveError>>,
         depth: usize,
     ) -> Result<YamlVal, BuildError> {
         self.config
@@ -316,13 +361,13 @@ impl<'config> Builder<'config> {
 }
 
 fn next_optional_event<'input>(
-    events: &mut impl Iterator<Item = Result<Event<'input>, yamalgam_parser::ParseError>>,
+    events: &mut impl Iterator<Item = Result<Event<'input>, ResolveError>>,
 ) -> Result<Option<Event<'input>>, BuildError> {
     events.next().transpose().map_err(BuildError::from)
 }
 
 fn next_event<'input>(
-    events: &mut impl Iterator<Item = Result<Event<'input>, yamalgam_parser::ParseError>>,
+    events: &mut impl Iterator<Item = Result<Event<'input>, ResolveError>>,
 ) -> Result<Event<'input>, BuildError> {
     next_optional_event(events)?
         .ok_or_else(|| BuildError::Invariant("unexpected end of parser event stream".into()))

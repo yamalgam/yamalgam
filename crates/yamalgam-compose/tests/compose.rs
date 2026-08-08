@@ -1,9 +1,11 @@
 #![allow(clippy::approx_constant, missing_docs)]
 
 use std::borrow::Cow;
+use std::cell::Cell;
+use std::rc::Rc;
 
 use yamalgam_compose::{Composer, from_str, from_str_single};
-use yamalgam_core::Value;
+use yamalgam_core::{LoaderConfig, Value};
 use yamalgam_parser::resolve::smallvec;
 use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
 
@@ -108,4 +110,62 @@ fn custom_resolver_transforms_events() {
     let docs = Composer::with_resolver("key: value", UppercaseResolver).unwrap();
     // Both key and value are uppercased since both are plain scalars.
     assert_eq!(docs[0].get("KEY"), Some(&Value::from("VALUE")));
+}
+
+struct ConfigProbe {
+    observed_depth: Rc<Cell<Option<usize>>>,
+}
+
+impl<'input> Resolver<'input> for ConfigProbe {
+    fn on_event(&mut self, event: Event<'input>) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+        Ok(smallvec![event])
+    }
+
+    fn on_event_with_config(
+        &mut self,
+        event: Event<'input>,
+        config: &LoaderConfig,
+    ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+        self.observed_depth.set(config.limits.max_depth);
+        self.on_event(event)
+    }
+}
+
+fn config_probe() -> (ConfigProbe, Rc<Cell<Option<usize>>>) {
+    let observed_depth = Rc::new(Cell::new(None));
+    (
+        ConfigProbe {
+            observed_depth: Rc::clone(&observed_depth),
+        },
+        observed_depth,
+    )
+}
+
+#[test]
+fn composer_passes_moderate_config_to_resolver() {
+    let (resolver, observed_depth) = config_probe();
+    let documents = Composer::with_resolver("value", resolver).unwrap();
+
+    assert_eq!(documents, vec![Value::from("value")]);
+    assert_eq!(observed_depth.get(), Some(256));
+}
+
+#[test]
+fn composer_passes_unchecked_config_to_resolver() {
+    let (resolver, observed_depth) = config_probe();
+    let documents = Composer::with_resolver_unchecked("value", resolver).unwrap();
+
+    assert_eq!(documents, vec![Value::from("value")]);
+    assert_eq!(observed_depth.get(), None);
+}
+
+#[test]
+fn composer_passes_exact_selected_config_to_resolver() {
+    let mut config = LoaderConfig::strict();
+    config.limits.max_depth = Some(7);
+    let (resolver, observed_depth) = config_probe();
+    let documents = Composer::with_resolver_and_config("value", resolver, &config).unwrap();
+
+    assert_eq!(documents, vec![Value::from("value")]);
+    assert_eq!(observed_depth.get(), Some(7));
 }

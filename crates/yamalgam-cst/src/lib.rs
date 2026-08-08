@@ -20,9 +20,9 @@ use std::fmt;
 
 use yamalgam_core::{LoaderConfig, ResourceLimits, Span};
 
-use yamalgam_parser::Event;
-use yamalgam_parser::ParseError;
-use yamalgam_parser::Parser;
+use yamalgam_parser::{
+    Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
+};
 
 // ---------------------------------------------------------------------------
 // Node kinds
@@ -142,6 +142,31 @@ pub struct CstReport<'input> {
     pub cst: CstNode<'input>,
     /// Structured parser or builder errors encountered during recovery.
     pub diagnostics: Vec<ParseError>,
+}
+
+/// A recovered CST together with structured resolver diagnostics.
+///
+/// Tree classification follows the resolver's output events. Token text still
+/// comes from the original source spans, so the CST remains byte-lossless.
+#[derive(Debug)]
+pub struct ResolvedCstReport<'input> {
+    /// Recovered concrete syntax tree.
+    pub cst: CstNode<'input>,
+    /// Structured parser, resolver, or builder errors encountered in recovery.
+    pub diagnostics: Vec<ResolveError>,
+}
+
+impl Clone for ResolvedCstReport<'_> {
+    fn clone(&self) -> Self {
+        Self {
+            cst: self.cst.clone(),
+            diagnostics: self
+                .diagnostics
+                .iter()
+                .map(ResolveError::clone_structured)
+                .collect(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +344,7 @@ impl<'input> CstBuilder<'input> {
         mut self,
         events: impl Iterator<Item = Result<Event<'input>, ParseError>>,
     ) -> CstReport<'input> {
+        self.ensure_stream_root();
         for result in events {
             match result {
                 Ok(event) => {
@@ -333,6 +359,43 @@ impl<'input> CstBuilder<'input> {
             }
         }
 
+        self.finish_report()
+    }
+
+    /// Consume a resolved event stream and build a lossless CST report.
+    ///
+    /// Resolver failures remain typed. Parser and builder failures are wrapped
+    /// in [`ResolveError::Parse`].
+    pub fn build_resolved_report(
+        mut self,
+        events: impl Iterator<Item = Result<Event<'input>, ResolveError>>,
+    ) -> ResolvedCstReport<'input> {
+        self.ensure_stream_root();
+        let mut resolver_diagnostics = Vec::new();
+        for result in events {
+            match result {
+                Ok(event) => {
+                    if !self.process_event(event) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    self.recover_remaining();
+                    resolver_diagnostics.push(error);
+                    break;
+                }
+            }
+        }
+
+        let report = self.finish_report();
+        resolver_diagnostics.extend(report.diagnostics.into_iter().map(ResolveError::Parse));
+        ResolvedCstReport {
+            cst: report.cst,
+            diagnostics: resolver_diagnostics,
+        }
+    }
+
+    fn finish_report(mut self) -> CstReport<'input> {
         // Insert trailing whitespace.
         if self.last_offset < self.source.len() {
             let ws = &self.source[self.last_offset..];
@@ -373,7 +436,7 @@ impl<'input> CstBuilder<'input> {
     fn process_event(&mut self, event: Event<'input>) -> bool {
         match event {
             Event::StreamStart => {
-                self.open_node(NodeKind::Stream, Span::default());
+                self.ensure_stream_root();
             }
             Event::StreamEnd => {
                 // StreamEnd has no span text — just close Stream.
@@ -467,13 +530,14 @@ impl<'input> CstBuilder<'input> {
                 let text = self.source_text(span);
                 self.push_token(TokenKind::Alias, text, span);
             }
-            Event::Comment { text, span } => {
+            Event::Comment { span, .. } => {
                 // Comments may arrive out of source order (after MappingEnd/SequenceEnd).
                 // If the source region is already covered, skip — it's in a whitespace gap.
                 if span.start.offset < self.last_offset {
                     return true;
                 }
                 self.insert_whitespace_before(span);
+                let text = self.source_text(span);
                 self.push_token(TokenKind::Comment, text, span);
             }
         }
@@ -481,6 +545,14 @@ impl<'input> CstBuilder<'input> {
     }
 
     // -- Helpers --
+
+    /// Ensure recovery always has a root, even when middleware suppresses or
+    /// rejects the parser's `StreamStart` event.
+    fn ensure_stream_root(&mut self) {
+        if self.stack.is_empty() {
+            self.open_node(NodeKind::Stream, Span::default());
+        }
+    }
 
     /// Open a collection if doing so stays within the configured depth.
     fn open_collection(&mut self, kind: NodeKind, span: Span) -> bool {
@@ -556,9 +628,16 @@ impl<'input> CstBuilder<'input> {
 
     /// Add a leaf token to the current top-of-stack node.
     fn push_token(&mut self, kind: TokenKind, text: Cow<'input, str>, span: Span) {
-        // Only advance offset for real (non-virtual) spans.
-        if span.start.offset != span.end.offset && span.end.offset > self.last_offset {
-            self.last_offset = span.end.offset;
+        if span.start.offset != span.end.offset {
+            let Some((start, end)) = self.source_range(span) else {
+                return;
+            };
+            if start < self.last_offset {
+                return;
+            }
+            if end > self.last_offset {
+                self.last_offset = end;
+            }
         }
         let token = CstToken { kind, text, span };
         if let Some(parent) = self.stack.last_mut() {
@@ -579,13 +658,21 @@ impl<'input> CstBuilder<'input> {
 
     /// Extract source text for a span.
     fn source_text(&self, span: Span) -> Cow<'input, str> {
+        self.source_range(span)
+            .map_or(Cow::Borrowed(""), |(start, end)| {
+                Cow::Borrowed(&self.source[start..end])
+            })
+    }
+
+    /// Return a visible span only when it can safely address source text.
+    fn source_range(&self, span: Span) -> Option<(usize, usize)> {
         let start = span.start.offset;
-        let end = span.end.offset.min(self.source.len());
-        if start < end {
-            Cow::Borrowed(&self.source[start..end])
-        } else {
-            Cow::Borrowed("")
-        }
+        let end = span.end.offset;
+        (start < end
+            && end <= self.source.len()
+            && self.source.is_char_boundary(start)
+            && self.source.is_char_boundary(end))
+        .then_some((start, end))
     }
 
     /// Insert a whitespace token for the gap between last_offset and span start.
@@ -597,13 +684,18 @@ impl<'input> CstBuilder<'input> {
         if span.start.offset == span.end.offset {
             return;
         }
-        if span.start.offset > self.last_offset {
+        let Some((span_start, _)) = self.source_range(span) else {
+            return;
+        };
+        if span_start > self.last_offset {
             let ws_start = self.last_offset;
-            let ws_end = span.start.offset.min(self.source.len());
+            let ws_end = span_start;
             if ws_start >= ws_end {
                 return;
             }
-            let ws_text = &self.source[ws_start..ws_end];
+            let Some(ws_text) = self.source.get(ws_start..ws_end) else {
+                return;
+            };
             if !ws_text.is_empty() {
                 let ws_span = Span {
                     start: yamalgam_core::Mark {
@@ -631,6 +723,12 @@ impl<'input> CstBuilder<'input> {
 
     /// Handle a parse error by wrapping remaining source in an error node.
     fn handle_error(&mut self, error: ParseError) {
+        self.recover_remaining();
+        self.diagnostics.push(error);
+    }
+
+    /// Wrap source bytes not yet covered by events in an error node.
+    fn recover_remaining(&mut self) {
         if self.last_offset < self.source.len() {
             let remaining = &self.source[self.last_offset..];
             let err_span = Span {
@@ -657,7 +755,6 @@ impl<'input> CstBuilder<'input> {
             }
             self.last_offset = self.source.len();
         }
-        self.diagnostics.push(error);
     }
 }
 
@@ -715,8 +812,74 @@ pub fn parse_to_cst_report_with_config<'input>(
     input: &'input str,
     config: &LoaderConfig,
 ) -> CstReport<'input> {
+    let report = parse_to_cst_report_with_resolver_and_config(input, NoopResolver, config);
+    CstReport {
+        cst: report.cst,
+        diagnostics: report
+            .diagnostics
+            .into_iter()
+            .map(|error| match error {
+                ResolveError::Parse(error) => error,
+                other => unreachable!("NoopResolver returned a resolver error: {other}"),
+            })
+            .collect(),
+    }
+}
+
+/// Parse YAML to a CST through custom resolver middleware.
+///
+/// Applies [`LoaderConfig::default`] limits. Tree classification follows the
+/// resolved events while source bytes remain lossless.
+pub fn parse_to_cst_with_resolver<'input, R>(input: &'input str, resolver: R) -> CstNode<'input>
+where
+    R: Resolver<'input> + 'input,
+{
+    parse_to_cst_report_with_resolver(input, resolver).cst
+}
+
+/// Parse YAML to a resolved CST recovery report through custom middleware.
+///
+/// Applies [`LoaderConfig::default`] limits.
+pub fn parse_to_cst_report_with_resolver<'input, R>(
+    input: &'input str,
+    resolver: R,
+) -> ResolvedCstReport<'input>
+where
+    R: Resolver<'input> + 'input,
+{
+    parse_to_cst_report_with_resolver_and_config(input, resolver, &LoaderConfig::default())
+}
+
+/// Parse YAML to a CST through custom resolver middleware with a selected
+/// loader configuration.
+pub fn parse_to_cst_with_resolver_and_config<'input, R>(
+    input: &'input str,
+    resolver: R,
+    config: &LoaderConfig,
+) -> CstNode<'input>
+where
+    R: Resolver<'input> + 'input,
+{
+    parse_to_cst_report_with_resolver_and_config(input, resolver, config).cst
+}
+
+/// Parse YAML to a resolved CST recovery report through custom middleware
+/// with a selected loader configuration.
+pub fn parse_to_cst_report_with_resolver_and_config<'input, R>(
+    input: &'input str,
+    resolver: R,
+    config: &LoaderConfig,
+) -> ResolvedCstReport<'input>
+where
+    R: Resolver<'input> + 'input,
+{
     let parser = Parser::with_config(input, config);
-    CstBuilder::new_with_config(input, config).build_report(parser)
+    let events = ResolvedEvents::new_with_config(
+        Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+        resolver,
+        config,
+    );
+    CstBuilder::new_with_config(input, config).build_resolved_report(events)
 }
 
 // ---------------------------------------------------------------------------
@@ -725,6 +888,9 @@ pub fn parse_to_cst_report_with_config<'input>(
 
 #[cfg(test)]
 mod tests {
+    use yamalgam_parser::resolve::smallvec;
+    use yamalgam_parser::{ResolveError, ResolvedEventBuf, Resolver};
+
     use super::*;
 
     const DEEP_CST_DROP_WORKER: &str = "YAMALGAM_DEEP_CST_DROP_WORKER";
@@ -744,6 +910,20 @@ mod tests {
                 CstElement::Node(child) => Some(child),
                 CstElement::Token(_) => None,
             }));
+        }
+        false
+    }
+
+    fn contains_token_kind(root: &CstNode<'_>, kind: TokenKind) -> bool {
+        let mut pending = vec![root];
+        while let Some(node) = pending.pop() {
+            for child in node.children.iter().rev() {
+                match child {
+                    CstElement::Node(child) => pending.push(child),
+                    CstElement::Token(token) if token.kind == kind => return true,
+                    CstElement::Token(_) => {}
+                }
+            }
         }
         false
     }
@@ -1045,6 +1225,200 @@ mod tests {
             [ParseError::Scan(error)] if error.kind == ScanErrorKind::UnterminatedScalar
         ));
         assert_eq!(parse_to_cst(input).to_text(), input);
+    }
+
+    struct ScalarAsAlias;
+
+    impl<'input> Resolver<'input> for ScalarAsAlias {
+        fn on_event(
+            &mut self,
+            event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            match event {
+                Event::Scalar { value, span, .. } => {
+                    Ok(smallvec![Event::Alias { name: value, span }])
+                }
+                other => Ok(smallvec![other]),
+            }
+        }
+    }
+
+    #[test]
+    fn successful_resolver_rewrite_changes_cst_classification_losslessly() {
+        let input = "value";
+        let report = parse_to_cst_report_with_resolver(input, ScalarAsAlias);
+
+        assert_eq!(report.cst.to_text(), input);
+        assert!(report.diagnostics.is_empty());
+        assert!(contains_token_kind(&report.cst, TokenKind::Alias));
+        assert!(!contains_token_kind(&report.cst, TokenKind::Scalar));
+    }
+
+    struct SuppressStreamStart;
+
+    impl<'input> Resolver<'input> for SuppressStreamStart {
+        fn on_event(
+            &mut self,
+            event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            if matches!(event, Event::StreamStart) {
+                Ok(smallvec![])
+            } else {
+                Ok(smallvec![event])
+            }
+        }
+    }
+
+    struct SuppressAll;
+
+    impl<'input> Resolver<'input> for SuppressAll {
+        fn on_event(
+            &mut self,
+            _event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            Ok(smallvec![])
+        }
+    }
+
+    #[test]
+    fn suppressed_events_return_to_cst_as_source_gaps() {
+        let input = "key: value # comment\n";
+
+        let without_start = parse_to_cst_report_with_resolver(input, SuppressStreamStart);
+        assert_eq!(without_start.cst.to_text(), input);
+        assert!(without_start.diagnostics.is_empty());
+
+        let without_events = parse_to_cst_report_with_resolver(input, SuppressAll);
+        assert_eq!(without_events.cst.to_text(), input);
+        assert!(without_events.diagnostics.is_empty());
+    }
+
+    struct DuplicateScalars;
+
+    impl<'input> Resolver<'input> for DuplicateScalars {
+        fn on_event(
+            &mut self,
+            event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            if matches!(event, Event::Scalar { .. }) {
+                Ok(smallvec![event.clone(), event])
+            } else {
+                Ok(smallvec![event])
+            }
+        }
+    }
+
+    struct ZeroWidthExpansion;
+
+    impl<'input> Resolver<'input> for ZeroWidthExpansion {
+        fn on_event(
+            &mut self,
+            event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            if matches!(&event, Event::Scalar { .. }) {
+                let mut virtual_event = event.clone();
+                if let Event::Scalar { span, .. } = &mut virtual_event {
+                    span.end = span.start;
+                }
+                Ok(smallvec![virtual_event, event])
+            } else {
+                Ok(smallvec![event])
+            }
+        }
+    }
+
+    struct ReverseTwoScalars<'input> {
+        first: Option<Event<'input>>,
+    }
+
+    impl<'input> Resolver<'input> for ReverseTwoScalars<'input> {
+        fn on_event(
+            &mut self,
+            event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            if matches!(event, Event::Scalar { .. }) {
+                if let Some(first) = self.first.take() {
+                    return Ok(smallvec![event, first]);
+                }
+                self.first = Some(event);
+                return Ok(smallvec![]);
+            }
+            Ok(smallvec![event])
+        }
+    }
+
+    #[test]
+    fn expanded_and_reordered_spans_emit_each_source_byte_once() {
+        let input = "[one, two]";
+
+        let duplicated = parse_to_cst_report_with_resolver(input, DuplicateScalars);
+        assert_eq!(duplicated.cst.to_text(), input);
+        assert!(duplicated.diagnostics.is_empty());
+
+        let reordered = parse_to_cst_report_with_resolver(input, ReverseTwoScalars { first: None });
+        assert_eq!(reordered.cst.to_text(), input);
+        assert!(reordered.diagnostics.is_empty());
+
+        let zero_width = parse_to_cst_report_with_resolver(input, ZeroWidthExpansion);
+        assert_eq!(zero_width.cst.to_text(), input);
+        assert!(zero_width.diagnostics.is_empty());
+    }
+
+    struct InvalidUtf8BoundarySpan;
+
+    impl<'input> Resolver<'input> for InvalidUtf8BoundarySpan {
+        fn on_event(
+            &mut self,
+            event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            if matches!(&event, Event::Scalar { .. }) {
+                let mut invalid_end = event.clone();
+                let mut invalid_start = event;
+                if let Event::Scalar { span, .. } = &mut invalid_end {
+                    span.end.offset = 1;
+                }
+                if let Event::Scalar { span, .. } = &mut invalid_start {
+                    span.start.offset = 1;
+                }
+                Ok(smallvec![invalid_end, invalid_start])
+            } else {
+                Ok(smallvec![event])
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_utf8_boundary_spans_return_to_cst_as_source_gaps() {
+        let input = "é";
+        let report = parse_to_cst_report_with_resolver(input, InvalidUtf8BoundarySpan);
+
+        assert_eq!(report.cst.to_text(), input);
+        assert!(report.diagnostics.is_empty());
+    }
+
+    struct FailImmediately;
+
+    impl<'input> Resolver<'input> for FailImmediately {
+        fn on_event(
+            &mut self,
+            _event: Event<'input>,
+        ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+            Err(ResolveError::Custom(Box::new(std::io::Error::other(
+                "CST resolver failed",
+            ))))
+        }
+    }
+
+    #[test]
+    fn first_event_resolver_failure_is_typed_and_lossless() {
+        let input = "key: value\n";
+        let report = parse_to_cst_report_with_resolver(input, FailImmediately);
+
+        assert_eq!(report.cst.to_text(), input);
+        assert!(matches!(
+            report.diagnostics.as_slice(),
+            [ResolveError::Custom(_)]
+        ));
     }
 
     #[test]

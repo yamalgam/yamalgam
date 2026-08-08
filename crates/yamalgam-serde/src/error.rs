@@ -43,13 +43,13 @@ impl Error {
     /// Clone the structured form of this error.
     ///
     /// `std::io::Error` is reconstructed from its kind and rendered message.
-    /// `Resolve` is the only variant that degrades to `Custom`, because a
-    /// `ResolveError` can contain arbitrary non-cloneable sources.
+    /// Non-cloneable I/O and resolver sources are reconstructed while their
+    /// structured outer variants remain intact.
     pub(crate) fn clone_structured(&self) -> Self {
         match self {
             Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
             Self::Parse(e) => Self::Parse(e.clone()),
-            Self::Resolve(e) => Self::Custom(e.to_string()),
+            Self::Resolve(e) => Self::Resolve(e.clone_structured()),
             Self::Unexpected {
                 expected,
                 found,
@@ -138,7 +138,10 @@ impl From<std::io::Error> for Error {
 
 impl From<ResolveError> for Error {
     fn from(e: ResolveError) -> Self {
-        Self::Resolve(e)
+        match e {
+            ResolveError::Parse(error) => Self::Parse(error),
+            other => Self::Resolve(other),
+        }
     }
 }
 

@@ -9,6 +9,9 @@ pub enum BuildError {
     /// Underlying YAML parse error.
     #[error(transparent)]
     Parse(#[from] yamalgam_parser::ParseError),
+    /// Event resolver middleware failed.
+    #[error(transparent)]
+    Resolve(yamalgam_parser::ResolveError),
     /// Alias references an anchor that has not been defined.
     #[error(
         "unknown alias *{name} (line {}, column {})",
@@ -27,6 +30,15 @@ pub enum BuildError {
     /// A loader resource limit was exceeded.
     #[error("{0}")]
     Limit(String),
+}
+
+impl From<yamalgam_parser::ResolveError> for BuildError {
+    fn from(error: yamalgam_parser::ResolveError) -> Self {
+        match error {
+            yamalgam_parser::ResolveError::Parse(error) => Self::Parse(error),
+            other => Self::Resolve(other),
+        }
+    }
 }
 
 /// Query-engine errors partitioned by their CLI exit-code class.

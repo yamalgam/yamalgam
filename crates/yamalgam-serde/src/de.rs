@@ -7,7 +7,9 @@ use std::iter::Peekable;
 use serde::de::{self, DeserializeSeed, Visitor};
 use yamalgam_core::value::Value;
 use yamalgam_core::{LoaderConfig, ResourceLimits, Span, TagResolver};
-use yamalgam_parser::{Event, ParseError, Parser, ScalarStyle};
+use yamalgam_parser::{
+    Event, NoopResolver, Parser, ResolveError, ResolvedEvents, Resolver, ScalarStyle,
+};
 
 use crate::error::Error;
 
@@ -21,7 +23,7 @@ use crate::error::Error;
 /// defend against Billion Laughs and similar amplification attacks.
 pub struct Deserializer<'input> {
     /// Event source (parser or resolved events), wrapped in Peekable.
-    events: Peekable<Box<dyn Iterator<Item = Result<Event<'input>, ParseError>> + 'input>>,
+    events: Peekable<Box<dyn Iterator<Item = Result<Event<'input>, ResolveError>> + 'input>>,
     /// Tag resolver for plain scalar typing.
     tag_resolver: Box<dyn TagResolver>,
     /// Resource limits for anchor/alias caps and future extensions.
@@ -68,9 +70,38 @@ impl<'input> Deserializer<'input> {
     /// [`LoaderConfig`] (resource limits + tag resolution).
     #[must_use]
     pub fn from_str_with_config(input: &'input str, config: &LoaderConfig) -> Self {
+        Self::with_resolver_and_config(input, NoopResolver, config)
+    }
+
+    /// Create a deserializer with custom event resolver middleware and
+    /// [`LoaderConfig::default`] limits.
+    #[must_use]
+    pub fn with_resolver<R>(input: &'input str, resolver: R) -> Self
+    where
+        R: Resolver<'input> + 'input,
+    {
+        Self::with_resolver_and_config(input, resolver, &LoaderConfig::default())
+    }
+
+    /// Create a deserializer with custom event resolver middleware and a
+    /// caller-selected loader configuration.
+    #[must_use]
+    pub fn with_resolver_and_config<R>(
+        input: &'input str,
+        resolver: R,
+        config: &LoaderConfig,
+    ) -> Self
+    where
+        R: Resolver<'input> + 'input,
+    {
         let parser = Parser::with_config(input, config);
+        let events = ResolvedEvents::new_with_config(
+            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            resolver,
+            config,
+        );
         Self {
-            events: (Box::new(parser) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
+            events: (Box::new(events) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
             tag_resolver: Box::new(config.tag_resolution),
             limits: config.limits.clone(),
             finished: false,
@@ -124,7 +155,7 @@ impl<'input> Deserializer<'input> {
                             span: None,
                         })
                     })?
-                    .map_err(|e| self.stash(Error::Parse(e)))?
+                    .map_err(|error| self.stash(Error::from(error)))?
             };
 
             // Skip structural events that serde consumers ignore.
@@ -395,7 +426,7 @@ impl<'input> Deserializer<'input> {
             } else {
                 match self.events.next() {
                     Some(Ok(e)) => e,
-                    Some(Err(e)) => return Err(Error::Parse(e)),
+                    Some(Err(error)) => return Err(Error::from(error)),
                     None => return Ok(()),
                 }
             };

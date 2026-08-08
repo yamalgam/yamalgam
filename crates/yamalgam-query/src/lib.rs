@@ -28,7 +28,10 @@ mod runtime_limits;
 mod valt;
 pub(crate) mod value;
 
-pub use build::{Documents, parse_documents_with_config, parse_str, parse_str_with_config};
+pub use build::{
+    Documents, parse_documents_with_config, parse_documents_with_resolver_and_config, parse_str,
+    parse_str_with_config, parse_str_with_resolver, parse_str_with_resolver_and_config,
+};
 pub use emit::{EmitError, EmitFormat, EmitOpts};
 pub use error::{BuildError, YgError};
 pub use value::{Meta, NodeStyle, YamlVal};

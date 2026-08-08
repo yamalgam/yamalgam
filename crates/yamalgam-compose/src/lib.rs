@@ -109,9 +109,10 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
         config: &yamalgam_core::LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new(
+        let events = ResolvedEvents::new_with_config(
             Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
             NoopResolver,
+            config,
         );
         let mut composer = Composer::new_with_config(events, config);
         composer.compose_stream()
@@ -144,9 +145,10 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
         config: &LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new(
+        let events = ResolvedEvents::new_with_config(
             Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
             NoopResolver,
+            config,
         );
         let mut composer = Composer::new_with_config(events, config);
         composer.tag_resolver = Box::new(tag_resolver);
@@ -176,15 +178,18 @@ impl<'input, R: Resolver<'input> + 'input> Composer<'input, ResolvedEvents<'inpu
         Self::with_resolver_and_config(input, resolver, &LoaderConfig::unchecked())
     }
 
-    fn with_resolver_and_config(
+    /// Compose documents with a custom event resolver and caller-selected
+    /// loader configuration.
+    pub fn with_resolver_and_config(
         input: &'input str,
         resolver: R,
         config: &LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new(
+        let events = ResolvedEvents::new_with_config(
             Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
             resolver,
+            config,
         );
         let mut composer = Composer::new_with_config(events, config);
         composer.compose_stream()

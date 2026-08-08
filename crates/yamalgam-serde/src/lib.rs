@@ -76,6 +76,41 @@ pub fn from_str_with_config<'de, T: serde::Deserialize<'de>>(
     deserialize_one(Deserializer::from_str_with_config(input, config))
 }
 
+/// Deserialize one YAML document through custom event resolver middleware.
+///
+/// Applies [`LoaderConfig::default`] limits.
+///
+/// # Errors
+///
+/// Returns [`Error`] on resolver, parse, type, limit, or framing failure.
+pub fn from_str_with_resolver<'de, T, R>(input: &'de str, resolver: R) -> Result<T, Error>
+where
+    T: serde::Deserialize<'de>,
+    R: yamalgam_parser::Resolver<'de> + 'de,
+{
+    deserialize_one(Deserializer::with_resolver(input, resolver))
+}
+
+/// Deserialize one YAML document through custom event resolver middleware
+/// with a caller-selected [`LoaderConfig`].
+///
+/// # Errors
+///
+/// Returns [`Error`] on resolver, parse, type, limit, or framing failure.
+pub fn from_str_with_resolver_and_config<'de, T, R>(
+    input: &'de str,
+    resolver: R,
+    config: &yamalgam_core::LoaderConfig,
+) -> Result<T, Error>
+where
+    T: serde::Deserialize<'de>,
+    R: yamalgam_parser::Resolver<'de> + 'de,
+{
+    deserialize_one(Deserializer::with_resolver_and_config(
+        input, resolver, config,
+    ))
+}
+
 /// Deserialize from a reader.
 ///
 /// Reads the entire input into a string, then deserializes. Requires
