@@ -35,3 +35,28 @@ Current erased serde baselines were 93.64, 94.12, and 94.22 us for the small
 document and 4.159, 4.136, and 4.134 ms for the medium document. They establish
 repeatable production workloads but do not justify a generic public
 deserializer without an equivalent measured implementation.
+
+## Production validation
+
+After implementing ADR-0012, three more 100-sample runs compared the production
+boxed and typed paths. The boxed setup explicitly coerces the parser adapter to
+`BoxedResolveStream`; the generic constructor cannot retain its concrete box
+type. The benchmark also asserts full event and composed-value parity before
+timing each input.
+
+| Workload | Run 1 | Run 2 | Run 3 |
+|----------|------:|------:|------:|
+| small events, boxed | 57.54 us | 57.45 us | 57.33 us |
+| small events, typed | 49.37 us | 49.18 us | 49.04 us |
+| medium events, boxed | 2.477 ms | 2.481 ms | 2.462 ms |
+| medium events, typed | 2.115 ms | 2.168 ms | 2.096 ms |
+| small composer, boxed | 73.77 us | 73.58 us | 74.45 us |
+| small composer, typed | 69.29 us | 68.04 us | 68.12 us |
+| medium composer, boxed | 3.137 ms | 3.186 ms | 3.160 ms |
+| medium composer, typed | 2.950 ms | 2.983 ms | 2.954 ms |
+
+The production typed event stream is 12.6–14.9% faster in these runs. Typed
+composition is 6.1–8.5% faster for the small document and 6.0–6.5% faster for
+the medium document. All twelve paired medians favor the typed path. The
+removed iterator dispatch has a repeatable end-to-end benefit and no observed
+regression.

@@ -60,6 +60,10 @@ impl From<ParseError> for ComposeError {
     }
 }
 
+fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
+    result.map_err(ResolveError::Parse)
+}
+
 struct AnchoredValue {
     value: Value,
     materialized_weight: usize,
@@ -110,11 +114,8 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
         config: &yamalgam_core::LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new_with_config(
-            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
-            NoopResolver,
-            config,
-        );
+        let events =
+            ResolvedEvents::new_with_config(parser.map(map_parse_error), NoopResolver, config);
         let mut composer = Composer::new_with_config(events, config);
         composer.compose_stream()
     }
@@ -146,11 +147,8 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
         config: &LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new_with_config(
-            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
-            NoopResolver,
-            config,
-        );
+        let events =
+            ResolvedEvents::new_with_config(parser.map(map_parse_error), NoopResolver, config);
         let mut composer = Composer::new_with_tag_resolver_and_config(events, tag_resolver, config);
         composer.compose_stream()
     }
@@ -186,11 +184,7 @@ impl<'input, R: Resolver<'input> + 'input> Composer<'input, ResolvedEvents<'inpu
         config: &LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new_with_config(
-            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
-            resolver,
-            config,
-        );
+        let events = ResolvedEvents::new_with_config(parser.map(map_parse_error), resolver, config);
         let mut composer = Composer::new_with_config(events, config);
         composer.compose_stream()
     }

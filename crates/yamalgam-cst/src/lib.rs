@@ -24,6 +24,10 @@ use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
 };
 
+fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
+    result.map_err(ResolveError::Parse)
+}
+
 // ---------------------------------------------------------------------------
 // Node kinds
 // ---------------------------------------------------------------------------
@@ -877,11 +881,7 @@ where
     R: Resolver<'input> + 'input,
 {
     let parser = Parser::with_config(input, config);
-    let events = ResolvedEvents::new_with_config(
-        Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
-        resolver,
-        config,
-    );
+    let events = ResolvedEvents::new_with_config(parser.map(map_parse_error), resolver, config);
     CstBuilder::new_with_config(input, config).build_resolved_report(events)
 }
 

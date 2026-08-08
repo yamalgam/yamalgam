@@ -8,10 +8,14 @@ use serde::de::{self, DeserializeSeed, Visitor};
 use yamalgam_core::value::Value;
 use yamalgam_core::{LoaderConfig, ResourceLimits, Span, TagResolver};
 use yamalgam_parser::{
-    Event, NoopResolver, Parser, ResolveError, ResolvedEvents, Resolver, ScalarStyle,
+    Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver, ScalarStyle,
 };
 
 use crate::error::Error;
+
+fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
+    result.map_err(ResolveError::Parse)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PeekEventKind {
@@ -112,11 +116,7 @@ impl<'input> Deserializer<'input> {
         R: Resolver<'input> + 'input,
     {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new_with_config(
-            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
-            resolver,
-            config,
-        );
+        let events = ResolvedEvents::new_with_config(parser.map(map_parse_error), resolver, config);
         Self {
             events: (Box::new(events) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
             tag_resolver: Box::new(config.tag_resolution),

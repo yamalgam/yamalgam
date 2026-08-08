@@ -8,8 +8,11 @@ description = "Comparative benchmarks for yamalgam vs YAML peers"
 publish = false
 
 [dependencies]
+yamalgam-compose = { path = "../yamalgam-compose" }
+yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-scanner = { path = "../yamalgam-scanner" }
 yamalgam-parser = { path = "../yamalgam-parser" }
+yamalgam-serde = { path = "../yamalgam-serde" }
 
 # Peers — pinned for reproducible benchmarks
 yaml_serde = "0.10"
@@ -35,4 +38,8 @@ workspace = true
 
 [[bench]]
 name = "comparative"
+harness = false
+
+[[bench]]
+name = "dispatch"
 harness = false

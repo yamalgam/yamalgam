@@ -24,6 +24,10 @@ use crate::event::Event;
 /// one event out) entirely on the stack — no heap allocation per event.
 pub type ResolvedEventBuf<'input> = SmallVec<[Event<'input>; 1]>;
 
+/// A type-erased resolved-event source for callers with mixed iterator types.
+pub type BoxedResolveStream<'input> =
+    Box<dyn Iterator<Item = Result<Event<'input>, ResolveError>> + 'input>;
+
 /// Errors that can occur during event resolution.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -219,31 +223,31 @@ impl<'input> Resolver<'input> for NoopResolver {
 /// time. When the resolver produces multiple output events, they are buffered
 /// and yielded individually. When the resolver returns an empty vec (suppressing
 /// an event), the adapter pulls the next upstream event automatically.
-pub struct ResolvedEvents<'input, R: Resolver<'input>> {
-    upstream: Box<dyn Iterator<Item = Result<Event<'input>, ResolveError>> + 'input>,
+pub struct ResolvedEvents<'input, R: Resolver<'input>, I = BoxedResolveStream<'input>>
+where
+    I: Iterator<Item = Result<Event<'input>, ResolveError>>,
+{
+    upstream: I,
     resolver: R,
     buffer: VecDeque<Event<'input>>,
     config: LoaderConfig,
     resolver_failed: bool,
 }
 
-impl<'input, R: Resolver<'input>> ResolvedEvents<'input, R> {
+impl<'input, R, I> ResolvedEvents<'input, R, I>
+where
+    R: Resolver<'input>,
+    I: Iterator<Item = Result<Event<'input>, ResolveError>>,
+{
     /// Create a new `ResolvedEvents` adapter wrapping an upstream event source.
     #[must_use]
-    pub fn new(
-        upstream: Box<dyn Iterator<Item = Result<Event<'input>, ResolveError>> + 'input>,
-        resolver: R,
-    ) -> Self {
+    pub fn new(upstream: I, resolver: R) -> Self {
         Self::new_with_config(upstream, resolver, &LoaderConfig::default())
     }
 
     /// Create a resolved-event adapter with the selected loader configuration.
     #[must_use]
-    pub fn new_with_config(
-        upstream: Box<dyn Iterator<Item = Result<Event<'input>, ResolveError>> + 'input>,
-        resolver: R,
-        config: &LoaderConfig,
-    ) -> Self {
+    pub fn new_with_config(upstream: I, resolver: R, config: &LoaderConfig) -> Self {
         Self {
             upstream,
             resolver,
@@ -254,7 +258,11 @@ impl<'input, R: Resolver<'input>> ResolvedEvents<'input, R> {
     }
 }
 
-impl<'input, R: Resolver<'input>> Iterator for ResolvedEvents<'input, R> {
+impl<'input, R, I> Iterator for ResolvedEvents<'input, R, I>
+where
+    R: Resolver<'input>,
+    I: Iterator<Item = Result<Event<'input>, ResolveError>>,
+{
     type Item = Result<Event<'input>, ResolveError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -305,6 +313,27 @@ mod tests {
     use super::*;
     use crate::Parser;
     use yamalgam_core::LoaderConfig;
+
+    fn map_parse_error<'input>(
+        result: Result<Event<'input>, ParseError>,
+    ) -> Result<Event<'input>, ResolveError> {
+        result.map_err(ResolveError::Parse)
+    }
+
+    #[test]
+    fn resolved_events_supports_boxed_and_concrete_upstreams() {
+        let input = "key: [one, two]";
+        let boxed_upstream: Box<dyn Iterator<Item = Result<Event<'_>, ResolveError>> + '_> =
+            Box::new(Parser::new(input).map(map_parse_error));
+        let boxed: ResolvedEvents<'_, NoopResolver> =
+            ResolvedEvents::new(boxed_upstream, NoopResolver);
+        let typed = ResolvedEvents::new(Parser::new(input).map(map_parse_error), NoopResolver);
+
+        let boxed = boxed.collect::<Result<Vec<_>, _>>().unwrap();
+        let typed = typed.collect::<Result<Vec<_>, _>>().unwrap();
+
+        assert_eq!(typed, boxed);
+    }
 
     #[test]
     fn noop_resolver_passes_all_events_through() {

@@ -8,11 +8,17 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use yamalgam_core::{LoaderConfig, TagResolution, TagResolver as _, Value};
-use yamalgam_parser::{Event, NoopResolver, Parser, ResolveError, ResolvedEvents, Resolver};
+use yamalgam_parser::{
+    Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
+};
 use yamalgam_scanner::ScalarStyle;
 
 use crate::error::BuildError;
 use crate::value::{Data, Meta, NodeStyle, YamlVal, YgMap, YgSeq};
+
+fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
+    result.map_err(ResolveError::Parse)
+}
 
 /// Parse every document using the moderate loader configuration.
 // r[impl cli.usage]
@@ -77,11 +83,7 @@ where
         .map_err(BuildError::Limit)?;
 
     let parser = Parser::with_config(input, config);
-    let events = ResolvedEvents::new_with_config(
-        Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
-        resolver,
-        config,
-    );
+    let events = ResolvedEvents::new_with_config(parser.map(map_parse_error), resolver, config);
 
     Ok(Documents {
         events: SemanticEvents {
