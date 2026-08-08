@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 6
+  fixed: 7
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 21
+  open: 20
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -115,5 +115,25 @@ its weight without inflating the distinct-anchor count. Regression tests cover
 exact output-budget boundaries, differently sized anchors, redefinition,
 cross-document scope, unlimited configuration, overflow, and iterative weight
 calculation over a 100,000-node public value.
+
+---
+
+## 2026-08-08 — Parser span probes preserve scanner errors
+
+**Disposition:** fixed
+**Addresses:** [flow-pair-finalization-swallows-scanner-errors](README.md#flow-pair-finalization-swallows-scanner-errors)
+**Commit:** a4de07e4b02f6522b37d3cab7a99f842d31f07a2
+**Author:** Codex
+
+All seven optional-span probes now propagate `ParseError::Scan` and use a
+default span only for genuine end-of-stream. Valid-input event ordering and
+span construction remain unchanged, including the zero-width synthetic
+`MappingEnd` span for implicit mappings in flow sequences.
+
+The regression replaces the closing token of a valid implicit flow pair with
+a typed scanner failure, proving finalization preserves
+`ScanErrorKind::UnexpectedCharacter` rather than consuming it and later
+reporting a generic parser error. Focused parser tests, the full workspace test
+suite, clippy, and doc tests pass.
 
 ---
