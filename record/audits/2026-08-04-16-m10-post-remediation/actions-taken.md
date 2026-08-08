@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 9
+  fixed: 10
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 18
+  open: 17
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -178,5 +178,25 @@ and rendered message instead of degrading them to `Custom`. Regressions cover
 both reader entry points, source downcasting, error kind, display text, and the
 clone path. Focused serde tests, the full workspace test suite, clippy, and doc
 tests pass.
+
+---
+
+## 2026-08-08 — Configuration schema enforced
+
+**Disposition:** fixed
+**Addresses:** [config-template-advertises-silently-ignored-settings](README.md#config-template-advertises-silently-ignored-settings)
+**Commit:** acd88bc19bc0cb8e332ddd4286ed39268b88362d
+**Author:** Codex
+
+The CLI configuration type now rejects unknown fields instead of silently
+accepting misspellings and nonexistent capabilities. The shipped TOML and YAML
+templates advertise only the consumed `log_level` and optional `log_dir`
+settings plus the supported logging path environment overrides.
+
+An end-to-end regression proves a misspelled `log_level` fails with an unknown
+field diagnostic. A template contract test prevents the removed OpenTelemetry,
+environment-mode, API, feature, telemetry, format, and color placeholders from
+returning without matching implementation. Configuration integration tests,
+the full workspace test suite, clippy, and doc tests pass.
 
 ---
