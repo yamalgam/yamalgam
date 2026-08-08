@@ -252,6 +252,47 @@ impl Default for Mapping {
     }
 }
 
+const fn entry_refs((key, value): &(Value, Value)) -> (&Value, &Value) {
+    (key, value)
+}
+
+const fn entry_refs_mut((key, value): &mut (Value, Value)) -> (&Value, &mut Value) {
+    (key, value)
+}
+
+impl IntoIterator for Mapping {
+    type Item = (Value, Value);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+impl<'mapping> IntoIterator for &'mapping Mapping {
+    type Item = (&'mapping Value, &'mapping Value);
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'mapping, (Value, Value)>,
+        fn(&'mapping (Value, Value)) -> Self::Item,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter().map(entry_refs)
+    }
+}
+
+impl<'mapping> IntoIterator for &'mapping mut Mapping {
+    type Item = (&'mapping Value, &'mapping mut Value);
+    type IntoIter = std::iter::Map<
+        std::slice::IterMut<'mapping, (Value, Value)>,
+        fn(&'mapping mut (Value, Value)) -> Self::Item,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter_mut().map(entry_refs_mut)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Value accessors
 // ---------------------------------------------------------------------------
@@ -678,6 +719,41 @@ mod tests {
 
         let keys: Vec<&Value> = m.keys().collect();
         assert_eq!(keys, vec![&Value::from("z"), &Value::from("a")]);
+    }
+
+    #[test]
+    fn mapping_supports_standard_borrowed_mutable_and_owned_iteration() {
+        let mut mapping = Mapping::new();
+        mapping.insert(Value::from("first"), Value::Integer(1));
+        mapping.insert(Value::from("second"), Value::Integer(2));
+
+        let borrowed = (&mapping)
+            .into_iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            borrowed,
+            vec![
+                (Value::from("first"), Value::Integer(1)),
+                (Value::from("second"), Value::Integer(2)),
+            ]
+        );
+
+        for (_, value) in &mut mapping {
+            let Value::Integer(integer) = value else {
+                panic!("test mapping values must be integers");
+            };
+            *integer += 10;
+        }
+        assert_eq!(mapping.get_str("first"), Some(&Value::Integer(11)));
+
+        assert_eq!(
+            mapping.into_iter().collect::<Vec<_>>(),
+            vec![
+                (Value::from("first"), Value::Integer(11)),
+                (Value::from("second"), Value::Integer(12)),
+            ]
+        );
     }
 
     // -- serde Deserialize ---------------------------------------------------
