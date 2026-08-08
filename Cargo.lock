@@ -1692,6 +1692,7 @@ dependencies = [
 name = "yamalgam-core"
 version = "0.1.0"
 dependencies = [
+ "divan",
  "serde",
  "serde_json",
 ]
