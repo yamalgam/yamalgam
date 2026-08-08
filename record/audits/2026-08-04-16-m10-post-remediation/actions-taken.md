@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 3
+  fixed: 5
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 24
+  open: 22
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -71,5 +71,27 @@ Whole-tree text reconstruction, offset lookup, leaf counting, formatting, and
 destruction now use iterative traversal. Regression tests cover moderate and
 unchecked construction, the exact custom depth boundary, lossless local
 recovery, and a 100,000-node publicly constructed CST in isolated processes.
+
+---
+
+## 2026-08-08 — Scalar mapping operations indexed
+
+**Disposition:** fixed
+**Addresses:** [composer-mapping-insertion-is-quadratic](README.md#composer-mapping-insertion-is-quadratic), [borrowed-value-get-allocates-key](README.md#borrowed-value-get-allocates-key)
+**Commit:** 549fa0e6bd50262ee1bb7ba5065a1eefb5850a44
+**Author:** Codex
+
+`Mapping` retains its ordered entry vector as semantic state and lazily adds a
+randomized fingerprint index for null, bool, integer, and string keys. Hash
+bucket collisions compare the actual keys before lookup or replacement, while
+float and collection keys preserve their existing linear `PartialEq`
+semantics. Clone, equality, debug output, insertion order, and the const empty
+constructor remain compatible.
+
+Borrowed string lookup now hashes `&str` directly without constructing an
+owned `String` or temporary `Value`. Focused tests cover duplicate replacement,
+NaN, signed zero, collection keys, synthetic collisions, and absent scalar
+lookups. Divan benchmarks cover insertion and lookup at fixed sizes through
+10,000 entries.
 
 ---
