@@ -18,7 +18,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use yamalgam_core::Span;
+use yamalgam_core::{LoaderConfig, ResourceLimits, Span};
 
 use yamalgam_parser::Event;
 use yamalgam_parser::ParseError;
@@ -140,17 +140,14 @@ impl<'input> CstNode<'input> {
     /// This reproduces the original source byte-for-byte (round-trip property).
     pub fn to_text(&self) -> String {
         let mut buf = String::new();
-        self.collect_text(&mut buf);
-        buf
-    }
-
-    fn collect_text(&self, buf: &mut String) {
-        for child in &self.children {
-            match child {
-                CstElement::Node(node) => node.collect_text(buf),
+        let mut pending: Vec<_> = self.children.iter().rev().collect();
+        while let Some(element) = pending.pop() {
+            match element {
+                CstElement::Node(node) => pending.extend(node.children.iter().rev()),
                 CstElement::Token(token) => buf.push_str(&token.text),
             }
         }
+        buf
     }
 
     /// Iterate all direct children.
@@ -179,26 +176,47 @@ impl<'input> CstNode<'input> {
         if offset < self.span.start.offset || offset >= self.span.end.offset {
             return None;
         }
-        // Try children first (depth-first).
-        for child in &self.children {
-            if let CstElement::Node(node) = child
-                && let Some(found) = node.node_at_offset(offset)
-            {
-                return Some(found);
+
+        let mut current = self;
+        loop {
+            let next = current.children.iter().find_map(|child| match child {
+                CstElement::Node(node)
+                    if offset >= node.span.start.offset && offset < node.span.end.offset =>
+                {
+                    Some(node)
+                }
+                _ => None,
+            });
+            match next {
+                Some(node) => current = node,
+                None => return Some(current),
             }
         }
-        Some(self)
     }
 
     /// Count all leaf tokens in the tree (for testing).
     pub fn leaf_count(&self) -> usize {
-        self.children
-            .iter()
-            .map(|c| match c {
-                CstElement::Token(_) => 1,
-                CstElement::Node(n) => n.leaf_count(),
-            })
-            .sum()
+        let mut count = 0;
+        let mut pending: Vec<_> = self.children.iter().rev().collect();
+        while let Some(element) = pending.pop() {
+            match element {
+                CstElement::Node(node) => pending.extend(node.children.iter().rev()),
+                CstElement::Token(_) => count += 1,
+            }
+        }
+        count
+    }
+}
+
+impl Drop for CstNode<'_> {
+    fn drop(&mut self) {
+        let mut pending = Vec::new();
+        pending.append(&mut self.children);
+        while let Some(element) = pending.pop() {
+            if let CstElement::Node(mut node) = element {
+                pending.append(&mut node.children);
+            }
+        }
     }
 }
 
@@ -220,16 +238,47 @@ pub struct CstBuilder<'input> {
     source: &'input str,
     stack: Vec<CstNode<'input>>,
     last_offset: usize,
+    limits: ResourceLimits,
+    collection_depth: usize,
 }
 
 impl<'input> CstBuilder<'input> {
-    /// Create a new builder for the given source text.
+    /// Create a new builder for the given source text with moderate resource
+    /// limits.
     #[must_use]
     pub const fn new(source: &'input str) -> Self {
         Self {
             source,
             stack: Vec::new(),
             last_offset: 0,
+            limits: ResourceLimits::moderate(),
+            collection_depth: 0,
+        }
+    }
+
+    /// Create a new builder without resource limits.
+    ///
+    /// Use only for trusted input. Prefer [`Self::new`] for ordinary input.
+    #[must_use]
+    pub const fn new_unchecked(source: &'input str) -> Self {
+        Self {
+            source,
+            stack: Vec::new(),
+            last_offset: 0,
+            limits: ResourceLimits::none(),
+            collection_depth: 0,
+        }
+    }
+
+    /// Create a new builder with caller-selected resource limits.
+    #[must_use]
+    pub fn new_with_config(source: &'input str, config: &LoaderConfig) -> Self {
+        Self {
+            source,
+            stack: Vec::new(),
+            last_offset: 0,
+            limits: config.limits.clone(),
+            collection_depth: 0,
         }
     }
 
@@ -242,7 +291,11 @@ impl<'input> CstBuilder<'input> {
     ) -> CstNode<'input> {
         for result in events {
             match result {
-                Ok(event) => self.process_event(event),
+                Ok(event) => {
+                    if !self.process_event(event) {
+                        break;
+                    }
+                }
                 Err(e) => {
                     self.handle_error(e);
                     break;
@@ -283,7 +336,7 @@ impl<'input> CstBuilder<'input> {
         })
     }
 
-    fn process_event(&mut self, event: Event<'input>) {
+    fn process_event(&mut self, event: Event<'input>) -> bool {
         match event {
             Event::StreamStart => {
                 self.open_node(NodeKind::Stream, Span::default());
@@ -320,8 +373,9 @@ impl<'input> CstBuilder<'input> {
                 self.close_to(NodeKind::Document);
             }
             Event::SequenceStart { span, .. } => {
-                self.insert_whitespace_before(span);
-                self.open_node(NodeKind::Sequence, span);
+                if !self.open_collection(NodeKind::Sequence, span) {
+                    return false;
+                }
                 self.push_source_token(TokenKind::FlowSeqStart, span);
             }
             Event::SequenceEnd { span } => {
@@ -331,8 +385,9 @@ impl<'input> CstBuilder<'input> {
                 self.close_to(NodeKind::Sequence);
             }
             Event::MappingStart { span, .. } => {
-                self.insert_whitespace_before(span);
-                self.open_node(NodeKind::Mapping, span);
+                if !self.open_collection(NodeKind::Mapping, span) {
+                    return false;
+                }
                 self.push_source_token(TokenKind::FlowMapStart, span);
             }
             Event::MappingEnd { span } => {
@@ -366,7 +421,7 @@ impl<'input> CstBuilder<'input> {
                 // bytes. Their span borrows the next token's position — skip to avoid
                 // extracting the wrong source text.
                 if value.is_empty() && style == yamalgam_scanner::ScalarStyle::Plain {
-                    return;
+                    return true;
                 }
                 self.insert_whitespace_before(span);
                 // Use source text for round-trip fidelity, not the processed value.
@@ -382,15 +437,32 @@ impl<'input> CstBuilder<'input> {
                 // Comments may arrive out of source order (after MappingEnd/SequenceEnd).
                 // If the source region is already covered, skip — it's in a whitespace gap.
                 if span.start.offset < self.last_offset {
-                    return;
+                    return true;
                 }
                 self.insert_whitespace_before(span);
                 self.push_token(TokenKind::Comment, text, span);
             }
         }
+        true
     }
 
     // -- Helpers --
+
+    /// Open a collection if doing so stays within the configured depth.
+    fn open_collection(&mut self, kind: NodeKind, span: Span) -> bool {
+        let Some(depth) = self.collection_depth.checked_add(1) else {
+            self.handle_error(ParseError::LimitExceeded("depth overflow".into()));
+            return false;
+        };
+        if let Err(message) = self.limits.check_depth(depth) {
+            self.handle_error(ParseError::LimitExceeded(message));
+            return false;
+        }
+        self.insert_whitespace_before(span);
+        self.open_node(kind, span);
+        self.collection_depth = depth;
+        true
+    }
 
     /// Open a new interior node on the stack.
     fn open_node(&mut self, kind: NodeKind, span: Span) {
@@ -404,6 +476,7 @@ impl<'input> CstBuilder<'input> {
     /// Pop the top node and add it as a child of the new top.
     fn close_node(&mut self) {
         if let Some(mut node) = self.stack.pop() {
+            let is_collection = matches!(node.kind, NodeKind::Mapping | NodeKind::Sequence);
             // Update span to cover all children.
             if let Some(last) = node.children.last() {
                 node.span.end = match last {
@@ -411,11 +484,16 @@ impl<'input> CstBuilder<'input> {
                     CstElement::Node(n) => n.span.end,
                 };
             }
-            if let Some(parent) = self.stack.last_mut() {
+            let attached = if let Some(parent) = self.stack.last_mut() {
                 parent.children.push(CstElement::Node(node));
+                true
             } else {
                 // No parent — push back (root node).
                 self.stack.push(node);
+                false
+            };
+            if attached && is_collection {
+                self.collection_depth = self.collection_depth.saturating_sub(1);
             }
         }
     }
@@ -556,11 +634,29 @@ impl<'input> CstBuilder<'input> {
 /// Parse a YAML string to a CST in one call.
 ///
 /// This is the simplest entry point. The returned tree preserves every byte
-/// of the input — `cst.to_text() == input` (round-trip property).
+/// of the input — `cst.to_text() == input` (round-trip property). Applies
+/// [`LoaderConfig::default`] resource limits.
 pub fn parse_to_cst(input: &str) -> CstNode<'_> {
-    let parser = Parser::new(input);
-    let builder = CstBuilder::new(input);
-    builder.build(parser)
+    parse_to_cst_with_config(input, &LoaderConfig::default())
+}
+
+/// Parse trusted YAML to a CST without resource limits.
+///
+/// Prefer [`parse_to_cst`] for ordinary input.
+pub fn parse_to_cst_unchecked(input: &str) -> CstNode<'_> {
+    parse_to_cst_with_config(input, &LoaderConfig::unchecked())
+}
+
+/// Parse a YAML string to a CST with caller-selected loader configuration.
+///
+/// The returned tree preserves every byte of the input, including when a
+/// resource limit stops parsing.
+pub fn parse_to_cst_with_config<'input>(
+    input: &'input str,
+    config: &LoaderConfig,
+) -> CstNode<'input> {
+    let parser = Parser::with_config(input, config);
+    CstBuilder::new_with_config(input, config).build(parser)
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +666,152 @@ pub fn parse_to_cst(input: &str) -> CstNode<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DEEP_CST_DROP_WORKER: &str = "YAMALGAM_DEEP_CST_DROP_WORKER";
+    const DEEP_CST_TRAVERSAL_WORKER: &str = "YAMALGAM_DEEP_CST_TRAVERSAL_WORKER";
+
+    fn nested_flow_sequence(depth: usize) -> String {
+        format!("{}0{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    fn contains_node_kind(root: &CstNode<'_>, kind: NodeKind) -> bool {
+        let mut pending = vec![root];
+        while let Some(node) = pending.pop() {
+            if node.kind == kind {
+                return true;
+            }
+            pending.extend(node.children.iter().rev().filter_map(|child| match child {
+                CstElement::Node(child) => Some(child),
+                CstElement::Token(_) => None,
+            }));
+        }
+        false
+    }
+
+    fn depth_config(max_depth: usize) -> LoaderConfig {
+        LoaderConfig {
+            limits: ResourceLimits {
+                max_depth: Some(max_depth),
+                ..ResourceLimits::none()
+            },
+            ..LoaderConfig::unchecked()
+        }
+    }
+
+    fn deeply_nested_public_cst(depth: usize) -> CstNode<'static> {
+        let span = Span {
+            start: yamalgam_core::Mark::default(),
+            end: yamalgam_core::Mark {
+                offset: 1,
+                ..Default::default()
+            },
+        };
+        let mut node = CstNode {
+            kind: NodeKind::Document,
+            span,
+            children: vec![CstElement::Token(CstToken {
+                kind: TokenKind::Scalar,
+                text: Cow::Borrowed("x"),
+                span,
+            })],
+        };
+        for _ in 0..depth {
+            node = CstNode {
+                kind: NodeKind::Sequence,
+                span,
+                children: vec![CstElement::Node(node)],
+            };
+        }
+        node
+    }
+
+    fn assert_deep_worker_succeeds(environment: &str, test_name: &str) {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .env(environment, "1")
+            .args(["--exact", test_name, "--nocapture"])
+            .output()
+            .expect("run deep CST worker");
+        assert!(
+            output.status.success(),
+            "deep CST worker failed: status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    fn deep_public_cst_traversals_are_stack_safe() {
+        if std::env::var_os(DEEP_CST_TRAVERSAL_WORKER).is_some() {
+            let node = deeply_nested_public_cst(100_000);
+            assert_eq!(node.to_text(), "x");
+            assert_eq!(node.to_string(), "x");
+            assert_eq!(node.leaf_count(), 1);
+            let deepest = node.node_at_offset(0).expect("offset in tree");
+            assert!(matches!(
+                deepest.children.as_slice(),
+                [CstElement::Token(_)]
+            ));
+            std::mem::forget(node);
+            return;
+        }
+
+        assert_deep_worker_succeeds(
+            DEEP_CST_TRAVERSAL_WORKER,
+            "tests::deep_public_cst_traversals_are_stack_safe",
+        );
+    }
+
+    #[test]
+    fn deep_public_cst_drop_is_stack_safe() {
+        if std::env::var_os(DEEP_CST_DROP_WORKER).is_some() {
+            drop(deeply_nested_public_cst(100_000));
+            return;
+        }
+
+        assert_deep_worker_succeeds(
+            DEEP_CST_DROP_WORKER,
+            "tests::deep_public_cst_drop_is_stack_safe",
+        );
+    }
+
+    #[test]
+    fn ordinary_cst_entry_point_uses_moderate_limits() {
+        let input = nested_flow_sequence(257);
+        let cst = parse_to_cst(&input);
+
+        assert_eq!(cst.to_text(), input);
+        assert!(contains_node_kind(&cst, NodeKind::Error));
+    }
+
+    #[test]
+    fn unchecked_cst_entry_points_preserve_unlimited_behavior() {
+        let input = nested_flow_sequence(257);
+
+        let parsed = parse_to_cst_unchecked(&input);
+        assert_eq!(parsed.to_text(), input);
+        assert!(!contains_node_kind(&parsed, NodeKind::Error));
+
+        let built = CstBuilder::new_unchecked(&input).build(Parser::new(&input));
+        assert_eq!(built.to_text(), input);
+        assert!(!contains_node_kind(&built, NodeKind::Error));
+    }
+
+    #[test]
+    fn cst_builder_enforces_collection_depth_at_the_exact_boundary() {
+        let config = depth_config(1);
+
+        let exact_input = "[0]";
+        let exact =
+            CstBuilder::new_with_config(exact_input, &config).build(Parser::new(exact_input));
+        assert_eq!(exact.to_text(), exact_input);
+        assert!(!contains_node_kind(&exact, NodeKind::Error));
+
+        let over_input = "[[0]]";
+        let over = CstBuilder::new_with_config(over_input, &config).build(Parser::new(over_input));
+        assert_eq!(over.to_text(), over_input);
+        assert!(contains_node_kind(&over, NodeKind::Error));
+    }
 
     #[test]
     fn empty_input_round_trip() {

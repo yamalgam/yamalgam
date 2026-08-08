@@ -69,17 +69,7 @@ impl LoaderConfig {
     #[must_use]
     pub const fn moderate() -> Self {
         Self {
-            limits: ResourceLimits {
-                max_input_bytes: Some(256 * 1024 * 1024),
-                max_scalar_bytes: Some(64 * 1024 * 1024),
-                max_key_bytes: Some(1024 * 1024),
-                max_depth: Some(256),
-                max_alias_expansions: Some(10_000),
-                max_anchor_count: Some(10_000),
-                max_merge_depth: Some(64),
-                max_collection_size: Some(1_000_000),
-                max_output_bytes: Some(256 * 1024 * 1024),
-            },
+            limits: ResourceLimits::moderate(),
             resolution: ResolutionPolicy::disabled(),
             tag_resolution: TagResolution::Yaml12,
         }
@@ -197,6 +187,22 @@ pub struct ResourceLimits {
 }
 
 impl ResourceLimits {
+    /// Balanced limits suitable for most workloads.
+    #[must_use]
+    pub const fn moderate() -> Self {
+        Self {
+            max_input_bytes: Some(256 * 1024 * 1024),
+            max_scalar_bytes: Some(64 * 1024 * 1024),
+            max_key_bytes: Some(1024 * 1024),
+            max_depth: Some(256),
+            max_alias_expansions: Some(10_000),
+            max_anchor_count: Some(10_000),
+            max_merge_depth: Some(64),
+            max_collection_size: Some(1_000_000),
+            max_output_bytes: Some(256 * 1024 * 1024),
+        }
+    }
+
     /// No limits — every field is `None`.
     #[must_use]
     pub const fn none() -> Self {
