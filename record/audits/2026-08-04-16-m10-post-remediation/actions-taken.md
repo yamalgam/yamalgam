@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 22
+  fixed: 23
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 5
+  open: 4
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -452,5 +452,26 @@ components. Existing mapping-key alias coverage preserves the public format.
 All 128 query tests, workspace clippy, and the full repository check with 1,927
 tests pass. Independent review confirmed the borrowed lifetimes and traversal
 semantics. This private hot-path refactor did not require an ADR.
+
+---
+
+## 2026-08-08 — String ranges sliced once
+
+**Disposition:** fixed
+**Addresses:** [string-range-retains-intermediate-string](README.md#string-range-retains-intermediate-string)
+**Commit:** eb575bf55a4c5619bb75f289c3d02510b55ccb56
+**Author:** Codex
+
+String range reads now reuse the existing character-to-byte boundary helper and
+construct `Rc<str>` directly from the borrowed UTF-8 slice. The intermediate
+owned `String` and its duplicate allocation and copy are gone, while character-
+indexed jq semantics remain unchanged.
+
+Regression coverage exercises ASCII and multibyte strings and verifies both
+read paths use the borrowed boundary helper; existing negative, clamped,
+reversed, and update-range behavior remains green. All 128 query tests,
+workspace clippy, and the full repository check with 1,927 tests pass.
+Independent review confirmed UTF-8 boundary and range semantics. This localized
+allocation cleanup did not require an ADR.
 
 ---
