@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 7
+  fixed: 8
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 20
+  open: 19
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -135,5 +135,27 @@ a typed scanner failure, proving finalization preserves
 `ScanErrorKind::UnexpectedCharacter` rather than consuming it and later
 reporting a generic parser error. Focused parser tests, the full workspace test
 suite, clippy, and doc tests pass.
+
+---
+
+## 2026-08-08 — CST recovery diagnostics retained
+
+**Disposition:** fixed
+**Addresses:** [cst-discards-parse-error](README.md#cst-discards-parse-error)
+**Commit:** 8c8e88646e5db1cf5593ae356a5d751bfe218547
+**Author:** Codex
+
+The new `CstReport` path returns the recovered, byte-lossless CST alongside its
+original structured diagnostics. `CstBuilder::build_report` retains upstream
+`ParseError` values and builder-generated resource-limit errors; bounded,
+configured, and explicitly unchecked convenience functions expose the same
+report contract.
+
+Existing `CstBuilder::build` and `parse_to_cst*` functions remain compatible
+tree-only recovery APIs. Regressions prove an unterminated scalar preserves its
+typed scanner error and a builder-local depth failure preserves
+`ParseError::LimitExceeded`, while both recovered trees reproduce their full
+source. Focused CST tests, the full workspace test suite, clippy, and doc tests
+pass.
 
 ---
