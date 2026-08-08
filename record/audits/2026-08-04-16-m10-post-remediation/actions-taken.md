@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 20
+  fixed: 21
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 7
+  open: 6
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -411,5 +411,24 @@ All 527 affected core, parser, composer, serde, CST, and query tests, all 351
 CST round-trip cases, workspace clippy, and the full repository check with
 1,926 tests pass. Independent review found and verified the explicit public-
 error compatibility treatment before commit.
+
+---
+
+## 2026-08-08 — Multi-document example compiled
+
+**Disposition:** fixed
+**Addresses:** [multidocument-rustdoc-example-is-never-compiled](README.md#multidocument-rustdoc-example-is-never-compiled)
+**Commit:** 28af252aab5892420c63aeaacbeda267f5bbfcf0
+**Author:** Codex
+
+The public `Deserializer::documents` example now imports `Deserializer` and
+uses a normal Rust code fence. Rustdoc therefore compiles and executes the
+documented two-document collection contract instead of reporting the example
+as ignored.
+
+The focused serde doc-test run passes one test with zero ignored, and the full
+repository check passes 1,926 workspace tests plus all doc tests. Independent
+review confirmed the example is complete, public, and idiomatic. This
+documentation test correction did not require an ADR.
 
 ---
