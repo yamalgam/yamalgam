@@ -1,0 +1,3301 @@
+---
+audit_date: 2026-08-03
+scope: "M10 milestone surface — 24 commits on branch m10-yg-cli vs main (merge-base 6e3a646): the new yamalgam-query crate, the yg CLI, and M10's yamalgam-core tag-resolution additions"
+commit: b96a66abf1495c84d2c23ced276678bd25527167
+assessment: |
+  M10 is the largest single expansion in this workspace's history and the one that
+  most changes its nature. Until this branch, yamalgam only ever read bytes and
+  produced events. M10 introduces three new trust boundaries simultaneously: a
+  third-party interpreter (jaq) that executes user-supplied filter programs, the
+  first file-write path (atomic in-place editing), and the first YAML emitter —
+  which means yamalgam now produces YAML that something else will parse.
+
+  The engineering is disciplined. There is no unsafe code, no threading, and no FFI
+  in the new surface. clippy passes with nursery lints enabled, cargo-udeps is clean,
+  and cargo-deny reports no advisory, ban, license, or source violations under the
+  project's own config. The error architecture uses thiserror throughout, the value
+  model is deliberate about metadata preservation, and the jq-manual fixture suite is
+  a genuinely strong completeness harness — the kind of test asset most projects
+  never build. Against the spec, M10 substantially delivers: the deviations found are
+  overwhelmingly the ones the implementation plan already documented for Clay's veto.
+
+  The findings concentrate in three places. First, resource bounds: the runtime limits
+  exist but are enforced at three call sites rather than structurally, so a filter can
+  construct depth and size at runtime that the parse-time gate never sees. Two agents
+  reached this conclusion independently from different rubrics, and it re-opens the
+  Billion Laughs concern one layer above where it was solved. Second, the emitter:
+  node tags are replayed into output nearly verbatim, which turns preserved metadata
+  from a fidelity feature into a structure-injection primitive. Third, allocation
+  behavior: the event-to-value builder duplicates every scalar to retain raw text,
+  which is a defensible design choice that has never been stated as one.
+
+  Nothing here is a critical finding, and nothing blocks the milestone. The three
+  significant items are all fixable without architectural change, and the bulk of what
+  remains is dominated by choices that are defensible but currently undocumented. The
+  gap between this audit and the one that ran at hour 18 is mostly the interpreter
+  surface, which did not exist in reviewable form then.
+
+  Every finding below was verified against the source by a second agent that did not
+  write it. That pass confirmed 35 findings, corrected 14, and killed 1 — a proposed
+  optimization that would have silently weakened the alias-expansion limit on the
+  --sort-keys path. Two further findings were merged as cross-narrative duplicates.
+  The corrections were overwhelmingly of one kind: a real defect paired with an
+  over-attributed cause or an over-promised fix. Where a remediation is stated here,
+  it has been checked to be implementable and to actually address the mechanism.
+
+narratives:
+  - slug: emitter-and-expansion
+    title: "The Emitter and Expansion Surface"
+    thesis: "M10 makes yamalgam a producer of YAML as well as a consumer, and the metadata it preserves for fidelity can be replayed into output as structure the user never wrote."
+    verdict: "The emitter's scalar quoting is careful — the agent found no gap in how ordinary strings are escaped — but tags are a different path with weaker checks, and that path carries attacker-controlled text from input to output. The expansion story is the more structural concern: explode_aliases exists to do on demand exactly what the parser refuses to do eagerly, and it does so without a budget. Neither finding requires rearchitecting; both require deciding that the query layer owns its own resource limits rather than inheriting them."
+    flow:
+      - id: read-input
+        label: "Read YAML input"
+        type: start
+      - id: parse
+        label: "Parse to events"
+        type: process
+      - id: parse-bounded
+        label: "Parse-time limits hold?"
+        type: decision
+        no: reject-input
+      - id: build-value
+        label: "Build YamlVal + meta"
+        type: process
+      - id: run-filter
+        label: "Run jaq filter"
+        type: process
+        findings:
+          - slug: explode-aliases-unbounded-expansion
+            label: "Unbounded expand"
+          - slug: env-access-always-compiled-in
+            label: "$ENV always on"
+      - id: emit
+        label: "Emit YAML"
+        type: process
+        findings:
+          - slug: emitter-replays-tags-verbatim
+            label: "Tag replay"
+          - slug: emitter-omits-c1-control-escapes
+            label: "C1 unescaped"
+      - id: output
+        label: "Document written"
+        type: end
+        findings:
+          - slug: emitter-plain-document-end-marker
+            label: "Bare ... marker"
+      - id: reject-input
+        label: "Reject document"
+        type: process
+        spine: false
+        findings:
+          - slug: runtime-limits-cover-three-call-sites
+            label: "3 call sites only"
+
+    findings:
+      - slug: emitter-replays-tags-verbatim
+        title: "YAML emitter writes node tags verbatim, allowing structure injection from a crafted tag"
+        criterion: "SEC-1"
+        surface: "Security"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 422
+            end_line: 430
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 360
+            end_line: 366
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 379
+            end_line: 398
+        evidence: |
+          fn safe_tag(tag: &str) -> Option<String> {
+              if tag.starts_with("!!") || tag.starts_with("!<") {
+                  return Some(tag.to_owned());
+              }
+              if let Some(local) = tag.strip_prefix('!') {
+                  return (!local.contains('!')).then(|| tag.to_owned());
+              }
+              Some(format!("!<{tag}>"))
+          }
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "5-6"
+            type: del
+            label: "any `!`-prefixed string with no second `!` is emitted byte-for-byte"
+          - lines: "2-3"
+            type: mark
+            label: "`!!` and `!<` prefixes are also passed through unchecked"
+        mechanism: |
+          `safe_tag` is the only sanitizer between a node's tag metadata and the emitted
+          document. It checks the tag's *prefix* but never validates the tag's character
+          content, so any tag beginning with `!` and containing no second `!` is copied
+          into the output verbatim by `properties()` (emit/yaml.rs:360-366), which then
+          writes it ahead of the node in `value_after_indicator` (emit/yaml.rs:159-161)
+          and `node` (emit/yaml.rs:65-71). A tag containing a line break therefore ends
+          the current line and starts a new one at column 0 — attacker-chosen YAML
+          structure inside a document the user believes yg merely reformatted.
+
+          Two independent sources feed unvalidated text into that sink:
+
+          1. A malicious input file. The scanner accepts any non-whitespace,
+             non-flow-indicator run after `!` as a tag suffix (scanner.rs:1643-1651) and
+             then percent-decodes it (`decode_tag_uri`, scanner.rs:2861-2878) with no
+             re-validation of the decoded result. The document
+             `k: !x%0Ainjected%3A%20true v` yields the tag `!x\ninjected: true`, which
+             the parser hands through unchanged (parser.rs:540) and build.rs stores in
+             `Meta.tag` (build.rs:197-203). `yg . evil.yaml` then emits:
+                 k: !x
+                 injected: true v
+             — a new top-level key that did not exist in the input. With `yg -i` the
+             injected structure is written straight into the user's file.
+          2. A filter. `set_tag` (value.rs:379-398) accepts an arbitrary string and
+             stores it as the tag with no character validation, unlike its sibling
+             `set_anchor` (value.rs:401-433), which enforces `[A-Za-z0-9_-]+`. A shared
+             filter that appears to be a formatting pass can therefore write arbitrary
+             text into an edited file.
+
+          Even without a line break this is a corruption primitive: `set_tag("x: 1")`
+          renders as `!<x: 1>`, a verbatim tag containing a space, which no conforming
+          parser will read back.
+        remediation: |
+          Validate tags at both boundaries instead of trusting the prefix.
+
+          - In `safe_tag`, reject or percent-re-encode any tag whose characters fall
+            outside YAML's `ns-tag-char` / `ns-uri-char` sets (no whitespace, no line
+            breaks, no control characters, no flow indicators). The safest form is to
+            re-encode the suffix with percent-escapes on the way out, which is what the
+            scanner decoded on the way in — that makes the emitter the exact inverse of
+            `decode_tag_uri` and closes both sources at once. Returning `None` (dropping
+            the tag) is acceptable as a fallback; silently emitting it is not.
+          - In `YamlVal::set_tag`, apply the same character validation and return
+            `Error::str` for a rejected tag, mirroring `set_anchor`'s existing check.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 6
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,6]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [emitter-omits-c1-control-escapes, emitter-plain-document-end-marker]
+        effort: small
+        effort_notes: "One character-class predicate shared by safe_tag and set_tag, plus tests"
+
+      - slug: explode-aliases-unbounded-expansion
+        title: "explode_aliases materializes the alias DAG with no resource limits (Billion Laughs)"
+        criterion: "SEC-5"
+        surface: "Security"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 503
+            end_line: 526
+        evidence: |
+              #[must_use]
+              // r[impl ext.explode]
+              pub(crate) fn explode_aliases(&self) -> Self {
+                  let data = match &self.data {
+                      Data::Seq(items) => Data::Seq(Rc::new(YgSeq(
+                          items.iter().map(Self::explode_aliases).collect(),
+                      ))),
+                      Data::Map(mapping) => Data::Map(Rc::new(YgMap(
+                          mapping
+                              .0
+                              .iter()
+                              .map(|(key, value)| (key.explode_aliases(), value.explode_aliases()))
+                              .collect(),
+                      ))),
+                      data => data.clone(),
+                  };
+                  let mut meta = self.meta.clone();
+                  if let Some(metadata) = &mut meta {
+                      let metadata = Rc::make_mut(metadata);
+                      metadata.anchor = None;
+                      metadata.alias_of = None;
+                  }
+                  Self { data, meta }
+              }
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "no &LoaderConfig / ResourceLimits parameter — nothing to check against"
+          - lines: "5-14"
+            type: del
+            label: "each alias reference rebuilds its whole subtree as fresh nodes"
+        mechanism: |
+          The rest of the M10 pipeline treats Billion Laughs correctly. `build.rs` counts
+          alias events against `check_alias_expansions` (build.rs:154-159) and shares the
+          anchored value by `Rc`, so parsing a bomb is cheap; `emit::validate_value`
+          re-counts alias expansions before rendering (emit/mod.rs:82-91); and the YAML
+          emitter re-emits `*anchor` references rather than expanding them. The
+          `explode_aliases` filter bypasses all of it.
+
+          It walks the *logical* tree rather than the `Rc` DAG and constructs a fresh
+          node for every reference, taking no limits argument and performing no checks.
+          A classic nine-level, nine-way bomb parses within even `--strict` limits (81
+          alias events against a cap of 100) but expands to 9^9 ≈ 3.9x10^8 nodes here,
+          exhausting memory long before the emitter's `validate_value` gets a chance to
+          count anything. `yg 'explode_aliases' bomb.yaml` — the exact filter a user
+          reaches for to normalize an untrusted file before committing it — is enough.
+          Neither `--strict` nor the default `moderate` profile bounds it, because the
+          only limit that would apply (`max_alias_expansions`) is never consulted on this
+          path.
+
+          A second, milder instance of the same gap: `Display for YamlVal`
+          (value.rs:793-828) also walks the expanded tree with no limits, and jaq error
+          construction formats values through it (for example `Error::typ(self.clone(),
+          "mapping")` in `merge_keys`, value.rs:463), so a type error on a bomb value
+          renders exponentially too.
+        remediation: |
+          Thread limits into the expansion. `explode_aliases` is invoked from `funs.rs:187`
+          where `context_value.0.data().context.config.limits` is already in hand — pass a
+          `&ResourceLimits` plus a running expansion counter and node budget, return
+          `jaq_core::ValR<Self>`, and fail with `Error::str` once
+          `check_alias_expansions` / `check_collection_size` trip. Counting expansions on
+          entry to each alias node (mirroring `build.rs:154-159`) is sufficient and keeps
+          the error message consistent with the loader's.
+
+          Separately, cap `Display for YamlVal` at the configured depth/output size, or
+          truncate the rendered value in error messages, so error formatting cannot be
+          turned into the same amplifier.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 11
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,11]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [runtime-limits-cover-three-call-sites]
+        effort: small
+        effort_notes: "Signature change to ValR plus a counter; one call site in funs.rs"
+
+      - slug: emitter-omits-c1-control-escapes
+        title: "Double-quote escaping omits DEL and C1 controls, emitting characters YAML forbids"
+        criterion: "SEC-1"
+        surface: "Security"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 865
+            end_line: 887
+        evidence: |
+          pub(crate) fn quote_double(value: &str) -> String {
+              use core::fmt::Write as _;
+
+              let mut output = String::with_capacity(value.len() + 2);
+              output.push('"');
+              for character in value.chars() {
+                  match character {
+                      '"' => output.push_str("\\\""),
+                      '\\' => output.push_str("\\\\"),
+                      '\n' => output.push_str("\\n"),
+                      '\t' => output.push_str("\\t"),
+                      '\r' => output.push_str("\\r"),
+                      '\0' => output.push_str("\\0"),
+                      control if (control as u32) < 0x20 => {
+                          write!(output, "\\x{:02x}", control as u32)
+                              .expect("writing to a String cannot fail");
+                      }
+                      other => output.push(other),
+                  }
+              }
+              output.push('"');
+              output
+          }
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "14"
+            type: mark
+            label: "only C0 controls below 0x20 are escaped"
+          - lines: "18"
+            type: del
+            label: "U+007F-U+009F and U+2028/U+2029 are written raw into the document"
+        mechanism: |
+          `needs_quotes` correctly forces double-quoting for these characters —
+          `char::is_control()` covers U+007F through U+009F (value.rs:847) — but
+          `quote_double` then writes them into the quoted scalar unescaped, because its
+          escape arm only matches code points below 0x20.
+
+          YAML 1.2's `c-printable` production excludes U+007F-U+0084 and U+0086-U+009F
+          entirely, so yg emits a document that a strictly conforming parser must reject.
+          yamalgam's own scanner is not such a parser and round-trips these values
+          successfully — input.rs:124 states outright that "printable chars enforced by
+          UTF-8 validation", and the scanner treats only `\n` and `\r` as line breaks — so
+          the exposure is interoperability, not self-inconsistency. U+0085 (NEL) is the
+          sharpest case: it is a legal character in 1.2 but a line break for libyaml,
+          PyYAML, and every YAML 1.1 reader, so a scalar yg emits silently re-parses as a
+          folded two-line scalar with different content in any of those consumers.
+
+          Reachable without a hostile filter: `yg -R -s . notes.txt` on a file containing
+          a U+0085 byte pair passes the character through `append_input`
+          (commands/query.rs:519-538) unexamined — `read_to_string` only validates UTF-8,
+          and `str::lines` only splits on `\n`. A `fromjson` input carrying a U+0085
+          JSON escape, and jaq string literals, are the other two paths.
+        remediation: |
+          Extend the escape arm to cover everything outside YAML's printable set, not just
+          C0: escape `\u{7f}..=\u{9f}` as `\xNN`, and `\u{2028}`/`\u{2029}` as `\L` /
+          `\P` (both are valid YAML double-quoted escapes). The cleanest form is to
+          invert the test — escape anything that is not `c-printable` — so future
+          additions cannot slip through. `json_quote` (emit/json.rs:100-118) has the
+          same shape and should get the matching `\u00NN` treatment for consistency,
+          though raw DEL is legal in JSON.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 11
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,11]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [emitter-replays-tags-verbatim, emitter-plain-document-end-marker]
+        effort: trivial
+        effort_notes: "Two match arms in quote_double plus round-trip tests"
+
+      - slug: emitter-plain-document-end-marker
+        title: "A string of `...` is emitted unquoted, becoming a document-end marker"
+        criterion: "SEC-1"
+        surface: "Security"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 832
+            end_line: 849
+        evidence: |
+          pub(crate) fn needs_quotes(value: &str, schema: yamalgam_core::TagResolution, flow: bool) -> bool {
+              use yamalgam_core::TagResolver as _;
+
+              if value.is_empty() || !schema.resolves_as_string(value) {
+                  return true;
+              }
+
+              let first = value.chars().next().unwrap_or(' ');
+              let syntactic_first = "!&*-?:,[]{}#|>@`\"'%".contains(first);
+              value.starts_with(' ')
+                  || value.ends_with(' ')
+                  || syntactic_first
+                  || value.contains(": ")
+                  || value.ends_with(':')
+                  || value.contains(" #")
+                  || value.chars().any(char::is_control)
+                  || (flow && value.contains([',', '[', ']', '{', '}']))
+          }
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "9"
+            type: mark
+            label: "`.` is not in the indicator set — `...` passes as a plain scalar"
+          - lines: "10-17"
+            type: mark
+            label: "no check for a value that begins a document-end marker"
+        mechanism: |
+          The indicator set covers every leading character that opens a YAML construct
+          except `.`, and there is no positional check for the document-end marker. A
+          string whose content is `...` (or `... anything`) is therefore emitted plain.
+
+          In value position this is harmless — `k: ...` re-reads as the string. At
+          `Position::Root` it is not: `to_yaml` sends a scalar document straight to
+          `scalar_node` (emit/yaml.rs:175-198), so `yg '.a' evil.yaml > clean.yaml`
+          where `a: ...` (plain style) writes a file whose entire content is `...`, a
+          document-end marker. Re-reading `clean.yaml` yields an empty document, not the
+          string. The trigger requires the scalar to reach the emitter with plain or
+          absent style: a quoted input scalar carries its `NodeStyle` through to
+          `string()` (emit/yaml.rs:284-292) and is re-quoted safely, but a plain input
+          scalar or a filter-constructed string (`yg -n '"..."'`) is not. The
+          same applies between documents in multi-document output, where `run_records`
+          writes `---` and then the bare marker (commands/query.rs:145-148), and under
+          `-i`, where the file the user asked to edit becomes an empty document.
+
+          The counterpart `---` is caught only incidentally, by the `-` in the indicator
+          set — which is the shape of the gap: the check is character-classifying, not
+          context-aware.
+        remediation: |
+          Quote any scalar that would be read as a document marker in the position it is
+          being written. Minimal fix: in `needs_quotes`, return `true` when the value is
+          `...` or starts with `... `; the `Position::Root` distinction is not worth
+          threading through, and quoting it everywhere costs nothing. Add `---` to the
+          same test so the behaviour is explicit rather than a side effect of the `-`
+          indicator.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 11
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,11]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [emitter-replays-tags-verbatim, emitter-omits-c1-control-escapes]
+        effort: trivial
+        effort_notes: "One clause in needs_quotes plus a round-trip test"
+
+      - slug: runtime-limits-cover-three-call-sites
+        title: "Filter-constructed collections bypass the configured resource limits"
+        criterion: "SEC-5"
+        surface: "Security"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 685
+            end_line: 690
+          - path: crates/yamalgam-query/src/runtime_limits.rs
+            start_line: 19
+            end_line: 25
+        evidence: |
+          impl FromIterator<Self> for YamlVal {
+              // r[impl filters.construct.seq]
+              fn from_iter<T: IntoIterator<Item = Self>>(iter: T) -> Self {
+                  Self::seq(iter.into_iter().collect())
+              }
+          }
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "4"
+            type: del
+            label: "unbounded collect — this is what jaq's `[ ... ]` calls"
+        mechanism: |
+          `runtime_limits` exists to carry `ResourceLimits` into jaq trait methods that
+          do not receive `RunCtx`, and `run_filter_with_null_input` activates it for the
+          whole run (engine.rs:227). But it is consulted at exactly three places:
+          `check_collection_size` in the two `map_index` sequence-extension arms
+          (valt.rs:202, valt.rs:266) and `check_scalar_size` in string multiplication
+          (ops.rs:130). Every other constructor is unbounded.
+
+          jaq compiles `[ f ]` to `Ast::Arr(f) => box_once(f.run(cv).collect())`
+          (jaq-core filter.rs:473), which lands in this `FromIterator` impl. `[range(1e9)]`
+          therefore allocates a billion `YamlVal`s and is killed by the OOM killer;
+          `reduce range(1e9) as $i ([]; . + [$i])` and `map(.)` over a large input are the
+          same. `--strict`, which a user reasonably expects to bound a hostile workload,
+          changes nothing here.
+
+          Weighted as advisory because the input is a filter, which is code the user chose
+          to run, and jq itself OOMs on `[range(1e9)]` — this is parity, not a regression.
+          It is worth recording because the presence of `runtime_limits` and a
+          `--strict` flag advertise a stronger guarantee than the code provides, and the
+          distinct, input-driven case (`explode-aliases-unbounded-expansion`) is a real
+          bug that lives in the same blind spot.
+        remediation: |
+          Either enforce or document. Enforcement is only partly available where it is
+          most wanted: `FromIterator::from_iter` returns `Self`, as do `YamlVal::seq`
+          (value.rs:182) and `YamlVal::map` (value.rs:191), so a `check_collection_size`
+          at those sites has no error channel and could only panic, truncate, or set a
+          deferred flag. Of the three call sites, only `ValT::from_map` (valt.rs:33,
+          returning `ValR<Self>`) can propagate a failure directly. So: enforce in
+          `ValT::from_map`, and for the `Self`-returning constructors either record a
+          tripped-limit flag in a thread-local beside `runtime_limits::ACTIVE` and convert
+          it to a `YgError::Runtime` after each output — the same shape this audit proposes
+          for `into_string` — or accept that array construction is unbounded and take the
+          documentation option instead. To document, state in the `--strict` help text and the
+          spec that limits bound *input parsing and output rendering*, not filter
+          evaluation, so `--strict` is not mistaken for a sandbox.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 11
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,11]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [explode-aliases-unbounded-expansion]
+        effort: small
+        effort_notes: "Two check calls, or a documentation change"
+
+      - slug: env-access-always-compiled-in
+        title: "The `env` filter is always available; the sandboxed compile option is unreachable from the CLI"
+        criterion: "SEC-3"
+        surface: "Security"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 36
+            end_line: 40
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 161
+            end_line: 163
+        evidence: |
+          impl Default for CompileOptions {
+              fn default() -> Self {
+                  Self { allow_env: true }
+              }
+          }
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "default grants environment access; CLI never overrides it"
+        mechanism: |
+          `compile_filter` — the only entry point the CLI uses (commands/query.rs:49) —
+          calls `compile_filter_with_options` with `CompileOptions::default()`, so `env`
+          is registered for every run (funs.rs:14). `CompileOptions::sandboxed()` exists
+          and is tested (tests/engine.rs:118-122) but has no CLI flag; a grep of the
+          workspace finds no non-test caller.
+
+          Concrete path: a filter shared as a formatting or migration script, run as
+          `yg -f team-normalize.jq -i deploy.yaml`, can evaluate
+          `.metadata.annotations.x = env.GITHUB_TOKEN` and commit a live credential into
+          the repository, or simply print the environment to stdout in a CI log. This is
+          jq's behaviour too, so it is not a deviation — but yg's `-i` flag turns
+          "prints your secrets" into "persists your secrets", and yg already has the
+          switch to prevent it.
+
+          Also noted, and correct as built: jaq module loading is disabled. `Loader::new`
+          defaults its reader to `|_path| Err("module loading not supported".into())`
+          (jaq-core load/mod.rs:194) and `compile_filter` never calls `with_read` /
+          `with_std_read`, so `include`/`import` in a filter cannot read arbitrary paths.
+          That is the one filter-side file-access primitive, and it is closed.
+        remediation: |
+          Wire the existing knob to a flag — `--no-env` (or `--sandbox`, leaving room for
+          the M11 include/ref policies) selecting `CompileOptions::sandboxed()`. Consider
+          making it the default when `-i` is in effect, since an in-place edit is the one
+          mode where a filter's output is persisted without the user reading it first.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 6
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,6]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "One clap flag threaded to the existing CompileOptions parameter"
+
+  - slug: error-and-panic
+    title: "The Error and Program Flow Surface"
+    thesis: "The error architecture is typed and disciplined, but the runtime's growth bounds are enforced by convention at call sites rather than by construction, and one class of input error loses its type on the way out."
+    verdict: "This surface is the audit's center of gravity. The findings are not about missing error handling — thiserror is used properly and the ? propagation is consistent — but about where the bounds live. Recursion over the value tree has no depth ceiling, growth operators sidestep the limits that do exist, and a limit-labeled error is used for what are actually builder invariant violations, which will make real limit breaches harder to diagnose. The in-place edit path is otherwise well built; its one rough edge is treating a chown failure as fatal after the content is already correct."
+    flow:
+      - id: cli-invoke
+        label: "yg invoked"
+        type: start
+      - id: compile-filter
+        label: "Compile filter"
+        type: process
+      - id: compile-ok
+        label: "Filter valid?"
+        type: decision
+        no: exit-3
+      - id: evaluate
+        label: "Evaluate over docs"
+        type: process
+        findings:
+          - slug: value-tree-recursion-has-no-depth-bound
+            label: "No depth bound"
+          - slug: growth-operators-bypass-runtime-limits
+            label: "Limits bypassed"
+      - id: eval-ok
+        label: "Runtime error?"
+        type: decision
+        no: exit-5
+      - id: write-out
+        label: "Write result"
+        type: process
+        findings:
+          - slug: in-place-chown-failure-aborts-the-edit
+            label: "chown fatal"
+      - id: exit-0
+        label: "Exit 0"
+        type: end
+      - id: exit-3
+        label: "Exit 3 (compile)"
+        type: process
+        spine: false
+        findings:
+          - slug: input-error-class-flattened-through-string
+            label: "Class flattened"
+      - id: exit-5
+        label: "Exit 5 (runtime)"
+        type: process
+        spine: false
+        findings:
+          - slug: halt-exit-code-truncated-to-u8
+            label: "halt truncated"
+
+    findings:
+      - slug: value-tree-recursion-has-no-depth-bound
+        title: "Recursive YamlVal traversals have no depth bound; only the Drop path is iterative"
+        criterion: "11.5"
+        surface: "Panic & Program Flow"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 505
+            end_line: 526
+        evidence: |
+          pub(crate) fn explode_aliases(&self) -> Self {
+              let data = match &self.data {
+                  Data::Seq(items) => Data::Seq(Rc::new(YgSeq(
+                      items.iter().map(Self::explode_aliases).collect(),
+                  ))),
+                  Data::Map(mapping) => Data::Map(Rc::new(YgMap(
+                      mapping
+                          .0
+                          .iter()
+                          .map(|(key, value)| (key.explode_aliases(), value.explode_aliases()))
+                          .collect(),
+                  ))),
+                  data => data.clone(),
+              };
+              let mut meta = self.meta.clone();
+              if let Some(metadata) = &mut meta {
+                  let metadata = Rc::make_mut(metadata);
+                  metadata.anchor = None;
+                  metadata.alias_of = None;
+              }
+              Self { data, meta }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2-13"
+            type: mark
+            label: "unconditional recursion into every child; no depth parameter, no check_depth"
+        mechanism: |
+          Every structural traversal of YamlVal outside the Drop path is naked
+          recursion with no depth parameter and no ResourceLimits::check_depth call:
+          explode_aliases (value.rs:505), PartialEq::eq (value.rs:698), Ord::cmp
+          (value.rs:742), Hash::hash (value.rs:759), Display::fmt (value.rs:793), and
+          deep_merge (ops.rs:29). The crate already knows deep value trees are a
+          stack hazard - YgSeq and YgMap carry hand-written Drop impls that hand off
+          to the explicit worklist in drop_values (value.rs:124) precisely to avoid
+          recursive destruction - so the mitigation exists on exactly one path and
+          nowhere else.
+
+          Two ways to reach a value deeper than max_depth. First, from input: the
+          builder's check_depth(depth) at build.rs:93 counts *event nesting*, not
+          resulting value depth, and Event::Alias clones the anchored value without
+          incrementing depth (build.rs:154-171). A chain of anchors
+          ("a: &a0 [0]" / "b: &a1 [*a0]" / "c: &a2 [*a1]" ...) therefore yields a
+          value tree as deep as the anchor chain from a document whose syntactic
+          depth is 2. The only ceiling is max_anchor_count / max_alias_expansions
+          (both 10_000 under moderate; max_anchor_count is None under --trusted with
+          max_alias_expansions at 1_000_000). Second, from the filter, which this
+          audit's scope treats as untrusted: "reduce range(200000) as $i (null; [.])"
+          builds arbitrary depth with nothing checking it at all.
+
+          Consuming such a value with explode_aliases, sort, unique, ==, group_by,
+          "a * b", or simply using it as a mapping key (build.rs:144 inserts into an
+          IndexMap, which hashes the key) drives recursion to that depth. A stack
+          overflow in Rust is a SIGSEGV/abort, not a catchable panic. The emit path
+          is the one place that is protected - emit/mod.rs validate_value walks
+          iteratively and calls check_depth before to_yaml/to_json recurse - which
+          shows the correct pattern is already understood and simply was not applied
+          to the value type's own traversals.
+        remediation: |
+          Give the recursive traversals the same treatment validate_value already
+          has. Either convert explode_aliases, deep_merge, Display, and Ord/Eq/Hash
+          to explicit worklists like drop_values, or thread a depth counter through
+          the ones that return Result (explode_aliases, deep_merge) and bound the
+          ones that cannot (Ord/Eq/Hash/Display) by making the builder enforce a
+          *value* depth budget: track resulting depth when an alias is expanded in
+          build.rs so check_depth reflects post-expansion tree depth rather than
+          event nesting. Independently, cap depth for filter-constructed values at
+          the point jaq hands an output back to the driver, since nothing bounds
+          them today.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 13
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,13]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [growth-operators-bypass-runtime-limits]
+        effort: medium
+        effort_notes: "Worklist rewrites of four traversals, or a depth-accounting change in the alias expansion path"
+
+      - slug: input-error-class-flattened-through-string
+        title: "Input errors round-trip through String, collapsing every class to InputParse (exit 5)"
+        criterion: "5.4"
+        surface: "Error Handling"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 226
+            end_line: 230
+        evidence: |
+          {
+              let _limit_guard = crate::runtime_limits::activate(&context.config.limits);
+              let inputs = inputs.map(|result| result.map_err(|error| error.into().to_string()));
+              let inputs: Box<dyn Iterator<Item = Result<YamlVal, String>> + 'a> = Box::new(inputs);
+              let inputs = RcIter::new(inputs);
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "YgError -> String discards the exit-code class"
+        mechanism: |
+          YgError is documented at error.rs:28 as "partitioned by their CLI exit-code
+          class", and exit_for (commands/query.rs:610) maps InputRead to 2 and
+          InputParse/Runtime to 5. The input stream defeats that partition: every
+          per-input error is stringified at engine.rs:228 to satisfy jaq's
+          RcIter<Result<V, String>> contract, then reconstructed unconditionally as
+          YgError::InputParse at engine.rs:246
+          ("let input = input.map_err(|error| E::from(YgError::InputParse(error)))?;").
+          An InputRead error therefore exits 5 instead of 2.
+
+          This is reachable in normal use. cmd_query pre-checks paths with
+          fs::metadata (validate_input_paths, commands/query.rs:435), which succeeds
+          on a file the caller cannot open; the later read_to_string in
+          collect_inputs (commands/query.rs:473) then fails with EACCES, producing
+          YgError::InputRead, which the round-trip converts to InputParse.
+          "chmod 000 f.yaml; yg . f.yaml" exits 5 ("the document was malformed") when
+          the contract says 2 ("the file was unavailable"). Anything scripted against
+          yg's exit codes cannot distinguish an unreadable file from a broken
+          document.
+
+          The blanket "impl From<String> for YgError" at error.rs:81-85 is what makes
+          the lossy conversion invisible: any bare String silently becomes
+          InputParse, so the compiler cannot flag the place where the class was
+          dropped.
+        remediation: |
+          Carry the class alongside the message rather than reconstructing it. Keep a
+          side channel: stash the original YgError in a RefCell on RunCtx keyed to
+          the input being yielded, and on failure at engine.rs:246 restore the stored
+          error instead of wrapping the string. Deleting "impl From<String> for
+          YgError" would force every remaining call site to name its class
+          explicitly, and a CLI test asserting exit 2 for an unreadable-but-present
+          file would pin the behavior.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [halt-exit-code-truncated-to-u8]
+        effort: small
+        effort_notes: "Side-channel stash plus removing the blanket From<String> impl"
+
+      - slug: growth-operators-bypass-runtime-limits
+        title: "runtime_limits guards string repeat but not concatenation or sequence growth"
+        criterion: "11.2"
+        surface: "Panic & Program Flow"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/ops.rs
+            start_line: 57
+            end_line: 69
+        evidence: |
+          let data = match (self.data, rhs.data) {
+              (Null, data) | (data, Null) => data,
+              (Int(left), Int(right)) => {
+                  int_op(left, right, i64::checked_add, |left, right| left + right)
+              }
+              (Int(left), Float(right)) => Float(left as f64 + right),
+              (Float(left), Int(right)) => Float(left + right as f64),
+              (Float(left), Float(right)) => Float(left + right),
+              (Str(left), Str(right)) => Str(Rc::from(format!("{left}{right}"))),
+              (Seq(mut left), Seq(right)) => {
+                  Rc::make_mut(&mut left).extend(right.iter().cloned());
+                  Seq(left)
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "9"
+            type: del
+            label: "unbounded string concat: no check_scalar_size"
+          - lines: "10-13"
+            type: del
+            label: "unbounded sequence growth: no check_collection_size"
+        mechanism: |
+          runtime_limits.rs exists so that jaq trait methods, which never receive
+          RunCtx, can still see the run's ResourceLimits through a thread-local
+          activated in run_filter_with_null_input (engine.rs:227). The guard itself is
+          real and correctly scoped - the Guard's Drop restores the previous value -
+          but it is consulted on only three paths in the whole crate: string repeat in
+          Mul (ops.rs:130, "crate::runtime_limits::check_scalar_size(size)") and the
+          two sparse-array assign paths in map_index (valt.rs:202, valt.rs:266).
+
+          The adjacent growth operators are unchecked. "Str + Str" (ops.rs:65)
+          allocates a fresh String of any size, and "Seq + Seq" (ops.rs:67) extends
+          without consulting check_collection_size. Because "*" is guarded and "+" is
+          not, the coverage is easy to mistake for complete. With the filter treated
+          as untrusted input, "yg -n 'reduce range(40) as $i (\"x\"; . + .)'" doubles
+          the allocation forty times with nothing to stop it; Rust's default
+          allocation-failure handler aborts the process rather than unwinding, so
+          there is no error to report and no exit code to interpret. The same applies
+          to "reduce range(40) as $i ([0]; . + .)" for sequences. Under --trusted the
+          checked paths are disabled too (max_scalar_bytes and max_collection_size are
+          both None), but that is an explicit opt-in; the gap is visible under the
+          default moderate profile, which does cap both.
+        remediation: |
+          Call crate::runtime_limits::check_scalar_size on the summed length before
+          the concat at ops.rs:65 (checked_add on the two lengths first), and
+          check_collection_size on left.len() + right.len() before the extend at
+          ops.rs:67. Then sweep the remaining constructors that can grow a value -
+          ValT::from_map (valt.rs:33), YamlVal::seq via FromIterator (value.rs:687),
+          and map_values (valt.rs:142) - for the same omission, and add a test per
+          operator so the guard's coverage is asserted rather than assumed.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [value-tree-recursion-has-no-depth-bound]
+        effort: small
+        effort_notes: "Two check calls plus a sweep of the other growth sites"
+
+      - slug: into-string-substitutes-error-text-as-data
+        title: "ValT::into_string turns an emit error into a plausible string value"
+        criterion: "5.3"
+        surface: "Error Handling"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/valt.rs
+            start_line: 350
+            end_line: 356
+        evidence: |
+          fn into_string(self) -> Self {
+              match self.data {
+                  Data::Str(string) => Self::str(string),
+                  data => crate::emit::to_json(&yaml_value(data), &crate::EmitOpts::compact())
+                      .map_or_else(|error| Self::str(format!("<yg: {error}>")), Self::str),
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "5"
+            type: del
+            label: "emit failure becomes an ordinary string value in the output"
+        mechanism: |
+          into_string backs "tostring" and string interpolation. to_json can fail for
+          two reasons that are entirely input-driven: EmitError::Limit, and
+          EmitError::DuplicateJsonKey when two distinct YAML keys collapse to the same
+          JSON name. On either failure the error text is wrapped as an ordinary
+          YamlVal string and flows onward as data:
+
+            $ printf '{1: "x", "1": "y"}\n' | yg '. | tostring'
+            "<yg: JSON object key \"1\" would be duplicated after string conversion>"
+            exit=0
+
+          Note which limits apply here, because it is not the run's: into_string
+          renders with EmitOpts::compact(), which inherits EmitOpts::default(), whose
+          limits are hard-wired to LoaderConfig::moderate().limits (emit/mod.rs:61).
+          The invocation's own profile never reaches this render, so --strict neither
+          tightens nor applies - the cap is moderate's regardless. The reachable Limit
+          trigger is moderate's max_depth of 256, checked by validate_value before
+          rendering:
+
+            $ yg -n 'reduce range(300) as $i (null; [.]) | tostring'
+            "<yg: depth 257 exceeds maximum of 256>"
+
+          Either way the result is exit 0 with nothing on stderr - and a downstream
+          "| fromjson", or a write into a config file, then consumes the error message
+          as a value.
+
+          jaq's trait signature ("fn into_string(self) -> Self") genuinely forbids
+          propagating a Result here, so there is no clean local option. But silently
+          substituting an error string for data is the worst of the available
+          choices: it is indistinguishable from a legitimate value and the exit code
+          still reports success. Note that the sibling native "tojson" (funs.rs:78)
+          can propagate and does, so the two spellings of the same operation disagree
+          about whether a limit breach is fatal.
+        remediation: |
+          Record the failure in a thread-local next to runtime_limits::ACTIVE (or a
+          RefCell on RunCtx) when into_string falls back, and have
+          run_filter_with_null_input check that flag after each output and convert it
+          into a YgError::Runtime. Alternatively render into_string with
+          ResourceLimits::none(), since an internal string conversion is not what
+          max_output_bytes is about - that removes the Limit branch entirely and
+          leaves only DuplicateJsonKey to surface.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [input-error-class-flattened-through-string]
+        effort: small
+        effort_notes: "Either a flag-and-check side channel or swapping the limits used for the internal render"
+
+      - slug: halt-exit-code-truncated-to-u8
+        title: "halt(code) exit status truncates to u8, mapping halt(256) to success"
+        criterion: "5.7"
+        surface: "Error Handling"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 610
+            end_line: 619
+        evidence: |
+          fn exit_for(error: &YgError) -> ExitCode {
+              match error {
+                  YgError::Usage(_) | YgError::FilterSyntax(_) => ExitCode::from(2),
+                  YgError::FilterCompile(_) => ExitCode::from(3),
+                  YgError::InputRead(_) => ExitCode::from(2),
+                  YgError::InputParse(_) | YgError::Runtime(_) => ExitCode::from(5),
+                  YgError::Halt(code) => ExitCode::from(*code as u8),
+                  YgError::BrokenPipe => ExitCode::SUCCESS,
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "7"
+            type: mark
+            label: "i32 -> u8 truncation: halt(256) and halt(512) both exit 0"
+        mechanism: |
+          jaq surfaces "halt(code)" as an i32 (error.rs:58-66 extracts it via
+          get_halt). exit_for casts it with "as u8", which silently wraps: halt(256)
+          and halt(512) both exit 0, and halt(-1) exits 255. report()
+          (commands/query.rs:591) additionally suppresses the diagnostic for Halt, so
+          a filter that deliberately requests a failure exit can produce a completely
+          silent success. A caller writing
+          "yg 'if .bad then halt(256) else . end' || alarm" never fires the alarm.
+          Only exact multiples of 256 collapse to success — halt(400) truncates to 144,
+          which is still a failure status — so the blast radius is narrow, but it is
+          silent where it lands.
+
+          This matches jq, whose halt calls exit() and is truncated by the OS the same
+          way, so the behavior is defensible as compatibility rather than a bug. It is
+          flagged because it is the only place in this function where an exit code is
+          produced by a lossy cast rather than a literal, and nothing in the code or
+          the r[impl cli.exit] annotations records that the truncation is intentional.
+        remediation: |
+          Either clamp explicitly and document the intent - "u8::try_from(*code)" with
+          a fallback and a comment naming jq compatibility as the reason - or reject
+          out-of-range halt codes where YgError::Halt is constructed so the filter
+          author gets a diagnostic instead of a wrapped status. A test pinning
+          halt(256) to whichever behavior is chosen keeps the decision from drifting.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [input-error-class-flattened-through-string]
+        effort: trivial
+        effort_notes: "One expression plus a comment, or validation at construction"
+
+      - slug: build-invariant-errors-labeled-as-limit
+        title: "Parser invariant violations are reported as BuildError::Limit"
+        criterion: "5.4"
+        surface: "Error Handling"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/build.rs
+            start_line: 172
+            end_line: 174
+        evidence: |
+          unexpected => Err(BuildError::Limit(format!(
+              "unexpected parser event while building a node: {unexpected:?}"
+          ))),
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1"
+            type: mark
+            label: "an internal invariant violation wearing the Limit variant"
+        mechanism: |
+          BuildError::Limit is documented as "A loader resource limit was exceeded"
+          (error.rs:23-25). Two sites use it for something else entirely: an
+          unexpected event kind mid-node (build.rs:172) and a truncated event stream
+          (build.rs:243, "BuildError::Limit(\"unexpected end of parser event stream\")").
+          Both are parser-contract violations, not resource exhaustion. Choosing an
+          error over a panic here is the right call - neither site can abort the
+          process - but it means a caller matching on BuildError cannot distinguish
+          "your document exceeded the configured limits, retry with --trusted" from
+          "the parser and builder disagree, file a bug". BuildError is public and
+          converts into YgError::InputParse, so the misclassification reaches the user
+          as advice that will not help.
+        remediation: |
+          Add a distinct variant - BuildError::UnexpectedEvent(String) or similar -
+          for the two invariant sites, leaving Limit to mean only what its doc comment
+          says. The crate is pre-release with no published API, so adding a variant
+          costs nothing.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "One new enum variant and two call sites"
+
+      - slug: in-place-chown-failure-aborts-the-edit
+        title: "-i aborts on any file whose owner or group the caller cannot reproduce"
+        criterion: "5.1"
+        surface: "Error Handling"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 326
+            end_line: 337
+        evidence: |
+          #[cfg(unix)]
+          fn preserve_owner(
+              temporary: &std::path::Path,
+              source: &std::fs::Metadata,
+              path: &camino::Utf8Path,
+          ) -> Result<(), YgError> {
+              use std::os::unix::fs::MetadataExt as _;
+
+              std::os::unix::fs::chown(temporary, Some(source.uid()), Some(source.gid())).map_err(|error| {
+                  YgError::Runtime(format!("failed to preserve ownership for {path}: {error}"))
+              })
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "9-11"
+            type: mark
+            label: "EPERM here is fatal to the whole -i run, with no fallback and no warning"
+        mechanism: |
+          run_in_place calls preserve_owner unconditionally before persisting
+          (commands/query.rs:235). chown(2) to a uid other than your own is root-only,
+          and setting a gid you are not a member of also fails, so "yg -i" errors out
+          for any file owned by another user or carrying a foreign group - even when
+          the directory is writable and the edit would otherwise succeed. Comparable
+          tools do not behave this way: sed -i and the usual jq sponge idiom simply
+          leave the replacement owned by the caller.
+
+          The failure is clean. It happens before persist, and the NamedTempFile is
+          dropped and deleted, so nothing is corrupted and no partial write escapes.
+          What makes it worth flagging is the inconsistency: this is the only
+          metadata-preservation step in run_in_place that is fatal. The sibling
+          hard-link case emits a warning and continues (warn_if_hard_linked,
+          commands/query.rs:312), and set_permissions runs afterward. Failing closed
+          on ownership may well be the intended policy, but nothing states it and
+          there is no way to opt out.
+        remediation: |
+          Decide the policy explicitly and make it consistent with
+          warn_if_hard_linked: either warn and continue when chown returns EPERM
+          (documenting that the replacement will be owned by the caller), or keep the
+          hard failure and say so in the -i help text and in the error message, e.g.
+          "refusing to change ownership of {path}; re-run as its owner". Matching on
+          the error kind is worth doing either way - a genuine I/O failure should stay
+          fatal regardless of which policy is chosen.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 2
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "Match on the error kind and choose warn-vs-fail"
+
+      - slug: unreachable-macros-guard-unstated-invariants
+        title: "unreachable!() in the emitter and builder encode invariants nothing asserts"
+        criterion: "11.4"
+        surface: "Panic & Program Flow"
+        concern: note
+        locations:
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 74
+            end_line: 80
+        evidence: |
+          fn block_collection(&mut self, output: &mut String, value: &YamlVal, depth: usize) {
+              match &value.data {
+                  Data::Seq(items) => self.sequence(output, items, depth),
+                  Data::Map(mapping) => self.mapping(output, mapping, depth, false),
+                  _ => unreachable!("block collections must be sequences or mappings"),
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "5"
+            type: mark
+            label: "holds only because every caller pre-checks is_block_collection"
+        mechanism: |
+          Four unreachable!() sites appear outside #[cfg(test)]: emit/yaml.rs:78,
+          emit/yaml.rs:237, emit/yaml.rs:252, and build.rs:254. Each was traced and
+          none is currently reachable from external input. block_collection is only
+          ever called after is_block_collection() has confirmed a non-empty Seq or Map
+          (node at yaml.rs:57, sequence at yaml.rs:84, mapping_entry at yaml.rs:131);
+          the flow-scalar case at yaml.rs:237 passes Position::Flow, which forces
+          block_allowed false in string() (yaml.rs:259) so Rendered::Literal cannot be
+          produced; scalar() at yaml.rs:252 is only entered from arms that have
+          already excluded Seq and Map; and core_value_to_data is only ever fed
+          TagResolution::resolve_scalar output, which is a concrete crate-owned enum
+          that never yields a collection.
+
+          This is recorded as a pass on 11.4, not a defect. It is worth noting only
+          because the invariants are load-bearing and unstated: each couples two
+          functions across a file boundary (emitter positional state, or the
+          TagResolver contract) with nothing but a panic message documenting the
+          coupling, so a future change to is_block_collection or to a TagResolver impl
+          converts a logic slip into a process abort rather than a compile error or a
+          Result.
+        remediation: |
+          No change required for correctness. If these are touched anyway, prefer
+          making the invariant structural - have block_collection take a type that can
+          only hold a Seq or Map, and have resolve_scalar return a scalar-only type -
+          so the unreachable arm disappears instead of being asserted. At minimum, a
+          doc comment on each naming the caller-side check that upholds it would keep
+          the coupling visible.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: small
+        effort_notes: "Type-level restructuring if pursued; nothing needed otherwise"
+
+  - slug: allocation-and-throughput
+    title: "The Allocation and Throughput Surface"
+    thesis: "The query path trades yamalgam's zero-copy discipline for metadata fidelity, and that trade — reasonable in itself — is made silently and then compounded by per-scalar allocations in the resolver and emitters."
+    verdict: "None of these findings affect correctness, and the headline one is a design decision rather than a defect: retaining raw scalar text costs a duplicate allocation for every scalar in the document, which is the price of the round-trip fidelity M10 exists to provide. The problem is that the price is nowhere stated, so nobody can decide whether to pay it per-invocation. Below that sit a set of ordinary, individually small allocation inefficiencies that matter only because they sit in per-scalar and per-node loops. Unbuffered CLI output is the cheapest meaningful win on the list."
+    flow:
+      - id: events
+        label: "Parser events"
+        type: start
+      - id: build
+        label: "Build value tree"
+        type: process
+        findings:
+          - slug: build-raw-metadata-duplicates-every-scalar
+            label: "Dup per scalar"
+      - id: resolve
+        label: "Resolve tags"
+        type: process
+        findings:
+          - slug: resolver-allocates-throwaway-string-per-scalar
+            label: "Throwaway alloc"
+      - id: filter
+        label: "Filter evaluation"
+        type: process
+      - id: validate
+        label: "Validate for emit"
+        type: process
+        findings:
+          - slug: emit-validation-walks-the-tree-a-second-time
+            label: "Second walk"
+      - id: serialize
+        label: "Serialize scalars"
+        type: process
+        findings:
+          - slug: yaml-emitter-paint-copies-every-scalar-when-color-is-off
+            label: "Copy when no color"
+      - id: stdout
+        label: "Write to stdout"
+        type: end
+        findings:
+          - slug: cli-output-is-unbuffered
+            label: "Unbuffered"
+
+    findings:
+      - slug: build-raw-metadata-duplicates-every-scalar
+        title: "Every scalar's bytes are stored twice: once as Data::Str, once as Meta::raw"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/build.rs
+            start_line: 189
+            end_line: 207
+        evidence: |
+              fn finish(
+                  &mut self,
+                  data: Data,
+                  anchor: Option<Cow<'_, str>>,
+                  tag: Option<Cow<'_, str>>,
+                  style: NodeStyle,
+                  raw: Option<&str>,
+              ) -> Result<YamlVal, BuildError> {
+                  let meta = Meta {
+                      tag: tag.as_deref().map(Rc::from),
+                      anchor: anchor.as_deref().map(Rc::from),
+                      alias_of: None,
+                      style: Some(style),
+                      raw: raw.map(Rc::from),
+                  };
+                  let node = YamlVal {
+                      data,
+                      meta: Some(Rc::new(meta)),
+                  };
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "14"
+            type: del
+            label: "second heap allocation holding bytes identical to Data::Str"
+          - lines: "18"
+            type: mark
+            label: "a third allocation, one Rc<Meta> per node"
+        mechanism: |
+          The event-to-YamlVal builder is the hot path for parsing: it runs once per node for
+          the whole document. The scalar arm at build.rs:102-111 calls
+          resolve_scalar(&value, ...) to produce Data — which for the overwhelmingly common
+          string case is Data::Str(Rc::from(text)), one heap allocation plus a byte copy —
+          and then passes Some(&value) into finish(), whose raw: raw.map(Rc::from) builds a
+          second, independent Rc<str> holding byte-identical content. Nothing deduplicates
+          the two: the resolved string and the raw string are separate allocations for the
+          same bytes and both are retained for the value's whole lifetime. A document that is
+          mostly plain string scalars therefore holds roughly 2x the scalar bytes resident,
+          and each scalar costs three allocations (Data::Str, meta.raw, Rc::new(meta)) plus
+          two copies where two allocations and one copy would do. This is also where the
+          parser's zero-copy Cow<'input, str> borrow is given up — unavoidable, since YamlVal
+          is 'static so jaq can own it, but it is given up twice rather than once. The rest of
+          the design is right: Data is Rc-backed throughout, so YamlVal is 32 bytes and
+          YamlVal::clone is one or two refcount bumps with no deep copy, which is exactly what
+          jaq's clone-happy interpreter needs.
+        remediation: |
+          Allocate the scalar text into a single Rc<str> up front and share it: when the
+          resolved data is Data::Str, store an Rc::clone of that same allocation in meta.raw
+          rather than a second Rc::from(text). For non-string resolutions (int, float, bool,
+          null) the raw text genuinely differs from the data, so a distinct Rc is warranted
+          there. Restructure resolve_scalar to hand back both the Data and the Rc<str> it
+          built so finish() can reuse it.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: []
+          enabled_by: [resolver-allocates-throwaway-string-per-scalar]
+          related: [resolver-allocates-throwaway-string-per-scalar, cli-materializes-every-document-in-a-file-before-emitting]
+        effort: small
+        effort_notes: "Localized to resolve_scalar/finish; needs the resolver to hand back the Rc it created."
+
+      - slug: resolver-allocates-throwaway-string-per-scalar
+        title: "Plain-scalar resolution allocates a String that is immediately copied into an Rc and dropped"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/build.rs
+            start_line: 246
+            end_line: 257
+        evidence: |
+          pub(crate) fn core_value_to_data(value: Value) -> Data {
+              match value {
+                  Value::Null => Data::Null,
+                  Value::Bool(value) => Data::Bool(value),
+                  Value::Integer(value) => Data::Int(value),
+                  Value::Float(value) => Data::Float(value),
+                  Value::String(value) => Data::Str(Rc::from(value)),
+                  Value::Sequence(_) | Value::Mapping(_) => {
+                      unreachable!("scalar resolver returned a collection")
+                  }
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "7"
+            type: del
+            label: "Rc::from(String) cannot adopt the buffer — it reallocates and copies, then frees"
+        mechanism: |
+          For every plain scalar, build.rs:186 routes through
+          TagResolution::resolve_scalar, which for the string fallback returns
+          Value::String(s.to_owned()) (yamalgam-core/src/tag.rs:73) — a full heap allocation
+          and byte copy. core_value_to_data then turns that into Data::Str(Rc::from(value)),
+          which must allocate again, since an Rc<str> needs room for the refcount header and
+          cannot adopt a String's buffer, copies the bytes a second time, and drops the
+          String. The most common node type in any YAML document therefore pays two
+          allocations, two copies and a free where one allocation and one copy suffice, once
+          per scalar across the entire document. The crate already has the allocation-free
+          predicate it needs: M10 added TagResolver::resolves_as_string overrides for all
+          four schemas (Yaml12TagResolver::resolves_as_string -> plain_scalar_is_string,
+          tag.rs:150-183) precisely so the emitter could ask "is this a string?" without
+          allocating — good work that the build path does not take advantage of.
+        remediation: |
+          Give the resolver a borrowing entry point — a resolve_scalar_borrowed returning an
+          enum whose string variant carries no owned data, or an Option<Value> that is None
+          when the scalar stays a string. The builder can then call the existing
+          resolves_as_string first and, on true, perform the single Rc::from(text) itself,
+          skipping the discarded Value entirely.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: [build-raw-metadata-duplicates-every-scalar]
+          enabled_by: []
+          related: [build-raw-metadata-duplicates-every-scalar]
+        effort: medium
+        effort_notes: "Touches the public TagResolver trait in yamalgam-core; needs an additive method with a default impl."
+
+      - slug: json-emitter-allocates-indent-and-triple-allocates-keys
+        title: "JSON emitter builds a fresh indent String per node and allocates each key three times"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/emit/json.rs
+            start_line: 79
+            end_line: 98
+        evidence: |
+          fn write_indent(output: &mut String, options: &EmitOpts, depth: usize) {
+              if !options.compact {
+                  output.push('\n');
+                  output.push_str(&" ".repeat(options.indent.saturating_mul(depth)));
+              }
+          }
+
+          fn write_closing_indent(output: &mut String, options: &EmitOpts, depth: usize) {
+              if !options.compact {
+                  output.push('\n');
+                  output.push_str(&" ".repeat(options.indent.saturating_mul(depth)));
+              }
+          }
+
+          fn key_string(key: &YamlVal) -> String {
+              match &key.data {
+                  Data::Str(string) => string.to_string(),
+                  _ => key.to_string(),
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4"
+            type: del
+            label: "the space-repeat indent string heap-allocates once per emitted element"
+          - lines: "11"
+            type: del
+            label: "same allocation on every collection close"
+          - lines: "17"
+            type: del
+            label: "copies an Rc<str> into a fresh String just to re-quote it"
+        mechanism: |
+          write_indent and write_closing_indent are called once per sequence element, once per
+          mapping entry and once per collection close — O(nodes) per emitted document — and
+          each call heap-allocates a throwaway String via " ".repeat(n) just to push spaces.
+          The YAML emitter next door solves this correctly with a reusable workhorse
+          `indentation: String` on Context that it grows once and slices
+          (emit/yaml.rs:402-411); the JSON emitter did not inherit that. Separately, the
+          mapping loop at json.rs:56-66 allocates each key three times: key_string() copies
+          the Rc<str> into a String, keys.insert(key.clone()) copies it again into the
+          duplicate-detection HashSet, and json_quote(&key) builds a third String that is then
+          copied into output. JSON is the output path for --json and for every tojson call and
+          string interpolation inside a filter (valt.rs:353 routes into to_json), so this is a
+          hot loop, not cold setup. Numbers cost a further allocation each
+          (&integer.to_string() at json.rs:30, &format!("{float:?}") at json.rs:32).
+        remediation: |
+          Mirror the YAML emitter: thread a Context carrying a reusable indentation String, or
+          push spaces with output.extend(core::iter::repeat_n(' ', width)) so nothing
+          intermediate is allocated. Make json_quote write into a &mut String rather than
+          return one, so keys and strings are escaped in place. For duplicate-key detection,
+          hash the borrowed &str over the Rc<str> keys and fall back to an owned String only
+          for non-string keys. Emit numbers with write!(output, ...) via core::fmt::Write.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [mapping-entries-collected-into-vec-per-emit]
+        effort: small
+        effort_notes: "Self-contained in emit/json.rs; the YAML emitter already shows the pattern to copy."
+
+      - slug: yaml-emitter-paint-copies-every-scalar-when-color-is-off
+        title: "paint() allocates a copy of every scalar even when color is disabled"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 413
+            end_line: 419
+        evidence: |
+              fn paint(&self, text: &str, ansi_code: &str) -> String {
+                  if self.options.color {
+                      format!("\x1b[{ansi_code}m{text}\x1b[0m")
+                  } else {
+                      text.to_owned()
+                  }
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "5"
+            type: del
+            label: "unconditional heap copy on the no-color path"
+        mechanism: |
+          paint() returns String by value, so the uncolored branch — the default whenever
+          stdout is not a TTY, and always for -i/--in-place — still heap-allocates a copy of
+          the text before it is pushed into the output buffer and dropped. It is called once
+          per scalar node from scalar() (yaml.rs:244-249) and once per line of every literal
+          block from literal_content (yaml.rs:385), which is inside a for loop. For string
+          scalars the cost doubles: self.string() already produced an owned String
+          (string.to_owned() at yaml.rs:291, or quote_double), and paint then copies that
+          String a second time. Emitting a plain string scalar therefore costs two allocations
+          and two copies with color off, where zero extra allocations are needed. This is the
+          per-node path for the default output format.
+        remediation: |
+          Return Cow<'_, str> from paint (Cow::Borrowed on the no-color branch), or better,
+          change the signature to paint_into(&self, output: &mut String, text: &str, code:
+          &str) so the colored branch writes escape sequences around the text directly into
+          the output buffer and the uncolored branch becomes a single push_str. The callers in
+          scalar(), literal_content() and properties() all have or can obtain a &mut String.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 6
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,6]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [json-emitter-allocates-indent-and-triple-allocates-keys]
+        effort: small
+        effort_notes: "Signature change plus about eight call sites, all in one file."
+
+      - slug: cli-output-is-unbuffered
+        title: "yg writes to line-buffered stdout and to a raw File for -i, costing a syscall per output value"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 80
+            end_line: 82
+        evidence: |
+              let context = Rc::new(RunCtx::new(config).with_variables(variables.values));
+              let stdout = std::io::stdout();
+              let mut output = stdout.lock();
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2-3"
+            type: del
+            label: "StdoutLock is a LineWriter with a 1 KiB buffer — no BufWriter wrapper"
+        mechanism: |
+          The query pipeline writes results through StdoutLock, which std backs with a
+          LineWriter, not a BufWriter. LineWriter flushes through to the OS at every newline
+          in the written data, so each writeln! in the output visitor (query.rs:140, 142, 146)
+          costs at least one write(2), and the YAML path at query.rs:148 flushes once per
+          emitted document. A filter like `.[]` over a 100k-element sequence issues on the
+          order of 100k-200k syscalls where a BufWriter would issue a few hundred; at roughly
+          1-2 us per syscall that is 0.1-0.4 s of pure kernel-transition overhead, plausibly
+          dominating the query work itself. jq avoids this by relying on stdio's full
+          buffering when stdout is not a TTY. The in-place path is worse: run_records is
+          handed temporary.as_file_mut() at query.rs:219, a completely unbuffered
+          std::fs::File, so every write! and writeln! is an unconditional syscall with no
+          buffer at all.
+        remediation: |
+          Wrap the sink in std::io::BufWriter before passing it to run_records — for stdout,
+          BufWriter::new(stdout.lock()); the existing output.flush() at query.rs:93 already
+          handles the final flush and the BrokenPipe mapping still applies. For in-place, wrap
+          temporary.as_file_mut() the same way and flush the BufWriter before the existing
+          sync_all(). If interactive line-at-a-time feedback matters when stdout is a TTY,
+          keep LineWriter behaviour only for the is_terminal() case, which the CLI already
+          computes for color at main.rs:106.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [cli-materializes-every-document-in-a-file-before-emitting]
+        effort: trivial
+        effort_notes: "Two BufWriter wrappers; the flush points already exist."
+
+      - slug: mapping-entries-collected-into-vec-per-emit
+        title: "Every mapping is collected into a fresh Vec on emit even when sort_keys is off"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/emit/yaml.rs
+            start_line: 328
+            end_line: 334
+        evidence: |
+              fn entries<'a>(&self, mapping: &'a YgMap) -> Vec<(&'a YamlVal, &'a YamlVal)> {
+                  let mut entries = mapping.0.iter().collect::<Vec<_>>();
+                  if self.options.sort_keys {
+                      entries.sort_by(|left, right| left.0.cmp(right.0));
+                  }
+                  entries
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2"
+            type: mark
+            label: "allocates unconditionally; only the sort_keys branch needs an owned Vec"
+        mechanism: |
+          The same shape appears three times — this Context::entries in the YAML emitter, the
+          JSON emitter's mapping arm (emit/json.rs:48-52), and validate_value's mapping arm
+          (emit/mod.rs:114-117) — and in all three the Vec<(&K, &V)> is materialized before
+          the sort_keys flag is consulted. sort_keys defaults to false, so the common path
+          pays one heap allocation of 16*n bytes per mapping per emit for a collection it then
+          iterates in IndexMap order, which it could have done by borrowing. Because
+          validate_value is a separate pass, a document with m mappings pays 2m of these
+          allocations per emitted value for both YAML and JSON — validate_value at
+          emit/mod.rs:114 plus the emitter's own collect — and the JSON path additionally
+          allocates a per-mapping `HashSet::with_capacity(entries.len())` at json.rs:54, which
+          is a distinct allocation rather than a third Vec. Small in absolute terms next to the
+          other emit costs, but it is the textbook "collection allocated inside the loop body"
+          pattern and the fix is mechanical.
+        remediation: |
+          Branch before allocating: on the sort_keys path collect and sort as today; on the
+          default path iterate mapping.0.iter() directly. Either return an either-style
+          iterator, or restructure each call site into a for_each_entry(&self, mapping, f)
+          helper that picks the iterator internally. A per-Context reusable Vec that is
+          cleared and refilled would also serve the sorting path.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 6
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,6]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [json-emitter-allocates-indent-and-triple-allocates-keys, emit-validation-walks-the-tree-a-second-time]
+        effort: small
+        effort_notes: "Three near-identical sites; each is a branch plus an iterator type."
+
+      - slug: emit-validation-walks-the-tree-a-second-time
+        title: "Every emitted value is traversed twice, and each anchor name is copied into a String"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/emit/mod.rs
+            start_line: 66
+            end_line: 73
+        evidence: |
+          fn validate_value(
+              value: &YamlVal,
+              options: &EmitOpts,
+              format: EmitFormat,
+          ) -> Result<(), EmitError> {
+              let mut stack = vec![(value, 0_usize)];
+              let mut anchors = HashSet::new();
+              let mut expanded_aliases = 0_usize;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "6"
+            type: mark
+            label: "a full second traversal of the value tree before any bytes are written"
+          - lines: "7"
+            type: mark
+            label: "HashSet<String>; each anchor is copied at line 93 though Rc<str> is available"
+        mechanism: |
+          to_yaml (yaml.rs:18) and to_json (json.rs:11) both open with validate_value, which
+          walks the entire value tree to enforce depth, scalar-size, collection-size and
+          alias-expansion limits before the emitter walks it again to produce output. That
+          doubles the node-visit count and the pointer chasing per emitted value, and
+          validate_value is on the path for every tojson, every string interpolation and every
+          CLI output value — not once per run. Inside it, each anchor name is copied with
+          anchor.to_owned() at emit/mod.rs:93 into a HashSet<String>, even though
+          metadata.anchor is an Rc<str> that could be cheaply cloned; the YAML emitter's own
+          anchors_emitted already does the cheap thing. The limits are a correctness
+          requirement, so this is a deliberate tradeoff rather than an oversight, but it is a
+          2x traversal that could be 1x.
+        remediation: |
+          Fold the limit checks into the emitters so one walk both validates and writes: depth
+          and collection size are known at each recursion point, scalar size is known when a
+          string is pushed, and output size can be checked incrementally against output.len()
+          as the buffer grows — which additionally lets an oversized output bail early instead
+          of building the whole string first. If the separate pass is kept for clarity, at
+          minimum store HashSet<Rc<str>> and Rc::clone into it.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 4
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,4]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [mapping-entries-collected-into-vec-per-emit]
+        effort: medium
+        effort_notes: "Merging the passes means threading limit state through both emitters; the Rc<str> change alone is trivial."
+
+      - slug: ygmap-drop-allocates-a-vec-per-mapping
+        title: "The stack-safe Drop for YgMap heap-allocates on every mapping destruction, including tiny maps"
+        criterion: "12.12"
+        surface: "Performance"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 117
+            end_line: 125
+        evidence: |
+          impl Drop for YgMap {
+              fn drop(&mut self) {
+                  let entries = core::mem::take(&mut self.0);
+                  drop_values(entries.into_iter().flat_map(<[_; 2]>::from));
+              }
+          }
+
+          fn drop_values(values: impl IntoIterator<Item = YamlVal>) {
+              let mut stack = values.into_iter().collect::<Vec<_>>();
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4"
+            type: mark
+            label: "source is IndexMap::into_iter, not vec::IntoIter — no reuse possible here"
+          - lines: "9"
+            type: del
+            label: "fresh 2n-element Vec allocated on every mapping drop"
+        mechanism: |
+          The iterative Drop impls exist to prevent stack overflow on deeply nested values,
+          which is the right call. But YgMap's version pays for it on every drop: the
+          collect::<Vec<_>> in drop_values must allocate a fresh 2n-element Vec and move every
+          key and value into it. The cause is the source iterator, not the adapter — the
+          Vec::from_iter allocation-reuse specialization applies only when a `vec::IntoIter<T>`
+          is collected back into `Vec<T>`, and YgMap's source is `IndexMap::into_iter()`
+          (`indexmap::map::IntoIter` yielding `(YamlVal, YamlVal)` pairs), a different iterator
+          type with a different item type from the `YamlVal` being collected. Removing the
+          flat_map would therefore not enable reuse; the allocation is unavoidable at this call
+          site as structured. YgSeq's path is fine by comparison — value.rs:113 passes a real
+          `Vec<YamlVal>`, so the input is a plain vec::IntoIter and collect reuses the existing
+          buffer. That contrast holds, but the reason is the IndexMap source. jaq creates
+          and destroys mappings constantly during evaluation, and the dominant real shape is a
+          small map of one to five entries where a recursive drop would allocate nothing.
+          There is no small-size fast path, so a two-entry temporary map pays a malloc and a
+          free purely for a depth guard it can never need.
+        remediation: |
+          Add a shallow fast path: if the map is below a small entry threshold, or if no
+          entry's data is a Seq or Map, let the entries drop normally and return before
+          touching the stack. The taken IndexMap then drops normally, and any nested
+          Rc<YgSeq>/Rc<YgMap> still hit their own iterative Drop impls, so the stack-overflow
+          property is preserved. Alternatively drain into a thread-local reusable stack buffer
+          so the allocation amortizes across all drops in a run.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 11
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,11]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: small
+        effort_notes: "One guard clause; the stack-overflow safety property must be preserved for the nested case."
+
+      - slug: substring-values-are-allocated-twice
+        title: "jaq_std substring construction allocates a String and then copies it into an Rc<str>"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/valt.rs
+            start_line: 468
+            end_line: 475
+        evidence: |
+              fn as_sub_str(&self, sub: &[u8]) -> Self {
+                  debug_assert!(matches!(&self.data, Data::Str(_)));
+                  Self::str(String::from_utf8_lossy(sub).into_owned())
+              }
+
+              fn from_utf8_bytes(bytes: impl AsRef<[u8]> + Send + 'static) -> Self {
+                  Self::str(String::from_utf8_lossy(bytes.as_ref()).into_owned())
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "into_owned() allocates a String that Rc::from then copies again"
+          - lines: "7"
+            type: del
+            label: "same double allocation"
+        mechanism: |
+          as_sub_str is jaq_std's hook for producing substring values — it backs splits, regex
+          captures, ltrimstr/rtrimstr and friends, so it runs once per match in string
+          processing loops. String::from_utf8_lossy returns Cow::Borrowed for valid UTF-8,
+          which is the normal case here since the input came from an already-validated str,
+          and .into_owned() then forces a heap allocation and copy. YamlVal::str takes impl
+          Into<Rc<str>>, and Rc<str>::from(String) cannot adopt the String's buffer — it
+          allocates again with room for the refcount header and copies the bytes a second
+          time. Each substring therefore costs two allocations and two copies where one of
+          each is required.
+        remediation: |
+          Pass the borrowed form straight through: Self::str(&*String::from_utf8_lossy(sub))
+          resolves to Rc<str>::from(&str), a single allocation and copy; likewise for
+          from_utf8_bytes. The same double cost applies to every Self::str(String) and
+          Self::str(format!(...)) in the crate — ops.rs:65 (string concatenation) and
+          ops.rs:131 (string repetition, where the intermediate can be very large and doubles
+          peak memory) are the most valuable to revisit.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 6
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,6]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [slice-bound-keys-allocated-on-every-index]
+        effort: trivial
+        effort_notes: "Two one-line changes; the wider sweep is optional."
+
+      - slug: slice-bound-keys-allocated-on-every-index
+        title: "Slice bound lookups allocate two Rc<str> keys per index operation"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: note
+        locations:
+          - path: crates/yamalgam-query/src/valt.rs
+            start_line: 87
+            end_line: 94
+        evidence: |
+              fn index(self, index: &Self) -> ValR<Self> {
+                  if matches!(&self.data, Data::Seq(_) | Data::Str(_))
+                      && let Data::Map(range) = &index.data
+                  {
+                      let start = range.0.get(&Self::str("start"));
+                      let end = range.0.get(&Self::str("end"));
+                      return self.range(start..end);
+                  }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "5-6"
+            type: mark
+            label: "two Rc<str> allocations per slice, discarded immediately after the lookup"
+        mechanism: |
+          Every slice operation on a sequence or string constructs two temporary YamlVals
+          whose Data::Str each require an Rc<str> heap allocation, purely to serve as IndexMap
+          lookup keys, and drops them immediately. The identical pair appears again in
+          map_index at valt.rs:182-183 for the update path. Slicing inside a loop over a large
+          sequence allocates two Rc<str> per iteration. The per-operation cost is small and
+          slicing is not universally hot, hence note rather than a higher concern — but it is
+          avoidable outright.
+        remediation: |
+          Hoist the two key values into thread_local statics constructed once per thread and
+          pass references, since YamlVal::str is not const. Alternatively, because YamlVal's
+          Hash and Eq for Data::Str delegate to the str contents, an Equivalent impl for &str
+          on the map key type would allow a borrowed-key lookup with no temporary at all.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 6
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,6]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [substring-values-are-allocated-twice]
+        effort: trivial
+        effort_notes: "Two thread_local statics."
+
+      - slug: cli-materializes-every-document-in-a-file-before-emitting
+        title: "Whole-file read plus a whole-file document vector gives up streaming for multi-document input"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/build.rs
+            start_line: 24
+            end_line: 38
+        evidence: |
+          pub fn parse_str_with_config(
+              input: &str,
+              config: &LoaderConfig,
+          ) -> Result<Vec<YamlVal>, BuildError> {
+              config
+                  .limits
+                  .check_input_size(input.len())
+                  .map_err(BuildError::Limit)?;
+
+              let mut events = Parser::with_config(input, config)
+                  .filter(|event| event.as_ref().map_or(true, |event| !event.is_structural()));
+              let mut builder = Builder::new(config);
+              let mut documents = Vec::new();
+
+              while let Some(event) = next_optional_event(&mut events)? {
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4"
+            type: mark
+            label: "returns all documents at once rather than an iterator"
+          - lines: "13"
+            type: mark
+            label: "every document in the file stays live until the last one is parsed"
+        mechanism: |
+          The CLI does defer work file by file — deferred_inputs (query.rs:366-433) pulls one
+          path at a time, so a 100-file invocation does not load 100 files at once. Within a
+          file, though, the pipeline is fully eager: collect_inputs reads the entire file into
+          a String (query.rs:473) and parse_str_with_config parses every document in it into a
+          Vec<YamlVal> that is fully materialized before the first output byte is produced.
+          Peak resident memory is the file bytes plus the complete value tree for all
+          documents simultaneously — and because of the raw-metadata duplication above, that
+          tree holds each scalar's bytes twice. For a workspace whose stated design values are
+          zero-copy and streaming, and for the multi-document YAML streams that are yg's
+          natural input, this is the one place the streaming property is dropped entirely. The
+          parser underneath is already an event iterator that would support per-document
+          yielding.
+        remediation: |
+          Add a document-at-a-time entry point beside parse_str_with_config: an iterator that
+          owns the Parser and yields one YamlVal per DocumentStart/DocumentEnd pair, with
+          append_input and collect_inputs driving it lazily so each document is emitted and
+          dropped before the next is built. The whole-file read_to_string is harder to remove,
+          since the Parser borrows from a &str, so treat that as the accepted floor; the
+          value-tree accumulation is the part worth eliminating. Keep parse_str_with_config as
+          a thin collect() over the new iterator for existing callers.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+          monthly_commits: [0,0,0,0,0,0,0,0,0,0,0,3]
+        chains:
+          enables: []
+          enabled_by: [build-raw-metadata-duplicates-every-scalar]
+          related: [cli-output-is-unbuffered]
+        effort: medium
+        effort_notes: "New iterator type over the parser plus rework of collect_inputs/append_input; the slurp path needs care."
+
+  - slug: value-model-and-api
+    title: "The Value Model and API Surface"
+    thesis: "The YamlVal model carries its metadata cleanly, but the crate exposes more of its internals than it needs to and duplicates jaq's own vocabulary in places where the two definitions can drift apart."
+    verdict: "yamalgam-query is publish = false, which lowers the stakes on every finding here — none of this is a compatibility commitment yet. That is precisely why it is worth fixing now. The item to take seriously is the inherent as_bool shadowing jaq's truthiness rule: two definitions of truth in one crate is a correctness trap waiting for the first caller who picks the wrong one. The rest is API hygiene that costs nothing today and costs a breaking change after the first publish."
+    flow:
+      - id: yamlval
+        label: "YamlVal { data, meta }"
+        type: start
+        findings:
+          - slug: internal-value-representation-is-public
+            label: "Internals public"
+      - id: core-valt
+        label: "impl jaq_core::ValT"
+        type: process
+      - id: truthy
+        label: "Which truthiness?"
+        type: decision
+        no: inherent-bool
+      - id: std-valt
+        label: "impl jaq_std::ValT"
+        type: process
+      - id: interpret
+        label: "jaq interprets"
+        type: process
+        findings:
+          - slug: run-records-static-bound-forces-clones
+            label: "'static forces clone"
+      - id: result
+        label: "Result values"
+        type: end
+      - id: inherent-bool
+        label: "Inherent as_bool"
+        type: process
+        spine: false
+        findings:
+          - slug: as-bool-inherent-shadows-jaq-truthiness
+            label: "Shadowed rule"
+        next: interpret
+
+    findings:
+      - slug: as-bool-inherent-shadows-jaq-truthiness
+        title: "Inherent `as_bool` shadows `jaq_core::ValT::as_bool` with incompatible semantics"
+        criterion: "9.2"
+        surface: "Trait Design"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 211
+            end_line: 218
+        evidence: |2
+              /// Return the resolved boolean value.
+              #[must_use]
+              pub const fn as_bool(&self) -> Option<bool> {
+                  match self.data {
+                      Data::Bool(value) => Some(value),
+                      _ => None,
+                  }
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "inherent as_bool returns Option<bool>; trait as_bool returns jq truthiness"
+        mechanism: |
+          `YamlVal` carries two public `as_bool` methods with different meanings. The inherent
+          one above answers "is this a YAML boolean, and which one" (`Option<bool>`). The trait
+          impl at crates/yamalgam-query/src/valt.rs:346 answers jq's truthiness question —
+          `!matches!(&self.data, Data::Null | Data::Bool(false))` — so integer `0`, the empty
+          string, and the empty sequence are all `true`. Inherent methods win method-call
+          resolution unconditionally, so `value.as_bool()` always selects the `Option` variant
+          even when `jaq_core::ValT` is in scope. The crate's own code already pays for this:
+          crates/yamalgam-query/src/engine.rs:267 and the tests at
+          crates/yamalgam-query/src/valt.rs:614-616 must spell it `jaq_core::ValT::as_bool(&v)`
+          to reach the truthiness semantics. A downstream caller writing the natural
+          `value.as_bool().unwrap_or(false)` compiles and silently gets non-jq semantics.
+          The same collision exists for `as_f64` (inherent at value.rs:231, `jaq_std::ValT` at
+          valt.rs:449) with two copies of identical logic that can drift.
+        remediation: |
+          Rename the inherent accessors so nothing shadows a trait method the crate also
+          implements — `as_yaml_bool` / `as_boolean`, and have the `jaq_std::ValT::as_f64` impl
+          delegate to the single inherent implementation rather than duplicating the match. If
+          the current names must stay, document the shadowing on both items and add a doc test
+          showing the UFCS form needed for truthiness.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: [internal-value-representation-is-public]
+        effort: small
+        effort_notes: "Rename plus call-site updates inside one crate; no external consumers yet"
+
+      - slug: internal-value-representation-is-public
+        title: "`Data`, `YgSeq`, and `YgMap` are public but unreachable from `YamlVal`"
+        criterion: "9.5"
+        surface: "Trait Design"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 36
+            end_line: 48
+        evidence: |2
+          /// Order-preserving YAML mapping with order-sensitive equality.
+          // r[impl comparison.resolved.collection]
+          #[derive(Clone, Debug, Default)]
+          pub struct YgMap(pub(crate) IndexMap<YamlVal, YamlVal>);
+
+          /// YAML sequence storage with iterative destruction for deeply nested values.
+          #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+          pub struct YgSeq(pub(crate) Vec<YamlVal>);
+
+          /// Resolved YAML value data.
+          // r[impl datamodel.types]
+          #[derive(Clone, Debug, Default)]
+          pub enum Data {
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4"
+            type: mark
+            label: "pub type, private field"
+          - lines: "8"
+            type: mark
+            label: "pub type, private field, plus Deref/DerefMut to Vec"
+          - lines: "13"
+            type: del
+            label: "pub enum with public variants pinning Rc<YgSeq>/Rc<YgMap> into the SemVer contract"
+        mechanism: |
+          `lib.rs` declares `pub mod value`, so `yamalgam_query::value::{Data, YgSeq, YgMap}` are
+          all nameable by downstream crates. `Data`'s variants are fully public and expose the
+          exact storage choice — `Str(Rc<str>)`, `Seq(Rc<YgSeq>)`, `Map(Rc<YgMap>)` — yet
+          `YamlVal::data` is `pub(crate)`, so no public API accepts or returns a `Data`. The
+          result is public surface that a caller can neither obtain nor usefully construct, while
+          every storage decision inside it becomes a breaking-change hazard for the crates.io
+          publish planned right after M10. `YgSeq` compounds this: it is a public newtype whose
+          entire `Vec<YamlVal>` API — `push`, `clear`, `resize`, `splice` — leaks through
+          `Deref`/`DerefMut` at value.rs:91-103 (the Deref-polymorphism anti-pattern), so any
+          future invariant on sequence contents, such as the resource-limit checks the crate
+          applies elsewhere, can be bypassed by construction.
+        remediation: |
+          Make `Data`, `YgSeq`, and `YgMap` `pub(crate)` and re-export only `YamlVal`, `Meta`, and
+          `NodeStyle` from `value`. If external pattern matching on the value shape is wanted
+          later, add a public `#[non_exhaustive]` view enum of borrowed variants
+          (`ValueRef<'_>`) that is decoupled from storage. Replace the blanket `Deref`/`DerefMut`
+          on `YgSeq` with the handful of inherent methods the crate actually uses.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 4
+        chains:
+          enables: []
+          enabled_by: []
+          related: [public-enums-lack-non-exhaustive, as-bool-inherent-shadows-jaq-truthiness]
+        effort: small
+        effort_notes: "Visibility change plus replacing Deref uses in valt.rs and ops.rs"
+
+      - slug: keys-returns-boxed-trait-object
+        title: "`keys()` boxes a trait object and hides the not-a-mapping case"
+        criterion: "9.1"
+        surface: "Trait Design"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/value.rs
+            start_line: 582
+            end_line: 588
+        evidence: |2
+              /// Iterate mapping keys in insertion order, or return an empty iterator.
+              pub fn keys(&self) -> Box<dyn Iterator<Item = &Self> + '_> {
+                  match &self.data {
+                      Data::Map(map) => Box::new(map.0.keys()),
+                      _ => Box::new(core::iter::empty()),
+                  }
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2"
+            type: del
+            label: "Box<dyn Iterator> where impl Iterator suffices"
+          - lines: "5"
+            type: mark
+            label: "non-mapping is indistinguishable from empty mapping"
+        mechanism: |
+          Both arms are statically known, so the boxing buys nothing but a heap allocation and
+          dynamic dispatch per call. It is also inconsistent with `entries()` elsewhere in the
+          same impl block at value.rs:249, which returns `Option<impl ExactSizeIterator<Item =
+          (&Self, &Self)>>` for exactly the same "mapping or not" question. Because `keys()` collapses
+          "this is not a mapping" into "this mapping has no keys", a caller cannot distinguish a
+          scalar from an empty map without a second check — the type system stops preventing that
+          misuse for one of the two sibling accessors.
+        remediation: |
+          Return `Option<impl Iterator<Item = &Self> + '_>` to match `entries()`, or, if the
+          lenient empty-iterator behaviour is wanted, express it without boxing via
+          `self.entries().into_iter().flatten()`. Either form removes the allocation and makes
+          the two accessors answer the same question the same way.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 2
+        chains:
+          enables: []
+          enabled_by: []
+          related: [internal-value-representation-is-public]
+        effort: trivial
+        effort_notes: "Signature change with two in-tree callers (tests/emit.rs:246, tests/value.rs:188)"
+
+      - slug: run-records-static-bound-forces-clones
+        title: "`'static` bound on `run_records` forces cloning args and config per run"
+        criterion: "4.2"
+        surface: "Lifetimes"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 103
+            end_line: 116
+        evidence: |2
+          fn run_records(
+              filter: &CompiledFilter,
+              context: Rc<RunCtx>,
+              records: impl Iterator<Item = InputRecord> + 'static,
+              args: &QueryArgs,
+              json_output: bool,
+              color: bool,
+              output: &mut dyn Write,
+          ) -> Result<Option<bool>, YgError> {
+              let iterator_context = Rc::clone(&context);
+              let inputs = records.map(move |record| {
+                  iterator_context.stage_input_meta(record.metadata);
+                  record.value
+              });
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4"
+            type: del
+            label: "'static is stricter than the callee requires"
+          - lines: "3"
+            type: mark
+            label: "Rc only exists to satisfy the 'static closure capture"
+        mechanism: |
+          The engine this function delegates to, `engine::run_filter_with_null_input`, already
+          takes its input iterator as `impl Iterator<..> + 'a` with a free lifetime parameter — it
+          boxes the iterator into a `Box<dyn Iterator + 'a>` and never needs `'static`. Requiring
+          `'static` here propagates outward: `cmd_query` must build the iterator from owned data,
+          so query.rs:79 reads `deferred_inputs(files, args.clone(), config.clone())`, cloning the
+          whole `QueryArgs` and `LoaderConfig` for a value that is already borrowed in scope, and
+          the context has to be an `Rc<RunCtx>` so the closure can own a handle. In `run_in_place`
+          that `Rc` becomes a fresh allocation for every file (query.rs:214). None of it is needed
+          for correctness — it is `'static` used in place of a lifetime parameter.
+        remediation: |
+          Give `run_records` a lifetime parameter — `records: impl Iterator<Item = InputRecord> +
+          'ctx`, `context: &'ctx RunCtx` — and let `deferred_inputs` borrow `&[Utf8PathBuf]`,
+          `&QueryArgs`, and `&LoaderConfig` instead of taking them by value. That drops both
+          clones at the call site and the `Rc` indirection in both callers.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: [three-bool-parameters-at-command-boundary]
+        effort: small
+        effort_notes: "Signature threading through two callers in one file"
+
+      - slug: three-bool-parameters-at-command-boundary
+        title: "Three positional `bool` parameters at the query entry point"
+        criterion: "10.3"
+        surface: "Idiomatic Patterns"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 26
+            end_line: 31
+        evidence: |2
+          pub fn cmd_query(
+              args: &QueryArgs,
+              json_output: bool,
+              color: bool,
+              quiet: bool,
+          ) -> anyhow::Result<ExitCode> {
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3-5"
+            type: del
+            label: "three interchangeable bools; any transposition compiles"
+        mechanism: |
+          `cmd_query` is called once, from main.rs:108, as `cmd_query(&cli.query, json_output,
+          color, cli.common.quiet)`. All three trailing arguments are `bool`, so swapping any two
+          compiles cleanly and silently changes behaviour — colored output written into a
+          redirected file, JSON emitted where YAML was asked for, or warnings suppressed. The same
+          shape recurs in `run_records` (`json_output`, `color`) and is already load-bearing:
+          query.rs:124 computes `color: color && !json_output`, an invariant between two of the
+          three that no type enforces. The values also duplicate state that `QueryArgs` already
+          carries (`args.json_output`), so the caller and callee can disagree about which one is
+          authoritative.
+        remediation: |
+          Replace the trailing bools with a single small `OutputMode`/`RunOptions` struct holding
+          the resolved format, color decision, and quiet flag, constructed once in `main` where
+          the terminal and format detection happens. That makes the `color && !json_output`
+          invariant a constructor postcondition instead of a call-site expression, and removes the
+          possibility of a transposed argument.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: [emit-opts-mixes-emitter-specific-options, run-records-static-bound-forces-clones]
+        effort: small
+        effort_notes: "One new struct, two call sites, one construction site"
+
+      - slug: emit-opts-mixes-emitter-specific-options
+        title: "`EmitOpts.color` is silently ignored by the JSON emitter and `EmitFormat` is unusable"
+        criterion: "9.2"
+        surface: "Trait Design"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/emit/mod.rs
+            start_line: 36
+            end_line: 51
+        evidence: |2
+          /// Options shared by the YAML and JSON emitters.
+          #[derive(Clone, Debug)]
+          pub struct EmitOpts {
+              /// Number of spaces in each indentation level.
+              pub indent: usize,
+              /// Emit a single-line representation.
+              pub compact: bool,
+              /// Sort mapping entries by resolved key value.
+              pub sort_keys: bool,
+              /// Enable ANSI color in supported emitters.
+              pub color: bool,
+              /// Schema under which emitted plain scalars must remain strings.
+              pub schema: yamalgam_core::TagResolution,
+              /// Resource limits applied while validating and rendering output.
+              pub limits: yamalgam_core::ResourceLimits,
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "10-11"
+            type: mark
+            label: "honored by to_yaml, ignored entirely by to_json"
+          - lines: "12-13"
+            type: mark
+            label: "schema only affects YAML plain-scalar quoting"
+        mechanism: |
+          The doc comment concedes the split — "supported emitters". `to_json` never reads
+          `options.color` or `options.schema`, so a caller who sets `color: true` and calls
+          `to_json` gets no error and no color, and the CLI has to compensate at query.rs:124 with
+          `color: color && !json_output`. Nothing in the type system links the option to the
+          emitter that honors it. `EmitFormat`, the enum that would express that link, is exported
+          from lib.rs:26 but appears in no public signature — `to_yaml` and `to_json` are separate
+          free functions and the only use of `EmitFormat` is the private `validate_value`
+          parameter, so it is public API a caller can name but cannot pass anywhere.
+        remediation: |
+          Either introduce the dispatch the enum implies — a single
+          `emit(value, format, &EmitOpts)` entry point, or an `Emitter` trait with `Yaml` and
+          `Json` implementors owning their format-specific options — or shrink the shared struct
+          to the genuinely shared fields (`indent`, `compact`, `sort_keys`, `limits`) and move
+          `color`/`schema` into a YAML-specific options type. If `EmitFormat` remains
+          caller-invisible, make it `pub(crate)`.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: [three-bool-parameters-at-command-boundary, public-enums-lack-non-exhaustive]
+        effort: medium
+        effort_notes: "Touches both emitters, the CLI call sites, and the public re-exports"
+
+      - slug: public-enums-lack-non-exhaustive
+        title: "Public error enums and options struct are exhaustively matchable before publish"
+        criterion: "9.3"
+        surface: "Trait Design"
+        concern: note
+        locations:
+          - path: crates/yamalgam-query/src/error.rs
+            start_line: 28
+            end_line: 33
+        evidence: |2
+          /// Query-engine errors partitioned by their CLI exit-code class.
+          #[derive(Debug, thiserror::Error)]
+          pub enum YgError {
+              /// Command-line arguments were invalid.
+              #[error("{0}")]
+              Usage(String),
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2-3"
+            type: mark
+            label: "no #[non_exhaustive]; downstream matches lock the variant set"
+        mechanism: |
+          `YgError` (8 variants), `BuildError` (3 variants), and `EmitError` (2 variants) are all
+          public and exhaustively matchable, and `EmitOpts` has six public fields with no
+          `#[non_exhaustive]`. Downstream code that matches every `YgError` variant — exactly what
+          the in-tree CLI does in `exit_for` at commands/query.rs:610-619 — breaks the moment a
+          variant is added, and any struct literal of `EmitOpts` that does not use
+          `..Default::default()` breaks when a field is added. Both are guaranteed to happen: the
+          roadmap has M11 resolvers and M13's real emitter landing after the crates.io publish
+          that follows M10. `Display` and `Debug` are correctly present on all three error types,
+          so the only gap is future-proofing.
+        remediation: |
+          Add `#[non_exhaustive]` to `YgError`, `BuildError`, `EmitError`, and `EmitOpts` before
+          the first crates.io release, and keep the in-crate exhaustive matches by matching on
+          the variants plus a `_ =>` arm. Doing it pre-publish costs nothing; doing it after
+          requires a major version bump.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: [internal-value-representation-is-public, emit-opts-mixes-emitter-specific-options]
+        effort: trivial
+        effort_notes: "Four attributes plus catch-all arms in the CLI match"
+
+      - slug: resolves-as-string-overrides-restate-resolution
+        title: "`resolves_as_string` overrides restate resolution logic under a thin equivalence test"
+        criterion: "9.2"
+        surface: "Trait Design"
+        concern: note
+        locations:
+          - path: crates/yamalgam-core/src/tag_resolution.rs
+            start_line: 20
+            end_line: 28
+        evidence: |2
+          pub trait TagResolver {
+              /// Resolve a plain scalar string to a typed Value.
+              fn resolve_scalar(&self, value: &str) -> Value;
+
+              /// Return whether a plain scalar resolves as a string.
+              fn resolves_as_string(&self, value: &str) -> bool {
+                  matches!(self.resolve_scalar(value), Value::String(_))
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "5-6"
+            type: mark
+            label: "doc comment does not state that overrides must agree with resolve_scalar"
+        mechanism: |
+          The default body is the specification — an override is only correct if it agrees with
+          `resolve_scalar` for every input — but the doc comment never says so, and all four
+          resolvers override it: `FailsafeTagResolver` (line 62), `JsonTagResolver` (line 93),
+          `Yaml11TagResolver` (line 214), and `Yaml12TagResolver` (tag.rs:150), each re-listing
+          the null/bool/special-float literals by hand. An equivalence test does exist at
+          tag_resolution.rs:383, but it exercises eight samples ("", null, true, yes, 42, 1.5,
+          .inf, "plain text") and none of the branches the overrides actually re-implement —
+          no `0o17`/`017`/`0x1f` radix forms, no `1_000` underscore separators, no `~`, no
+          `.NaN`, no i64-overflow fallback. I found no divergence in the current code. The
+          consequence of a future one is not cosmetic: the sole consumer is `needs_quotes` in
+          yamalgam-query (value.rs:835), so a resolver that wrongly reports "string" emits an
+          unquoted scalar that reparses as a different type.
+        remediation: |
+          State the agreement contract in the trait doc comment, and widen the equivalence test to
+          a shared sample table covering each override's branches — radix prefixes, underscore
+          separators, signs, overflow, and the full null/bool/inf/nan literal sets — asserting
+          `resolves_as_string(s) == matches!(resolve_scalar(s), Value::String(_))` for every
+          resolver.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-02"
+          commit_count: 1
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "Doc sentence plus extending an existing table-driven test"
+
+  - slug: spec-conformance
+    title: "The Spec Conformance Surface"
+    thesis: "M10 substantially delivers the query language spec, and nearly every divergence found is one the implementation plan already flagged for decision rather than one that slipped through."
+    verdict: "This is the surface that most vindicates the milestone. The completeness agent found no missing filter, no stubbed subcommand, and no silent behavioral divergence of the kind that erodes trust in a tool. What it found instead is documentation lag: the spec still promises features consciously deferred to M11, the CLI's color flags changed without a spec amendment, and a handful of behaviors settled during implementation were never written down. Per this project's own rule — documentation wins, and the fix is to write the code — the correct response to most of these is the opposite direction: amend the documents to match decisions already made deliberately."
+    flow:
+      - id: spec
+        label: "Spec draft-01"
+        type: start
+      - id: plan
+        label: "M10 plan (23 tasks)"
+        type: process
+        findings:
+          - slug: spec-features-deferred-while-spec-text-still-promises-them
+            label: "Spec lags plan"
+      - id: implement
+        label: "Implement filters"
+        type: process
+      - id: deviation
+        label: "Deviation documented?"
+        type: decision
+        no: undocumented
+      - id: ship
+        label: "Shipped behavior"
+        type: end
+      - id: undocumented
+        label: "Silent divergence"
+        type: process
+        spine: false
+        findings:
+          - slug: in-place-conflicts-diverge-from-plan-undocumented
+            label: "Undocumented"
+          - slug: yg-color-flags-replaced-without-spec-amendment
+            label: "Flags changed"
+        next: ship
+
+    findings:
+      - slug: yg-color-flags-replaced-without-spec-amendment
+        title: "Spec's `-C`/`-M` color flags are absent, and `-C` now means `--chdir`"
+        criterion: "FC-1"
+        surface: "Completeness"
+        concern: advisory
+        locations:
+          - path: docs/spec/yg-query-language-spec-draft-01.md
+            start_line: 520
+            end_line: 521
+        evidence: |
+          r[cli.color]
+          `-C` / `--color-output` and `-M` / `--monochrome-output` — control colorized output.
+        evidence_lang: "markdown"
+        evidence_markers:
+          - lines: "2"
+            type: del
+            label: "Neither -C (color) nor -M (monochrome) exists in the shipped CLI"
+        mechanism: |
+          Draft-01 r[cli.color] requires `-C`/`--color-output` and `-M`/`--monochrome-output`.
+          `QueryArgs` in crates/yamalgam/src/lib.rs declares neither. Color is instead driven by
+          librebar's `CommonArgs::color` (`--color auto|always|never`), resolved in
+          crates/yamalgam/src/main.rs:101-107. `-M` simply does not exist. Worse, `-C` DOES exist
+          but is librebar's global `--chdir`, which takes a value — so a user following the spec
+          and running `yg -C '.a' file.yml` does not get colored output, it silently interprets
+          `.a` as a directory to chdir into and then fails on a missing input file. That is a
+          name collision, not an absence, which is the more surprising failure mode.
+          This deviation IS recorded in docs/spec/yg-spec-draft-01-implementation-notes.md
+          ("Additional implementation-driven changes", lines 141-144) and in docs/plans/README.md:149,
+          so it is a deliberate, disclosed call — but it also contradicts the plan's own Task 16,
+          which declared `color_output: bool` with `short = 'C'` and `monochrome_output: bool` with
+          `short = 'M'` in QueryArgs. The spec text itself is unamended, and the project rule is
+          "documentation wins".
+        remediation: |
+          Either (a) add `-M`/`--monochrome-output` and a long-only `--color-output` alias in
+          QueryArgs that feed the same resolved boolean, so spec-following invocations work and
+          only `-C` remains reserved; or (b) amend draft-01 r[cli.color] in the draft-02 pass so
+          the shipped `--color auto|always|never` interface is the specified one. Whichever is
+          chosen, note the `-C` = chdir collision explicitly in `yg --help` so users who reach
+          for jq's `-C` get a pointer rather than a chdir.
+        temporal:
+          introduced: "2026-06-10"
+          last_modified: "2026-08-03"
+          commit_count: 24
+          monthly_commits: [0,0,0,0,0,0,0,0,0,1,0,23]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: small
+        effort_notes: "Two clap flags plumbed into the existing resolved-color boolean, or one spec edit"
+
+      - slug: sandboxed-compile-options-unreachable-from-cli
+        title: "`CompileOptions::sandboxed()` is public and tested but no shipped code path uses it"
+        criterion: "FC-5"
+        surface: "Completeness"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 21
+            end_line: 40
+        evidence: |
+          /// Native capabilities available while compiling a filter.
+          #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+          pub struct CompileOptions {
+              /// Permit the jq-compatible `env` filter to read process environment variables.
+              pub allow_env: bool,
+          }
+
+          impl CompileOptions {
+              /// Restrict filters to deterministic capabilities without environment access.
+              #[must_use]
+              pub const fn sandboxed() -> Self {
+                  Self { allow_env: false }
+              }
+          }
+
+          impl Default for CompileOptions {
+              fn default() -> Self {
+                  Self { allow_env: true }
+              }
+          }
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "11-13"
+            type: mark
+            label: "Only caller is tests/engine.rs:118-122"
+          - lines: "17-18"
+            type: mark
+            label: "compile_filter() — the one the CLI calls — always takes this default"
+        mechanism: |
+          `cmd_query` calls `engine::compile_filter(&filter_source, &variables.names)`
+          (crates/yamalgam/src/commands/query.rs:49), which delegates to
+          `compile_filter_with_options(code, variables, CompileOptions::default())` — always
+          `allow_env: true`. Grepping the workspace, the only consumer of
+          `CompileOptions::sandboxed()` is `tests/engine.rs:118`. So `yg --strict`, which
+          r[cli.strict] describes as "For CI pipelines processing untrusted input", still exposes
+          `env`/`$ENV` to the filter. That is defensible under the narrow threat model (the filter
+          is authored by the operator; the untrusted thing is the input document, and resource
+          limits do bind for that) — but it means the crate ships a capability toggle that the
+          binary can never set, which is exactly the shape of a feature that looks delivered
+          and is not.
+        remediation: |
+          Wire it: pass `CompileOptions::sandboxed()` when `args.strict` is set (and/or add an
+          explicit `--no-env` flag), so the toggle has a user-reachable path. If sandboxing under
+          `--strict` is deliberately NOT wanted, say so in the doc comment on `sandboxed()` and
+          in the implementation-notes doc, so the next reader does not assume `--strict` covers it.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 24
+          monthly_commits: [0,0,0,0,0,0,0,0,0,1,0,23]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "One conditional at the compile_filter call site, plus a test"
+
+      - slug: spec-features-deferred-while-spec-text-still-promises-them
+        title: "Draft-01 still asserts `chomping`, `===`/`!==`, and `--allow-includes`/`--allow-refs` unconditionally"
+        criterion: "FC-1"
+        surface: "Completeness"
+        concern: note
+        locations:
+          - path: docs/spec/yg-query-language-spec-draft-01.md
+            start_line: 534
+            end_line: 538
+        evidence: |
+          r[cli.allow-includes]
+          `--allow-includes[=root]` — enable `!include` resolution. Optionally set the sandbox root directory. Default root is the directory of the input file.
+
+          r[cli.allow-refs]
+          `--allow-refs[=schemes]` — enable `$ref` resolution. Optionally specify allowed schemes (comma-separated).
+        evidence_lang: "markdown"
+        evidence_markers:
+          - lines: "1-2"
+            type: mark
+            label: "Flag does not exist; `yg --allow-includes` is a clap usage error"
+          - lines: "4-5"
+            type: mark
+            label: "Same — deferred to M11 by deviation #10"
+        mechanism: |
+          Three spec surfaces are absent from the shipped binary, all three matching the plan's
+          declared deviations exactly, and all three recorded in
+          docs/spec/yg-spec-draft-01-implementation-notes.md (sections 2, 4, 10):
+            - r[ext.chomping] (spec line 353) — no `chomping` native in funs.rs; deferred to the
+              CST phase because `Event::Scalar` carries `ScalarStyle` but not `Chomp`. Consistent
+              with r[phases.core], which omits it from the Phase 1 filter list.
+            - r[comparison.strict] §3.2 `===`/`!==` — no operator, no `strict_eq` substitute.
+              Correctly not forked into jaq's grammar, per r[overview.jaq-foundation].
+            - r[cli.allow-includes] / r[cli.allow-refs] (evidence above) — deferred with the
+              resolver filters they gate, which are M11 work.
+          Verified: each is deferred the way the plan said, not silently half-built. The gap is
+          purely documentation-shaped — a reader who opens the spec (which is shipped in-repo and
+          is the canonical rule source that `r[impl ...]` annotations point at) sees unconditional
+          MUST/`—` prose with no "not yet" marker, and has to find the separate notes doc to learn
+          otherwise. `to_entries_rich` (r[diverge.entries.rich]) is likewise absent but IS assigned
+          to Phase 3 by the spec's own §11, so it needs nothing.
+        remediation: |
+          In the draft-02 pass, add a status marker to each unimplemented rule in draft-01
+          (a "Status: deferred to Phase N" line under the `r[...]` tag), or add a short
+          "What is not implemented yet" section near the top of the spec that links the notes doc.
+          The notes doc content is already correct and complete; only the entry point is missing.
+        temporal:
+          introduced: "2026-06-10"
+          last_modified: "2026-08-03"
+          commit_count: 24
+          monthly_commits: [0,0,0,0,0,0,0,0,0,1,0,23]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [yg-color-flags-replaced-without-spec-amendment]
+        effort: small
+        effort_notes: "Spec annotation pass; no code change"
+
+      - slug: resolved-type-is-an-exact-alias-of-type
+        title: "`resolved_type` and `type` are the same function with no note explaining why"
+        criterion: "FC-3"
+        surface: "Completeness"
+        concern: note
+        locations:
+          - path: crates/yamalgam-query/src/funs.rs
+            start_line: 150
+            end_line: 153
+        evidence: |
+                // r[impl ext.resolved-type]
+                ("resolved_type", v(0), |context_value| {
+                    bome(Ok(YamlVal::str(context_value.1.type_name())))
+                }),
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "Identical body to `_yaml_type`, which defs.jq binds as `type`"
+        mechanism: |
+          `defs.jq:3` defines `def type: _yaml_type;` and `_yaml_type` (funs.rs:26-28) is
+          `YamlVal::type_name()`. `resolved_type` is the same call, so the two filters are exact
+          aliases for every input. This is a consequence of the architecture — the builder resolves
+          scalars at parse time under the active schema, so there is no unresolved state for
+          `resolved_type` to differ on — and it is arguably faithful to r[ext.resolved-type], whose
+          own wording is self-contradictory. The plan anticipated this and asked for it to be
+          written down: "the doc comment should say so" (plan line 2844). No such comment exists,
+          and the implementation-notes doc does not list it among the 13 deviations. Spec line 358
+          explicitly contrasts the two — "`type` returns \"boolean\"... `resolved_type` always
+          returns the resolution result under the active schema" — so the spec presents them as
+          distinguishable, and a user will reasonably assume `resolved_type` does something `type`
+          does not. It does not. (§6.2 itself defines four rules — r[ext.resolved-type], r[ext.kind],
+          r[ext.is-alias], r[ext.raw] — and does not define `type`, which appears only inside the
+          r[ext.resolved-type] prose.)
+        remediation: |
+          Add a doc comment at the `resolved_type` registration: it is an alias of `type` because
+          scalars are resolved during the build under the active schema; the distinction becomes
+          meaningful only in combination with `resolve_as`. Add a one-line entry to
+          docs/spec/yg-spec-draft-01-implementation-notes.md so draft-02 can either drop
+          `resolved_type` or give it a distinguishing definition.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 24
+          monthly_commits: [0,0,0,0,0,0,0,0,0,1,0,23]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "Two comment lines and a notes-doc bullet"
+
+      - slug: in-place-conflicts-diverge-from-plan-undocumented
+        title: "`-i` hard-conflicts with `-j`, `-s`, and `-n`, reversing the plan's stated decision"
+        criterion: "FC-2"
+        surface: "Completeness"
+        concern: note
+        locations:
+          - path: crates/yamalgam/src/lib.rs
+            start_line: 119
+            end_line: 126
+        evidence: |
+              /// Edit files atomically; reserialization loses comments until CST editing lands.
+              // r[impl cli.inplace]
+              #[arg(
+                  short = 'i',
+                  long,
+                  conflicts_with_all = ["null_input", "slurp", "json_output"]
+              )]
+              pub in_place: bool,
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "6"
+            type: mark
+            label: "Plan Task 22 said 'Combine with -j freely (jq allows it; the file becomes JSON)'"
+        mechanism: |
+          Plan Task 22 (line 3877) explicitly decided the opposite: "Combine with `-j` freely
+          (jq allows it; the file becomes JSON — the user asked)." The shipped binary rejects the
+          combination at parse time, and additionally rejects `-i -s` and `-i -n`, which the plan
+          never discussed. There is also a runtime guard in commands/query.rs:41-44 for the case
+          clap cannot see — the global `--format json` route — which is a correct belt-and-braces
+          addition. The behavior is defensible (an in-place JSON rewrite of a .yml file is a foot-gun,
+          and `-s`/`-n` have no coherent per-file meaning), it is covered by
+          `in_place_rejects_slurp_null_input_and_json_output` in tests/yg.rs:461, and the error
+          messages are clear. What is missing is the paper trail: the deviations doc's `-i` bullet
+          (lines 145-150) describes atomicity, permissions, and comment loss but says nothing about
+          the mutual exclusions, so the plan and the code disagree with nothing to reconcile them.
+        remediation: |
+          Add one sentence to the `-i` bullet in docs/spec/yg-spec-draft-01-implementation-notes.md:
+          `-i` is exclusive with `-n`, `-s`, and JSON output (both `-j` and `--format json`), and
+          why. Optionally extend the `-i` help text so `yg --help` states it without a failed run.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 24
+          monthly_commits: [0,0,0,0,0,0,0,0,0,1,0,23]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "One documentation sentence"
+
+      - slug: subcommand-name-shadowing-not-documented-in-help
+        title: "Filters named `doctor` or `info` dispatch as subcommands with no help-text warning"
+        criterion: "FC-5"
+        surface: "Completeness"
+        concern: note
+        locations:
+          - path: crates/yamalgam/src/lib.rs
+            start_line: 31
+            end_line: 36
+        evidence: |
+          const ENV_HELP: &str = "\
+          ENVIRONMENT VARIABLES:
+              RUST_LOG             Log filter (e.g., debug, yamalgam=trace)
+              YAMALGAM_LOG_PATH    Log file path (rotated daily)
+              YAMALGAM_LOG_DIR     Log directory
+          ";
+        evidence_lang: "rust"
+        evidence_markers:
+          - lines: "1-6"
+            type: mark
+            label: "after_help epilog — plan Task 16 asked for the subcommand-shadowing caveat here"
+        mechanism: |
+          `Cli` flattens `QueryArgs` (a leading positional FILTER) alongside an optional
+          `Commands` subcommand enum containing `Doctor` and `Info`. Clap resolves a leading
+          positional that matches a subcommand name AS the subcommand, so `yg info data.yml`
+          runs the `info` subcommand with a stray argument rather than evaluating the filter
+          `info`. Plan Task 16 Step 2 (line 3118) called this out and said "acceptable, document
+          in --help epilog." The epilog shipped as environment-variable documentation only; the
+          caveat is not in `--help`, the README, or the implementation-notes doc. Practical blast
+          radius is small — bare `info`/`doctor` are not valid jq filters anyway — but a user
+          writing `yg 'doctor' x.yml` gets an unrelated diagnostic dump instead of a
+          "undefined filter" error, which reads as a bug.
+        remediation: |
+          Append two lines to ENV_HELP (or a second `after_help` block): note that `doctor` and
+          `info` in the first positional slot are subcommands, and that `yg -- doctor` or
+          `yg '.doctor'` is the way to address a filter or key by those names.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 24
+          monthly_commits: [0,0,0,0,0,0,0,0,0,1,0,23]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "Two lines of help text"
+
+  - slug: supply-chain
+    title: "The Supply Chain Surface"
+    thesis: "M10 roughly doubles the binary's dependency weight, and the largest additions arrive through inherited default features rather than stated requirements."
+    verdict: "The dependency choices are sound in kind — jaq is the right engine, librebar is already the workspace's CLI substrate — but they were taken with defaults, and the defaults are expensive. Measurement makes the case concrete: jiff costs more binary than jaq-core itself, for date builtins the query spec never defines. The exact pins on jaq are a defensible reproducibility choice that carries a patch-response cost worth acknowledging. Two tooling observations matter beyond this audit: the unsafe census is silently producing no data, and a deny allowlist entry only matches under a feature set the default check does not use."
+    flow:
+      - id: manifest
+        label: "Cargo.toml deps"
+        type: start
+      - id: defaults
+        label: "default-features off?"
+        type: decision
+        no: inherit
+      - id: resolve
+        label: "Resolve graph"
+        type: process
+      - id: gate
+        label: "cargo deny / audit"
+        type: process
+        findings:
+          - slug: deny-advisory-ignore-matches-only-under-all-features
+            label: "Ignore misses"
+          - slug: geiger-census-produced-no-unsafe-data
+            label: "No census"
+      - id: link
+        label: "Link yg binary"
+        type: process
+        findings:
+          - slug: yg-ships-competing-yaml-parser-for-its-own-config
+            label: "2nd YAML parser"
+      - id: ship
+        label: "4.0MiB .text"
+        type: end
+      - id: inherit
+        label: "Inherit defaults"
+        type: process
+        spine: false
+        findings:
+          - slug: jaq-std-time-feature-bundles-tzdb
+            label: "jiff 171KiB"
+          - slug: librebar-default-features-not-disabled
+            label: "librebar defaults"
+        next: resolve
+
+    findings:
+      - slug: librebar-default-features-not-disabled
+        title: "librebar feature list is a no-op subset of its defaults, silently enabling crash + cache"
+        criterion: "7.3"
+        surface: "Supply Chain"
+        concern: moderate
+        locations:
+          - path: "crates/yamalgam/Cargo.toml"
+            start_line: 42
+            end_line: 54
+        evidence: |
+          [dependencies]
+          yamalgam-core = { version = "0.1", path = "../yamalgam-core" }
+          yamalgam-query = { path = "../yamalgam-query" }
+          yamalgam-serde = { path = "../yamalgam-serde" }
+          librebar = { version = "0.4", features = ["cli", "config", "logging", "diagnostics"] }
+          clap = { version = "4.6", features = ["derive"] }
+          anyhow = "1.0"
+          tracing = "0.1"
+          serde = { version = "1.0", features = ["derive"] }
+          serde_json = "1.0"
+          owo-colors = { version = "4.3", features = ["supports-colors"] }
+          camino = { version = "1.2", features = ["serde1"] }
+          tempfile = "3.27"
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "5"
+            type: mark
+            label: "explicit feature list without default-features = false"
+        mechanism: >
+          librebar 0.4.0 declares `default = ["cli", "config", "logging", "crash", "cache", "diagnostics"]`.
+          The manifest here names four features but never sets `default-features = false`, so the declared
+          list is a strict subset of what is already on and adds nothing. Cargo resolves the actual feature
+          set to `cache,cli,config,crash,default,diagnostics,logging` (verified with
+          `cargo tree -p yamalgam -e normal -f "{p} {f}" --depth 1`). Neither `librebar::crash` nor
+          `librebar::cache` is referenced anywhere in crates/yamalgam/src — the only librebar paths used are
+          `librebar::cli`, `librebar::config`, `librebar::logging`, and `librebar::diagnostics`. The
+          concrete payoff from scoping them out is smaller than it first appears, and worth stating
+          precisely: of the crates these two features declare, only `base64` is actually attributable to
+          them. `directories` is declared by `config` AND `logging`, both explicitly requested;
+          `tempfile` has a second inbound edge from yamalgam itself (crates/yamalgam/Cargo.toml:54); and
+          `serde_json` is declared by `cli`, `config`, and `logging` as well as being a direct dependency
+          of both yamalgam (Cargo.toml:51) and yamalgam-query. All three stay regardless. The finding is
+          therefore about manifest honesty rather than binary size: the manifest reads as if the surface
+          were scoped when it is not, which is the failure mode criterion 7.3 targets — a reviewer
+          looking at this line concludes the dependency was audited for feature necessity, and it was not.
+        remediation: >
+          Add `default-features = false` to the librebar dependency so the named feature list becomes
+          load-bearing, then rebuild and confirm the resolved set with
+          `cargo tree -p yamalgam -e normal -f "{p} {f}" --depth 1`. If `crash` or `cache` turn out to be
+          wanted, name them explicitly rather than inheriting them. If librebar's defaults are intentionally
+          desired in full, drop the feature list entirely and say so in a comment — either is honest; the
+          current middle state is not.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-02"
+          commit_count: 3
+        chains:
+          enables: ["librebar-upgrade-expands-trust-boundary"]
+          enabled_by: []
+          related: ["jaq-std-time-feature-bundles-tzdb"]
+        effort: trivial
+        effort_notes: >
+          One manifest key plus a rebuild to confirm nothing in the code path depended on the
+          inherited crash/cache modules.
+
+      - slug: yg-ships-competing-yaml-parser-for-its-own-config
+        title: "Interim before the librebar-yamalgam config swap: yg reads its config with a 507KiB foreign YAML stack whose 1.0.0 is three days old"
+        criterion: "13.5"
+        surface: "Dependency Fitness"
+        concern: moderate
+        locations:
+          - path: "Cargo.lock"
+            start_line: 515
+            end_line: 518
+          - path: "Cargo.lock"
+            start_line: 1135
+            end_line: 1138
+        evidence: |
+          name = "granit-parser"
+          version = "1.0.0"
+          source = "registry+https://github.com/rust-lang/crates.io-index"
+          checksum = "c60388b03522b86e24b6b45952255279936b08a871775156fc89c94e792d21d8"
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "2"
+            type: mark
+            label: "1.0.0 published 2026-07-31 — three days before this audit"
+          - lines: "1"
+            type: mark
+            label: "crate first published 2026-05-01; three months old in total"
+        mechanism: >
+          THIS IS A SEQUENCING FINDING, NOT A MISTAKE. The remedy already exists as a plan: librebar
+          grows a pluggable YAML backend and yamalgam becomes the implementation. Nobody chose the wrong
+          dependency — librebar needed a YAML config parser before yamalgam was in a position to be one.
+          The finding's contribution is therefore not to propose the fix but to quantify what the interim
+          state costs and to establish how long the interim lasts. The answer to the second question is
+          the important one: the swap is gated on yamalgam being consumable as a published crate, and
+          that has not happened. The workspace is pre-release, the library crates carry `publish = false`,
+          and the crates.io publish is targeted post-M10. THE EXPOSURE WINDOW EQUALS THE PUBLISH
+          TIMELINE — every week the publish slips is a week this interim runs. That makes the publish a
+          dependency-hygiene milestone as well as a distribution one, which is the one thing here worth
+          tracking rather than merely noting.
+
+          MATURITY IS THE INTERIM'S MAIN COST. Verified against the crates.io API on 2026-08-03.
+          `granit-parser` was first published 2026-05-01 — three months ago — and reached 1.0.0 on
+          2026-07-31, three days before this audit. `serde-saphyr` reached 1.0.0 the same day,
+          2026-07-31. Both are published from the same author's repositories
+          (github.com/bourumir-wyngs/{granit-parser,serde-saphyr}). Cargo.lock pins both at 1.0.0:
+          granit-parser at lines 515-518 (checksum c60388b0...) and serde-saphyr at lines 1135-1138
+          (`version = "1.0.0"`, checksum 5bb49c0a...). A 1.0.0 that is three days old carries no track
+          record of API stability at its stated-stable surface, and for a YAML parser specifically it
+          carries no accumulated fuzzing or hardening history against hostile input. yamalgam's own
+          scanner has a documented history of exactly the bug class that only shows up under sustained
+          adversarial exercise — the fetch_next_token infinite-iterator leak — and a parser three days
+          into its 1.0 has not yet had the opportunity to find its equivalent.
+
+          The exposure is widened by two hops of caret range. librebar 0.4.0 requests
+          `serde-saphyr = { version = "1.0", features = ["deserialize"], default-features = false }`,
+          and serde-saphyr 1.0.0 in turn requests `granit-parser = { version = "1", features = ["std"] }`.
+          Both are caret ranges, so a `cargo update` silently accepts any future 1.x from two crates whose
+          1.0 stability record is measured in days — the committed Cargo.lock is the only thing currently
+          holding the version still, and `.justfile` `upgrade`/`monthly` run `cargo update` unattended.
+          serde-saphyr also declares no `rust-version`, so it can raise its effective MSRV in a patch
+          release without signalling, against a workspace that pins MSRV 1.89.0 and gates it in CI.
+
+          Scope: this arrived through M10's own librebar 0.1 -> 0.4 bump and is in scope for this audit,
+          though not in the way it first appears. The stack was already present on main at serde-saphyr
+          0.0.27 / granit-parser 0.0.3. What M10 did is move it across the 0.0.x -> 1.0.0 boundary onto
+          releases that were three days old on the day of the commit (1cf84ed, 2026-08-03). The upgrade,
+          not the dependency, is the M10 event.
+
+          EXPOSURE, TRACED RATHER THAN ASSUMED — this is what sets the concern level at moderate rather
+          than significant. The foreign stack parses yg's CONFIG only; it never sees the documents being
+          queried. `grep -rn serde_saphyr crates/yamalgam/src/` returns nothing, and the query path builds
+          a `LoaderConfig` and runs through yamalgam's own scanner. So attacker-supplied YAML *documents*
+          are handled by the hardened parser, as intended.
+
+          The config path is nonetheless attacker-reachable, and narrowly so. crates/yamalgam/src/main.rs:124
+          calls `ConfigLoader::new(env!("CARGO_PKG_NAME")).with_project_search(&cwd)`, and librebar's
+          `find_project_config` (src/config.rs:678) walks UP from the working directory looking for
+          `yamalgam.{ext}` and `.yamalgam.{ext}` where `CONFIG_EXTENSIONS = ["toml", "yaml", "yml", "json"]`,
+          bounded by a `.git` marker. Discovered YAML is handed to `serde_saphyr::from_str` at librebar
+          src/config.rs:394. Running `yg` inside an untrusted checkout that contains `.yamalgam.yaml`
+          therefore feeds attacker-controlled bytes to a three-day-old 1.0 parser before any yamalgam code
+          runs. The `.git` boundary does not help: in the hostile case the malicious file lives inside the
+          untrusted repo, which is exactly where the walk starts.
+
+          What that buys an attacker is small, which is the decisive point. yamalgam's `Config`
+          (crates/yamalgam/src/config.rs) has exactly two fields, `log_level` and `log_dir`. I checked
+          specifically whether a malicious project config could weaken the query loader's limits — it
+          cannot: `loader_config()` at crates/yamalgam/src/commands/query.rs:575-589 derives strict /
+          trusted / moderate and the tag-resolution schema purely from CLI arguments, with no config input.
+          So the Billion-Laughs and alias-expansion protections cannot be turned off from a config file.
+          Combined with `forbid(unsafe_code)` on both crates, the realistic worst case is a panic or hang
+          at startup (a denial of service against your own invocation) or a redirected `log_dir`, with
+          environment variables taking precedence over the file anyway. An attacker-controlled input path
+          exists, so this is not advisory; the reachable damage is a startup DoS and two benign fields, so
+          it is not significant. Moderate is the defense-in-depth reading and it is the right one.
+
+          Three further facts cut against severity and belong on the record. Both crates carry
+          `#![forbid(unsafe_code)]` (granit-parser src/lib.rs:86, serde-saphyr src/lib.rs:1) with zero
+          unsafe blocks in either source tree, so the memory-safety class is structurally excluded and the
+          residual risk is panics, resource exhaustion, and mis-parses — which is still the class
+          yamalgam's own scanner had to fix, but it is not a CVE-class memory-safety exposure. Neither
+          1.0.0 was a cold release: both shipped 1.0.0-rc.1 (2026-07-18) and 1.0.0-rc.2 (2026-07-29)
+          first. And both have real adoption — granit-parser 1.4M downloads, serde-saphyr 3.7M — so this
+          is not an unused crate, even if adoption is not the same thing as a hardened 1.0 API. One fact
+          cuts the other way and was not previously known: granit-parser yanked 0.0.4 on 2026-06-02,
+          which is a release-hygiene signal inside an already-short history.
+
+          SIZE IS THE SECONDARY CONCERN, and it is larger than the single serde_saphyr row suggests.
+          cargo-bloat on the release `yg` binary shows `serde_saphyr` at 192.8KiB, but `cargo tree -p
+          yamalgam -e normal -i` confirms it is the sole root of two more top-20 crates, `granit_parser`
+          at 207.4KiB and `annotate_snippets` at 106.8KiB. The foreign YAML stack totals 507.0KiB of
+          .text — 12.4% of the 4.0MiB section, and 11.8x the 43.0KiB that yamalgam's own
+          `yamalgam_scanner` contributes. granit-parser is not an incidental utility: its manifest
+          describes it as "A YAML parser with comment and style support, written in pure Rust", a direct
+          restatement of what yamalgam-cst exists to do. The flagship CLI of a pure-Rust YAML toolkit
+          links a competing pure-Rust YAML parser nearly five times the size of its own, to parse its own
+          configuration file.
+
+          Provenance is sole-path and unambiguous: `serde-saphyr v1.0.0 <- librebar v0.4.0 <- yamalgam`.
+          This is NOT reachable by feature-flag hygiene, which distinguishes it from
+          `librebar-default-features-not-disabled`. librebar's `config` feature expands to
+          `dep:toml, dep:serde-saphyr, dep:serde_json, dep:serde_path_to_error, dep:camino,
+          dep:directories`, and `config` is both explicitly requested here and a hard prerequisite of
+          `diagnostics` (`diagnostics = ["config", "logging", ...]`). Setting `default-features = false`
+          would not remove one byte of it. The only fix is to change what parses the config.
+        remediation: >
+          The remedy is already chosen and needs no re-litigating: the librebar-yamalgam config backend
+          swap removes serde-saphyr, granit-parser, and annotate-snippets in one move, deleting the
+          507.0KiB, the three-day-old-1.0 dependence, and the dogfooding gap together. Nothing here argues
+          for a different fix or for doing it sooner than the publish allows.
+          What this finding asks for is that the interim be bounded rather than open-ended. Three cheap
+          steps, none of which is the swap itself. Treat the crates.io publish as the gating milestone for
+          this item too, so the exposure window is tracked against something concrete instead of drifting.
+          Keep Cargo.lock authoritative in the meantime and do not let `just upgrade` / `just monthly` move
+          these two crates unattended — the caret ranges are two hops upstream (librebar -> serde-saphyr
+          "1.0", serde-saphyr -> granit-parser "1") and cannot be tightened from this repo, so the lockfile
+          is the only control that exists. And record the adoption as a dated decision naming the 1.0.0
+          age, so it gets re-examined on evidence once the crates have a few months of 1.x history.
+          Do not attempt to fix this with `default-features = false` — the mechanism explains why that
+          cannot work.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: ["librebar-default-features-not-disabled", "librebar-upgrade-expands-trust-boundary"]
+        effort: large
+        effort_notes: >
+          The swap itself is upstream work in librebar plus a yamalgam-backed implementation, and it is
+          gated on the crates.io publish rather than on effort available now. The three interim steps —
+          tracking the window against the publish, holding the lockfile, and dating the decision — are
+          trivial. Verification of the full fix is a single cargo-bloat re-run showing all three crates
+          gone.
+
+      - slug: jaq-std-time-feature-bundles-tzdb
+        title: "jaq-std default features pull jiff and the full IANA tzdb for date builtins the spec never asks for"
+        criterion: "13.8"
+        surface: "Dependency Fitness"
+        concern: moderate
+        locations:
+          - path: "crates/yamalgam-query/Cargo.toml"
+            start_line: 11
+            end_line: 19
+        evidence: |
+          [dependencies]
+          indexmap = "2"
+          jaq-core = "=3.1.0"
+          jaq-std = "=3.0.1"
+          serde_json = { version = "1.0", features = ["preserve_order"] }
+          thiserror = "2.0"
+          yamalgam-core = { path = "../yamalgam-core" }
+          yamalgam-parser = { path = "../yamalgam-parser" }
+          yamalgam-scanner = { path = "../yamalgam-scanner" }
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "4"
+            type: mark
+            label: "jaq-std taken with default features = std, format, log, math, regex, time"
+        mechanism: >
+          MEASURED: cargo-bloat on the release `yg` binary puts `jiff` at 171.4KiB of .text — 4.2% of the
+          4.0MiB .text section. That is larger than `jaq_core` itself (119.6KiB) and 3.4x the size of
+          `jaq_std` (51.1KiB): the date-and-time subsystem outweighs the entire jq interpreter it was
+          pulled in to garnish. The edge is real and sole-sourced — `cargo tree -p yamalgam -e normal -i
+          jiff` returns exactly one path, `jiff v0.2.35 <- jaq-std v3.0.1 <- yamalgam-query <- yamalgam`,
+          so nothing else in the binary would keep jiff alive if `time` were dropped. This supersedes the
+          Windows-only framing below: the cost lands on every target, not just the ones that bundle tzdb.
+          jaq-std 3.0.1 declares `default = ["std", "format", "log", "math", "regex", "time"]`, and `time`
+          maps to `dep:jiff`. This manifest takes jaq-std with defaults, so the resolved graph is
+          `jaq-std ... default,format,jiff,libm,log,math,regex,regex-bites,std,time,urlencoding` pulling
+          `jiff v0.2.35` with `tzdb-bundle-platform,tzdb-concatenated,tzdb-zoneinfo,tz-system,tz-fat`.
+          On Unix hosts jiff reads the system zoneinfo, but `jiff-tzdb-platform` is target-gated to
+          platforms without one, and this package ships Windows artifacts
+          (`[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]` and the aarch64 equivalent in
+          crates/yamalgam/Cargo.toml), so Windows `yg` binaries embed the entire IANA Time Zone Database
+          via `jiff-tzdb v0.1.8` — confirmed with
+          `cargo tree -i jiff-tzdb -e normal --all-features --target all`. Grepping
+          docs/spec/yg-query-language-spec-draft-01.md for `strftime|mktime|gmtime|todate|fromdate|dateadd|localtime|now`
+          returns zero matches: the query language spec defines no date or time builtins. The
+          implementation plan notes in passing that "default features include regex/time/math" but records
+          no decision to keep `time`. This is a large feature-gated subsystem enabled by inheritance rather
+          than by requirement, plus a runtime behaviour (`tz-system` reads `TZ` and `/etc/localtime`) that a
+          query tool marketed as deterministic did not ask for.
+        remediation: >
+          Decide explicitly whether jq's date builtins are in scope. If they are, record that in the spec so
+          the tzdb cost is a stated tradeoff. If they are not, take jaq-std with
+          `default-features = false, features = ["std", "format", "log", "math", "regex"]` and confirm the
+          test suite still passes — `regex` and `format` are demonstrably load-bearing because
+          `all_funs` registers `jaq_std::funs::<YgKind>()` wholesale, but `time` is separable. The payoff is
+          now measured rather than estimated: dropping `time` removes jiff's 171.4KiB from .text on every
+          target, plus the bundled tzdb on Windows. Re-run `cargo bloat --release --crates -p yamalgam`
+          after the change to confirm jiff leaves the binary entirely.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: ["librebar-default-features-not-disabled", "jaq-exact-pins-block-patch-updates"]
+        effort: small
+        effort_notes: >
+          A manifest change plus a test run; the risk is discovering that a jaq-std def transitively
+          references a time native, which the full test suite will reveal immediately.
+
+      - slug: jaq-exact-pins-block-patch-updates
+        title: "Exact `=` pins on jaq-core and jaq-std make patch and security updates a manual manifest edit"
+        criterion: "7.1"
+        surface: "Supply Chain"
+        concern: advisory
+        locations:
+          - path: "crates/yamalgam-query/Cargo.toml"
+            start_line: 13
+            end_line: 14
+        evidence: |
+          jaq-core = "=3.1.0"
+          jaq-std = "=3.0.1"
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "1-2"
+            type: mark
+            label: "exact-version requirements"
+        mechanism: >
+          Both jaq crates use exact `=` requirements. `cargo update` cannot move either crate, so any
+          future jaq-core 3.1.x patch — including one published to fix a RustSec advisory — requires
+          editing this manifest by hand. The repo's automation does not compensate: .github/dependabot.yml
+          sets `open-pull-requests-limit: 0` for the cargo ecosystem, so no version-update PR will ever be
+          opened, and the dependabot-issues workflow only converts security alerts into issues for manual
+          batching. The net effect is that remediation latency for this dependency is bounded by a human
+          noticing an issue, not by a tool. The pin on jaq-core is also redundant and mildly hostile:
+          jaq-std 3.0.1 already requires `jaq-core ^3.1.0`, so pinning jaq-core exactly buys nothing today
+          and will conflict the moment jaq-std publishes a release requiring jaq-core 3.2. Note this is a
+          cost, not a defect — jaq 3.x reworked the `ValT`/`DataT` traits this crate implements, and pinning
+          is a defensible way to keep a hand-written trait impl from silently drifting. What is missing is
+          the recorded reason.
+        remediation: >
+          Either relax to tilde requirements (`~3.1` / `~3.0`) so patch releases flow while minor bumps stay
+          opt-in, or keep the exact pins and add a comment stating why (the ValT/DataT surface is
+          hand-implemented and minor jaq releases have broken it before). If the pins stay, add jaq-core and
+          jaq-std to a periodic manual review so the pin does not quietly outlive its rationale.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: ["jaq-std-time-feature-bundles-tzdb"]
+        effort: trivial
+        effort_notes: "A manifest edit or a two-line comment, depending on which way the call goes."
+
+      - slug: serde-json-redundant-in-yaml-native-engine
+        title: "`fromjson` parses through serde_json in a crate that already owns a YAML 1.2 parser"
+        criterion: "13.7"
+        surface: "Dependency Fitness"
+        concern: moderate
+        locations:
+          - path: "crates/yamalgam-query/src/funs.rs"
+            start_line: 310
+            end_line: 314
+        evidence: |
+          pub fn parse_json(source: &str, config: &yamalgam_core::LoaderConfig) -> Result<YamlVal, String> {
+              config.limits.check_input_size(source.len())?;
+              let value = serde_json::from_str(source).map_err(|error| error.to_string())?;
+              json_value(value, &config.limits, 0)
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "third-party JSON parser inside the YAML toolkit"
+          - lines: "2"
+            type: mark
+            label: "only the input-size limit runs before the full DOM is built"
+        mechanism: >
+          JSON is a subset of YAML 1.2, and this crate already depends on yamalgam-parser and
+          yamalgam-scanner and has a builder that constructs YamlVal directly from parser events. The
+          `fromjson` native even builds the right configuration for the job — crates/yamalgam-query/src/funs.rs:85-94
+          clones the LoaderConfig `.with_tag_resolution(yamalgam_core::TagResolution::Json)` — and then
+          hands the string to serde_json anyway, materialising a full `serde_json::Value` DOM before
+          transcoding it node by node into YamlVal. The asymmetry is visible inside the same crate: the JSON
+          *emitter* at crates/yamalgam-query/src/emit/json.rs is hand-rolled against `Data` rather than
+          going through serde_json. So the crate writes JSON with its own code and reads it with someone
+          else's. Two concrete costs follow. First, the resource limits are applied after the fact:
+          `check_input_size` runs first, but `check_depth`, `check_collection_size`, and `check_scalar_size`
+          only run during the transcode, so a deeply nested payload is fully materialised by serde_json
+          (bounded only by serde_json's own recursion limit of 128) before this crate's own, possibly much
+          lower, depth limit is consulted. Second, `preserve_order` on serde_json unifies across the whole
+          workspace graph, so the `yg` binary and yamalgam-bench get the indexmap-backed map
+          representation whether or not they wanted it. For a project whose stated identity is a pure-Rust
+          YAML parser, shipping a competing JSON parser inside the query engine is the "redundant with
+          capability already in the tree" failure mode in its purest form. Explicitly not a size argument:
+          cargo-bloat measures `serde_json` at 41.0KiB of .text, 1.0% of the binary and the smallest crate
+          in the top-20 table. This finding stands or falls on architectural correctness and on the
+          limit-enforcement ordering described above; anyone weighing it should not expect a meaningful
+          binary-size win from removing it, and should not dismiss it on the grounds that 41KiB is cheap.
+        remediation: >
+          Route `fromjson` through the existing event-based builder with `TagResolution::Json` — the
+          configuration is already constructed at the call site — and enforce the LoaderConfig limits
+          during the parse rather than during a post-hoc transcode. That drops serde_json from
+          yamalgam-query's manifest entirely and removes the `preserve_order` unification side effect on the
+          rest of the workspace. Keep a differential test comparing the two paths across the existing
+          fixture corpus so any divergence in number, duplicate-key, or escape handling shows up as a test
+          failure rather than a behaviour change. If a real semantic gap makes yamalgam's own parser unable
+          to serve `fromjson`, that gap is the finding worth fixing.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-03"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: []
+          related: ["jaq-exact-pins-block-patch-updates"]
+        effort: medium
+        effort_notes: >
+          The transcode logic already exists; the work is re-pointing it at the event builder, moving the
+          limit checks into the parse loop, and proving JSON-mode equivalence across the fixture corpus.
+
+      - slug: librebar-upgrade-expands-trust-boundary
+        title: "librebar 0.1 to 0.4 adds two single-maintainer 0.x crates to the shipped yg binary"
+        criterion: "7.5"
+        surface: "Supply Chain"
+        concern: advisory
+        locations:
+          - path: "crates/yamalgam/Cargo.toml"
+            start_line: 46
+            end_line: 46
+        evidence: |
+          librebar = { version = "0.4", features = ["cli", "config", "logging", "diagnostics"] }
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "1"
+            type: mark
+            label: "three-minor jump on a 0.x dependency"
+        mechanism: >
+          The M10 diff bumps librebar from 0.1 to 0.4 — three breaking minors on a pre-1.0 crate. The
+          lock-file delta is net favourable overall (211 packages before, 197 after; the whole
+          wasm-bindgen / wit-bindgen / wasmparser / flate2 subtree disappears), and that is worth saying
+          plainly. But two crates enter the compiled `yg` binary that were not there before, both via the
+          `logging` and `diagnostics` features this manifest requests. `rust-zstd v0.1.0` — described by its
+          own manifest as "Pure Rust Zstandard codec — compress + decompress, zero external dependencies",
+          published from github.com/physwkim/rust-zstd — is a first-and-only release with no ecosystem track
+          record, and it sits in the log-rotation and diagnostics-bundle path where it will decompress data.
+          Decompressors are a standing memory-safety and resource-exhaustion target; this one is at least
+          pure safe Rust with no `unsafe` in its sources, which is the mitigating fact. `leakguard v0.8.0`
+          (github.com/ptukovar/leakguard) is a single-maintainer 0.x redaction library, zero-dependency and
+          `forbid(unsafe_code)`, sitting in the logging path. Neither is flagged by cargo-audit or
+          cargo-deny — there is nothing to flag, which is exactly why this is worth recording: the risk here
+          is adoption-and-maintenance thin-ice, not a known advisory, and no tool in the baseline reports on
+          it. librebar is first-party, so the decision is reachable; it just is not currently visible from
+          this repo.
+        remediation: >
+          Record the trust decision where it can be reviewed — either a comment on this dependency line or a
+          short note in the M10 implementation-notes doc naming rust-zstd and leakguard as accepted
+          transitive risk and why. Separately, check whether librebar can make `rust-zstd` optional so
+          consumers that do not need compressed log rotation or diagnostics bundles can opt out; that fix
+          belongs in librebar, not here. Note that dropping the `diagnostics` feature is only a partial
+          move: it removes leakguard and tar, but NOT rust-zstd — the decompressor this finding is most
+          concerned about — because librebar declares `rust-zstd` under `logging` as well
+          (`logging = [dep:tracing-subscriber, dep:tracing-appender, dep:serde_json, dep:directories,
+          dep:rust-zstd]`), and `logging` is explicitly requested here and is itself a prerequisite of
+          `diagnostics`. Removing rust-zstd requires the upstream change described above.
+        temporal:
+          introduced: "2026-08-02"
+          last_modified: "2026-08-02"
+          commit_count: 3
+        chains:
+          enables: []
+          enabled_by: ["librebar-default-features-not-disabled"]
+          related: ["librebar-default-features-not-disabled"]
+        effort: small
+        effort_notes: >
+          Documenting the decision is minutes; making rust-zstd optional is upstream work in librebar.
+
+      - slug: geiger-census-produced-no-unsafe-data
+        title: "cargo-geiger baseline is empty — every crate section aborted before emitting a census"
+        criterion: "7.1"
+        surface: "Supply Chain"
+        concern: advisory
+        locations:
+          - path: ".crustoleum/geiger.txt"
+            start_line: 1205
+            end_line: 1207
+        evidence: |
+          error: Io(Os { code: 2, kind: NotFound, message: "No such file or directory" }, "/Users/clay/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gungraun-0.17.2/src/lib.rs")
+
+          === yamalgam-query ===
+        evidence_lang: text
+        evidence_markers:
+          - lines: "1"
+            type: mark
+            label: "geiger aborts on an unvendored crate before printing any table"
+        mechanism: >
+          The audit baseline describes geiger.txt as a "unsafe census". It contains none. All eleven crate
+          sections in the 2057-line file terminate in either the `error: Io(... gungraun-0.17.2/src/lib.rs)`
+          abort shown above or, in the yamalgam-query section specifically, a compile failure
+          (`error: could not compile 'yamalgam-scanner' (lib)` ... `signal: 9, SIGKILL: kill`, at lines
+          1427-1430) — the build was killed, most likely OOM under sccache. Not one geiger table row was
+          emitted, so there is no tool-derived unsafe data for the new dependency subtree at all. I
+          substituted a manual scan of the vendored sources under
+          ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f for the crates M10 adds. The result is
+          reassuring and worth stating: jaq-core 3.1.0 and jaq-std 3.0.1 both carry `forbid(unsafe_code)` in
+          their lib.rs, as do base64 0.22.1, leakguard 0.8.0, and regex-bites 0.1.6 — and regex-bites,
+          despite its 0.1.x version, is an official rust-lang/regex sub-crate authored by the regex
+          maintainers, not a third-party regex engine. Unsafe in the new subtree is confined to
+          well-established crates with long track records: aho-corasick, bstr, once_cell, libm, jiff,
+          indexmap, serde_json, typed-arena, dyn-clone, tempfile. The M10 first-party code adds no unsafe
+          and no FFI: workspace lints set `unsafe_code = "deny"` and crates/yamalgam/src/main.rs adds
+          `#![deny(unsafe_code)]`, and grepping the M10 source for `extern "C"`, `#[no_mangle]`, `libc::`,
+          and `repr(C)` returns nothing. The finding is about the baseline, not the code.
+        remediation: >
+          Fix or drop cargo-geiger in the tool runner. The immediate cause is that geiger tries to read
+          sources for `gungraun`, a bench-only dependency that is not vendored — scoping the run with
+          `--package` per crate and excluding bench targets, or passing `--all-features=false`, should get
+          past it. The SIGKILL in the yamalgam-query section is a separate resource problem worth capping
+          with `-j`. Until it produces output, do not describe geiger.txt as a census in audit context; a
+          tool that emits only errors is worse than a missing tool because it reads as coverage.
+        temporal:
+          introduced: "2026-08-03"
+          last_modified: "2026-08-03"
+          commit_count: 1
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: small
+        effort_notes: "Runner-script change plus one re-run to confirm tables appear."
+
+      - slug: deny-advisory-ignore-matches-only-under-all-features
+        title: "RUSTSEC-2023-0051 allowlist entry is live only under --all-features, dead otherwise"
+        criterion: "7.5"
+        surface: "Supply Chain"
+        concern: note
+        locations:
+          - path: ".config/deny.toml"
+            start_line: 53
+            end_line: 58
+        evidence: |
+          # Ignore specific advisories (use with caution in enterprise)
+          ignore = [
+              # dlopen_derive 0.1.4 - via yamlstar (optional benchmark peer)
+              # Unmaintained, but yamlstar is only used for comparative benchmarks
+              "RUSTSEC-2023-0051",
+          ]
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "5"
+            type: mark
+            label: "entry only matches when the optional yamlstar feature is resolved"
+        mechanism: >
+          The audit context flags an apparent contradiction: cargo-audit reports RUSTSEC-2023-0051
+          (dlopen_derive 0.1.4, unmaintained) as an allowed warning, while the captured deny.txt says the
+          allowlist entry "no crate matched advisory criteria". Both are correct and the difference is the
+          feature graph. cargo-audit scans Cargo.lock directly and is feature-agnostic, so it sees
+          dlopen_derive 0.1.4 because yamalgam-bench's optional `yamlstar` peer keeps it in the lock.
+          cargo-deny walks the resolved metadata graph, where `yamlstar` is off unless features are enabled.
+          I reproduced both branches: `cargo deny --all-features --config .config/deny.toml check` emits no
+          `advisory-not-detected` warning and reports "advisories ok, bans ok, licenses ok, sources ok",
+          while `cargo deny --config .config/deny.toml check` (no feature flag) emits
+          `warning[advisory-not-detected] ... no crate matched advisory criteria` pointing at line 57. The
+          captured deny.txt therefore came from a run without `--all-features`, and the audit context's
+          claim that the corrected invocation still reports the unmatched entry does not hold — with
+          `--all-features` the entry matches cleanly. The chain is genuine and correctly scoped
+          (yamlstar 0.1.18 -> dlopen 0.1.8 -> dlopen_derive 0.1.4, benchmark-only, never in the `yg`
+          binary), so there is no security gap. What exists is a policy file whose correctness depends on an
+          invocation flag that is not written down anywhere. Scope note: .config/deny.toml is not in the
+          M10 changed-file manifest, so this predates the milestone and is reported only because it was
+          explicitly asked for.
+        remediation: >
+          Pin the invocation so the config and the command agree. Either standardise on
+          `cargo deny --all-features --config .config/deny.toml check` in CI and the justfile so the ignore
+          entry is always exercised, or scope the entry with cargo-deny's per-crate ignore form so it does
+          not warn when yamlstar is absent. Whichever way, the flag requirement belongs in a comment beside
+          the entry — the current comment explains why the advisory is ignored but not why the entry
+          sometimes appears dead.
+        temporal:
+          introduced: "2026-08-03"
+          last_modified: "2026-08-03"
+          commit_count: 1
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: trivial
+        effort_notes: "A flag in the runner and the justfile, plus a comment line."
+
+
+summary:
+  counts:
+    critical: 0
+    significant: 3
+    moderate: 18
+    advisory: 17
+    note: 9
