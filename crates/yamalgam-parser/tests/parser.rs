@@ -1,7 +1,9 @@
 #![allow(missing_docs)]
 
 use pretty_assertions::assert_eq;
-use yamalgam_parser::{CollectionStyle, Event, Parser, ScalarStyle};
+use yamalgam_parser::{CollectionStyle, Event, ParseError, Parser, ScalarStyle};
+use yamalgam_scanner::TokenKind;
+use yamalgam_scanner::scanner::{ScanError, ScanErrorKind, Scanner};
 
 #[test]
 fn empty_stream() {
@@ -38,8 +40,6 @@ fn iterator_returns_none_after_stream_end() {
 fn iterator_stops_on_error() {
     // Feed a broken token stream: scanner error should propagate.
     use yamalgam_scanner::Token;
-    use yamalgam_scanner::scanner::{ScanError, ScanErrorKind};
-
     let tokens: Vec<Result<Token<'_>, ScanError>> = vec![Err(ScanError::new(
         ScanErrorKind::UnexpectedCharacter,
         "boom",
@@ -601,6 +601,32 @@ fn flow_sequence_with_implicit_mapping() {
         events
             .iter()
             .any(|e| matches!(e, Event::MappingStart { .. }))
+    );
+}
+
+#[test]
+fn flow_pair_finalization_preserves_scanner_error_kind() {
+    let mut tokens: Vec<_> = Scanner::new("[a: b]").collect();
+    let sequence_end = tokens
+        .iter()
+        .position(|result| matches!(result, Ok(token) if token.kind == TokenKind::FlowSequenceEnd))
+        .expect("fixture should contain a flow-sequence end token");
+    tokens[sequence_end] = Err(ScanError::new(
+        ScanErrorKind::UnexpectedCharacter,
+        "malformed flow pair",
+    ));
+
+    let error = Parser::from_tokens(tokens.into_iter())
+        .find_map(Result::err)
+        .expect("malformed flow pair should fail");
+
+    assert!(
+        matches!(
+            error,
+            ParseError::Scan(ref error)
+                if error.kind == ScanErrorKind::UnexpectedCharacter
+        ),
+        "expected scanner UnexpectedCharacter, got {error:?}"
     );
 }
 
