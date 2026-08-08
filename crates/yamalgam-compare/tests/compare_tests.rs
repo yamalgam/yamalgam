@@ -729,6 +729,14 @@ fn extract_yaml_block_scalar_with_indent_indicator() {
 }
 
 #[test]
+fn extract_explicit_indent_rejects_split_unicode_whitespace() {
+    let content = "---\n- yaml: |2\n  \u{2003}value\n";
+    let cases = extract_test_cases(content);
+    assert_eq!(cases.len(), 1);
+    assert!(cases[0].yaml.is_empty());
+}
+
+#[test]
 fn extract_mixed_fail_and_pass_multi_case() {
     let content = "\
 ---
