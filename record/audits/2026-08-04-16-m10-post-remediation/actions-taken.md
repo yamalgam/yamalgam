@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 25
+  fixed: 26
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 2
+  open: 1
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -528,5 +528,24 @@ All 192 scanner tests and the full repository check with 1,928 tests plus doc
 tests pass. Independent review confirmed exact diagnostic semantics, code-size
 arithmetic, benchmark restraint, and the deliberately narrow scope. This
 localized code-generation improvement did not require an ADR.
+
+---
+
+## 2026-08-08 — Unused xtask dependencies removed
+
+**Disposition:** fixed
+**Addresses:** [xtask-unused-serde-and-toml](README.md#xtask-unused-serde-and-toml)
+**Commit:** 804fcd3dbc3b8bdaaceda005ec12658b97e9d723
+**Author:** Codex
+
+The unused direct `serde` and `toml` declarations are removed from xtask, along
+with their direct edges in the workspace lockfile. Both packages remain in the
+lockfile where other workspace crates still require them.
+
+`cargo machete` now reports no unused dependencies. `cargo check -p xtask` and
+the xtask CLI help smoke test pass; the full repository check passes 1,928 tests
+plus doc tests. Independent review confirmed the source search, lockfile scope,
+unchanged behavior, and clean fuzz lockfile. This manifest cleanup did not
+require an ADR.
 
 ---
