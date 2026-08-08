@@ -1,13 +1,13 @@
 ---
 audit: 2026-08-04-16-m10-post-remediation
-last_updated: 2026-08-06
+last_updated: 2026-08-08
 status:
-  fixed: 2
+  fixed: 3
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 25
+  open: 24
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -51,5 +51,25 @@ The free functions share one single-document driver, so structured error
 restoration and end-of-document checks remain consistent across default,
 configured, and unchecked paths. Regression tests cover default rejection and
 unchecked acceptance beyond the moderate depth limit.
+
+---
+
+## 2026-08-08 — CST construction and traversal bounded
+
+**Disposition:** fixed
+**Addresses:** [cst-recursive-traversals-have-no-depth-bound](README.md#cst-recursive-traversals-have-no-depth-bound)
+**Commit:** 5a71b87c590c1fbdd72dbe233d9965959f1f0c78
+**Author:** Codex
+
+Ordinary CST convenience and builder constructors now apply moderate resource
+limits, while configured and explicitly unchecked variants preserve caller
+control. The builder enforces collection depth locally even for caller-supplied
+unlimited parser events and preserves the complete source in the existing
+recovery tree on failure.
+
+Whole-tree text reconstruction, offset lookup, leaf counting, formatting, and
+destruction now use iterative traversal. Regression tests cover moderate and
+unchecked construction, the exact custom depth boundary, lossless local
+recovery, and a 100,000-node publicly constructed CST in isolated processes.
 
 ---
