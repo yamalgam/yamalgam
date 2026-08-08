@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use yamalgam_core::tag_resolution::TagResolver;
-use yamalgam_core::{LoaderConfig, Mapping, ResourceLimits, Value};
+use yamalgam_core::{LoaderConfig, Mapping, ResourceLimits, TagResolution, Value};
 use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
 };
@@ -70,16 +70,17 @@ struct AnchoredValue {
 /// The composer consumes events one at a time, tracking anchors for alias
 /// resolution. Each call to [`compose_stream`](Composer::compose_stream)
 /// produces a `Vec<Value>` — one entry per YAML document in the stream.
-pub struct Composer<'input, I>
+pub struct Composer<'input, I, T = TagResolution>
 where
     I: Iterator<Item = Result<Event<'input>, ResolveError>>,
+    T: TagResolver,
 {
     events: std::iter::Peekable<I>,
     anchors: HashMap<String, AnchoredValue>,
     config: ResourceLimits,
     alias_expansion_count: usize,
     alias_materialized_bytes: usize,
-    tag_resolver: Box<dyn TagResolver>,
+    tag_resolver: T,
 }
 
 impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
@@ -120,9 +121,9 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
 
     /// Parse and compose all documents using a custom tag resolver and
     /// [`LoaderConfig::default`] resource limits.
-    pub fn from_str_with_tag_resolver(
+    pub fn from_str_with_tag_resolver<T: TagResolver>(
         input: &'input str,
-        tag_resolver: impl TagResolver + 'static,
+        tag_resolver: T,
     ) -> Result<Vec<Value>, ComposeError> {
         Self::from_str_with_tag_resolver_and_config(input, tag_resolver, &LoaderConfig::default())
     }
@@ -132,16 +133,16 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
     ///
     /// Use only for trusted input. Prefer
     /// [`Self::from_str_with_tag_resolver`] for ordinary input.
-    pub fn from_str_with_tag_resolver_unchecked(
+    pub fn from_str_with_tag_resolver_unchecked<T: TagResolver>(
         input: &'input str,
-        tag_resolver: impl TagResolver + 'static,
+        tag_resolver: T,
     ) -> Result<Vec<Value>, ComposeError> {
         Self::from_str_with_tag_resolver_and_config(input, tag_resolver, &LoaderConfig::unchecked())
     }
 
-    fn from_str_with_tag_resolver_and_config(
+    fn from_str_with_tag_resolver_and_config<T: TagResolver>(
         input: &'input str,
-        tag_resolver: impl TagResolver + 'static,
+        tag_resolver: T,
         config: &LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
@@ -150,8 +151,7 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
             NoopResolver,
             config,
         );
-        let mut composer = Composer::new_with_config(events, config);
-        composer.tag_resolver = Box::new(tag_resolver);
+        let mut composer = Composer::new_with_tag_resolver_and_config(events, tag_resolver, config);
         composer.compose_stream()
     }
 }
@@ -218,13 +218,23 @@ where
     /// Create a composer with resource limits from a [`LoaderConfig`].
     #[must_use]
     pub fn new_with_config(events: I, config: &yamalgam_core::LoaderConfig) -> Self {
+        Self::new_with_tag_resolver_and_config(events, config.tag_resolution, config)
+    }
+}
+
+impl<'input, I, T> Composer<'input, I, T>
+where
+    I: Iterator<Item = Result<Event<'input>, ResolveError>>,
+    T: TagResolver,
+{
+    fn new_with_tag_resolver_and_config(events: I, tag_resolver: T, config: &LoaderConfig) -> Self {
         Self {
             events: events.peekable(),
             anchors: HashMap::new(),
             config: config.limits.clone(),
             alias_expansion_count: 0,
             alias_materialized_bytes: 0,
-            tag_resolver: Box::new(config.tag_resolution),
+            tag_resolver,
         }
     }
 
@@ -1288,5 +1298,36 @@ production:
 
         let docs = Composer::from_str_with_tag_resolver("true", MagicResolver).unwrap();
         assert_eq!(docs[0], Value::String("true".into()));
+    }
+
+    #[test]
+    fn borrowed_tag_resolver_state() {
+        use yamalgam_core::tag_resolution::TagResolver;
+
+        struct BorrowedResolver<'lookup> {
+            values: &'lookup HashMap<&'lookup str, Value>,
+        }
+
+        impl TagResolver for BorrowedResolver<'_> {
+            fn resolve_scalar(&self, value: &str) -> Value {
+                self.values
+                    .get(value)
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(value.to_owned()))
+            }
+        }
+
+        let values = HashMap::from([("MAGIC", Value::Integer(42))]);
+        let bounded =
+            Composer::from_str_with_tag_resolver("MAGIC", BorrowedResolver { values: &values })
+                .unwrap();
+        let unchecked = Composer::from_str_with_tag_resolver_unchecked(
+            "MAGIC",
+            BorrowedResolver { values: &values },
+        )
+        .unwrap();
+
+        assert_eq!(bounded, vec![Value::Integer(42)]);
+        assert_eq!(unchecked, bounded);
     }
 }
