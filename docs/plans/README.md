@@ -198,6 +198,6 @@ YAML serialization with configurable style preferences. Round-trip editing via C
 |---------|--------|-------|
 | YAML Test Suite compliance | 350/351 events | 1 EXPECTED remaining (DK95) |
 | Fuzzing | 6 targets, CI integrated | OSS-Fuzz submission after public launch |
-| Benchmarks | 8 peers (yamlstar feature-gated) | yamalgam fastest on small/medium |
+| Benchmarks | 7 peers | yamalgam fastest on small/medium |
 | WASM build | Not started | `wasm32-wasip2` target, wit-bindgen |
 | facet integration | Not started | Season 2 — after serde |

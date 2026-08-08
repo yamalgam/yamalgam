@@ -18,3 +18,4 @@ evolution record.
 | ✅ | [0010: Use stateful event resolver adapters across consumers](0010-use-stateful-event-resolver-adapters.md) | 2026-08-08 |
 | ✅ | [0011: Reject unhandled resolution policy on no-op paths](0011-reject-unhandled-resolution-policy.md) | 2026-08-08 |
 | ✅ | [0012: Specialize parser-backed resolver upstreams](0012-specialize-parser-backed-resolver-upstreams.md) | 2026-08-08 |
+| ✅ | [0013: Retire the yamlstar benchmark peer until its Rust binding uses a maintained loader](0013-retire-yamlstar-benchmark-peer.md) | 2026-08-08 |

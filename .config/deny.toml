@@ -50,13 +50,8 @@ unused-allowed-license = "allow"
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 
-# Ignore specific advisories (use with caution in enterprise)
-ignore = [
-    # dlopen_derive 0.1.4 - via yamlstar (optional benchmark peer)
-    # Unmaintained, but yamlstar is only used for comparative benchmarks
-    # All Cargo Deny entry points use --all-features so this entry stays live
-    "RUSTSEC-2023-0051",
-]
+# No accepted advisories.
+ignore = []
 
 # ==============================================================================
 # Banned Dependencies - Supply Chain Security

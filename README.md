@@ -42,7 +42,7 @@ YAML bytes → Scanner (tokens) → Parser (events) → Resolver middleware
   iteration, structured errors with source spans, and behavioral parity
   with serde_yaml (divergences documented in tests).
 - Composer and serde pipelines agree on the entire test suite.
-- Fastest of 8 benchmarked peers on small/medium inputs.
+- Fastest of 7 benchmarked peers on small/medium inputs.
 - `yg` query engine with 230 passing jq 1.8 manual examples and an exact,
   reasoned allowlist for every divergence or scope exclusion.
 
