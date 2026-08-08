@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 18
+  fixed: 19
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 9
+  open: 8
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -365,5 +365,23 @@ that actually differs.
 
 All 1,113 compare-crate tests, workspace clippy, and the full repository check
 with 1,919 tests pass. This mechanical iterator refactor did not require an ADR.
+
+---
+
+## 2026-08-08 — Collection targets made explicit
+
+**Disposition:** fixed
+**Addresses:** [with-variables-collect-target-inferred](README.md#with-variables-collect-target-inferred)
+**Commit:** e9dc31e2248652282794d79513434806e360f5b6
+**Author:** Codex
+
+`RunCtx::with_variables` now names its `Vec` collection target locally. The
+analogous query string-splitting branches and CLI raw-input assembly do the
+same, making each allocation shape visible without relying on a distant field
+or sibling branch for inference.
+
+All 220 focused query and CLI tests, workspace clippy, and the full repository
+check with 1,919 tests pass. This type-annotation cleanup did not require an
+ADR.
 
 ---
