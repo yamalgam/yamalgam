@@ -326,6 +326,15 @@ impl<'input> Scanner<'input> {
 
     // -- Whitespace/comment skipping --
 
+    #[cold]
+    #[inline(never)]
+    fn set_static_error(&mut self, kind: ScanErrorKind, message: &'static str) {
+        self.error = Some(ScanError {
+            kind,
+            message: message.to_owned(),
+        });
+    }
+
     /// Skip whitespace, comments, and newlines between tokens.
     ///
     /// In block context, crossing a newline re-enables simple keys.
@@ -368,10 +377,10 @@ impl<'input> Scanner<'input> {
                     // cref: fy_scan_to_next_token (fy-parse.c)
                     // y[impl struct.indent.tab-forbidden]
                     if at_line_start && self.flow_level == 0 && self.indent >= 0 {
-                        self.error = Some(ScanError {
-                            kind: ScanErrorKind::InvalidTab,
-                            message: "tab character used for indentation".to_string(),
-                        });
+                        self.set_static_error(
+                            ScanErrorKind::InvalidTab,
+                            "tab character used for indentation",
+                        );
                         return;
                     }
                     if at_line_start && self.flow_level > 0 {
@@ -388,10 +397,10 @@ impl<'input> Scanner<'input> {
             // on the same line are indentation — reject them. Tabs on
             // blank lines (Y79Y#2) are fine (next char is newline/EOF).
             if tab_at_flow_line_start && !matches!(self.reader.peek(), Some('\n' | '\r') | None) {
-                self.error = Some(ScanError {
-                    kind: ScanErrorKind::InvalidTab,
-                    message: "tab character used for indentation in flow context".to_string(),
-                });
+                self.set_static_error(
+                    ScanErrorKind::InvalidTab,
+                    "tab character used for indentation in flow context",
+                );
                 return;
             }
 
@@ -411,10 +420,10 @@ impl<'input> Scanner<'input> {
                 && !matches!(self.reader.peek(), Some('\n' | '\r') | None)
                 && (self.reader.mark().column as i32) <= self.flow_indent
             {
-                self.error = Some(ScanError {
-                    kind: ScanErrorKind::InvalidIndentation,
-                    message: "flow content indented at or below block indent".to_string(),
-                });
+                self.set_static_error(
+                    ScanErrorKind::InvalidIndentation,
+                    "flow content indented at or below block indent",
+                );
                 return;
             }
 
