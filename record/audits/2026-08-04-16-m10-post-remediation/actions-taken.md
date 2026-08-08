@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 14
+  fixed: 15
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 13
+  open: 12
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -291,5 +291,25 @@ The former peek-clone-consume and scalar-Cow clone patterns are absent. A
 custom resolver regression forces owned scalar payloads through unit, null and
 non-null option, and enum paths, while the existing borrowed-string and anchor
 coverage remains green. All 140 serde tests and the full repository check pass.
+
+---
+
+## 2026-08-08 — Borrowed tag resolvers accepted
+
+**Disposition:** fixed
+**Addresses:** [custom-tag-resolver-requires-static](README.md#custom-tag-resolver-requires-static)
+**Commit:** 7097b1340e1a104dee890989ccdab6fdbff7f621
+**Author:** Codex
+
+The composer now stores its tag resolver as a concrete generic parameter with
+`TagResolution` as the source-compatible default. Custom synchronous string
+entry points no longer require `'static` and avoid the former trait-object box,
+while the default, configured, and resolver-middleware constructors preserve
+their existing APIs and selected resource policies.
+
+A regression uses a resolver borrowing a stack-local lookup table through both
+the bounded and explicitly unchecked custom entry points. All 58 composer tests,
+workspace clippy, and the full repository check with 1,918 tests pass. The
+change is a private storage and public-bound refinement, so no ADR was needed.
 
 ---
