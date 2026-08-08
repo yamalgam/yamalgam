@@ -60,6 +60,11 @@ impl From<ParseError> for ComposeError {
     }
 }
 
+struct AnchoredValue {
+    value: Value,
+    materialized_weight: usize,
+}
+
 /// Builds [`Value`] documents from a resolved event stream.
 ///
 /// The composer consumes events one at a time, tracking anchors for alias
@@ -70,9 +75,10 @@ where
     I: Iterator<Item = Result<Event<'input>, ResolveError>>,
 {
     events: std::iter::Peekable<I>,
-    anchors: HashMap<String, Value>,
+    anchors: HashMap<String, AnchoredValue>,
     config: ResourceLimits,
     alias_expansion_count: usize,
+    alias_materialized_bytes: usize,
     tag_resolver: Box<dyn TagResolver>,
 }
 
@@ -212,6 +218,7 @@ where
             anchors: HashMap::new(),
             config: config.limits.clone(),
             alias_expansion_count: 0,
+            alias_materialized_bytes: 0,
             tag_resolver: Box::new(config.tag_resolution),
         }
     }
@@ -308,10 +315,7 @@ where
             } => {
                 let resolved = self.resolve_scalar(&value, style);
                 if let Some(name) = anchor {
-                    self.anchors.insert(name.into_owned(), resolved.clone());
-                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
-                        return Err(ComposeError::LimitExceeded(msg));
-                    }
+                    self.remember_anchor(name.into_owned(), &resolved)?;
                 }
                 Ok(resolved)
             }
@@ -333,10 +337,7 @@ where
                 }
                 let value = Value::Sequence(items);
                 if let Some(name) = anchor {
-                    self.anchors.insert(name.into_owned(), value.clone());
-                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
-                        return Err(ComposeError::LimitExceeded(msg));
-                    }
+                    self.remember_anchor(name.into_owned(), &value)?;
                 }
                 Ok(value)
             }
@@ -389,16 +390,16 @@ where
 
                 let value = Value::Mapping(map);
                 if let Some(name) = anchor {
-                    self.anchors.insert(name.into_owned(), value.clone());
-                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
-                        return Err(ComposeError::LimitExceeded(msg));
-                    }
+                    self.remember_anchor(name.into_owned(), &value)?;
                 }
                 Ok(value)
             }
 
             Event::Alias { name, .. } => {
-                self.alias_expansion_count += 1;
+                self.alias_expansion_count =
+                    self.alias_expansion_count.checked_add(1).ok_or_else(|| {
+                        ComposeError::LimitExceeded("alias expansion count overflow".into())
+                    })?;
                 if let Err(msg) = self
                     .config
                     .check_alias_expansions(self.alias_expansion_count)
@@ -406,10 +407,16 @@ where
                     return Err(ComposeError::LimitExceeded(msg));
                 }
                 let name_str = name.into_owned();
-                self.anchors
+                let anchored = self
+                    .anchors
                     .get(&name_str)
-                    .cloned()
-                    .ok_or(ComposeError::UndefinedAlias(name_str))
+                    .ok_or(ComposeError::UndefinedAlias(name_str))?;
+                self.alias_materialized_bytes = checked_materialized_total(
+                    self.alias_materialized_bytes,
+                    anchored.materialized_weight,
+                    &self.config,
+                )?;
+                Ok(anchored.value.clone())
             }
 
             other => Err(ComposeError::UnexpectedEvent(format!("{other:?}"))),
@@ -511,6 +518,20 @@ where
             .map_err(ComposeError::LimitExceeded)?;
         Ok(next)
     }
+
+    fn remember_anchor(&mut self, name: String, value: &Value) -> Result<(), ComposeError> {
+        let materialized_weight = materialized_weight(value)?;
+        self.anchors.insert(
+            name,
+            AnchoredValue {
+                value: value.clone(),
+                materialized_weight,
+            },
+        );
+        self.config
+            .check_anchor_count(self.anchors.len())
+            .map_err(ComposeError::LimitExceeded)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +542,50 @@ fn child_depth(depth: usize) -> Result<usize, ComposeError> {
     depth
         .checked_add(1)
         .ok_or_else(|| ComposeError::LimitExceeded("depth overflow".into()))
+}
+
+fn materialized_weight(value: &Value) -> Result<usize, ComposeError> {
+    let mut total = 0_usize;
+    let mut pending = vec![value];
+
+    while let Some(value) = pending.pop() {
+        total = total
+            .checked_add(std::mem::size_of::<Value>())
+            .ok_or_else(|| {
+                ComposeError::LimitExceeded("anchor materialized weight overflow".into())
+            })?;
+        match value {
+            Value::String(string) => {
+                total = total.checked_add(string.len()).ok_or_else(|| {
+                    ComposeError::LimitExceeded("anchor materialized weight overflow".into())
+                })?;
+            }
+            Value::Sequence(items) => pending.extend(items),
+            Value::Mapping(mapping) => {
+                for (key, value) in mapping.iter() {
+                    pending.push(key);
+                    pending.push(value);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Integer(_) | Value::Float(_) => {}
+        }
+    }
+
+    Ok(total)
+}
+
+fn checked_materialized_total(
+    current: usize,
+    increment: usize,
+    limits: &ResourceLimits,
+) -> Result<usize, ComposeError> {
+    let next = current
+        .checked_add(increment)
+        .ok_or_else(|| ComposeError::LimitExceeded("alias materialization size overflow".into()))?;
+    limits
+        .check_output_size(next)
+        .map_err(ComposeError::LimitExceeded)?;
+    Ok(next)
 }
 
 /// Check whether a value is the merge key sentinel `<<`.
@@ -662,6 +727,8 @@ pub fn from_str_single_with_config(
 mod tests {
     use super::*;
 
+    const DEEP_WEIGHT_WORKER: &str = "YAMALGAM_DEEP_WEIGHT_WORKER";
+
     fn nested_flow_sequence(depth: usize) -> String {
         format!("{}0{}", "[".repeat(depth), "]".repeat(depth))
     }
@@ -753,6 +820,17 @@ mod tests {
         }
     }
 
+    fn output_config(max_output_bytes: Option<usize>) -> LoaderConfig {
+        LoaderConfig {
+            limits: ResourceLimits {
+                max_alias_expansions: None,
+                max_output_bytes,
+                ..ResourceLimits::none()
+            },
+            ..LoaderConfig::unchecked()
+        }
+    }
+
     #[test]
     fn composer_honors_custom_depth_at_the_exact_boundary() {
         let config = LoaderConfig {
@@ -793,6 +871,139 @@ mod tests {
             compose_with_unchecked_parser(input, &collection_config(3)),
             Err(ComposeError::LimitExceeded(_))
         ));
+    }
+
+    #[test]
+    fn materialized_weight_counts_value_storage_and_string_bytes() {
+        let value = Value::Sequence(vec![Value::String("alpha".into()), Value::Integer(7)]);
+        let expected = 3 * std::mem::size_of::<Value>() + "alpha".len();
+
+        assert_eq!(materialized_weight(&value).unwrap(), expected);
+    }
+
+    #[test]
+    fn alias_materialization_budget_honors_exact_boundary() {
+        let input = "base: &base [payload]\none: *base\ntwo: *base";
+        let anchored = Value::Sequence(vec![Value::String("payload".into())]);
+        let weight = materialized_weight(&anchored).unwrap();
+
+        assert!(compose_with_unchecked_parser(input, &output_config(Some(weight * 2))).is_ok());
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(Some(weight * 2 - 1))),
+            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+        ));
+    }
+
+    #[test]
+    fn alias_materialization_budget_is_size_weighted_and_cumulative() {
+        let input = "small: &small x\nlarge: &large [one, two, three, four]\na: *small\nb: *large";
+        let small = materialized_weight(&Value::String("x".into())).unwrap();
+        let large = materialized_weight(&Value::Sequence(vec![
+            Value::String("one".into()),
+            Value::String("two".into()),
+            Value::String("three".into()),
+            Value::String("four".into()),
+        ]))
+        .unwrap();
+
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(Some(small + large - 1))),
+            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+        ));
+    }
+
+    #[test]
+    fn alias_materialization_arithmetic_overflow_is_a_limit_error() {
+        assert!(matches!(
+            checked_materialized_total(usize::MAX, 1, &ResourceLimits::none()),
+            Err(ComposeError::LimitExceeded(message))
+                if message == "alias materialization size overflow"
+        ));
+    }
+
+    #[test]
+    fn anchor_redefinition_replaces_value_and_cached_weight() {
+        let input = "first: &ref x\none: *ref\nreplace: &ref [one, two, three]\ntwo: *ref";
+        let small = materialized_weight(&Value::String("x".into())).unwrap();
+        let redefined = Value::Sequence(vec![
+            Value::String("one".into()),
+            Value::String("two".into()),
+            Value::String("three".into()),
+        ]);
+        let large = materialized_weight(&redefined).unwrap();
+        let mut exact = output_config(Some(small + large));
+        exact.limits.max_anchor_count = Some(1);
+        let documents = compose_with_unchecked_parser(input, &exact).unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].get("two"), Some(&redefined));
+
+        let mut below = output_config(Some(small + large - 1));
+        below.limits.max_anchor_count = Some(1);
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &below),
+            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+        ));
+    }
+
+    #[test]
+    fn aliases_cannot_resolve_anchors_from_a_previous_document() {
+        let input = "---\na: &ref value\n---\nb: *ref";
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(None)),
+            Err(ComposeError::UndefinedAlias(name)) if name == "ref"
+        ));
+    }
+
+    #[test]
+    fn alias_materialization_bytes_are_cumulative_across_documents() {
+        let input = "---\na: &ref [payload]\nb: *ref\n---\nc: &ref [payload]\nd: *ref";
+        let anchored = Value::Sequence(vec![Value::String("payload".into())]);
+        let weight = materialized_weight(&anchored).unwrap();
+
+        assert!(compose_with_unchecked_parser(input, &output_config(Some(weight * 2))).is_ok());
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(Some(weight * 2 - 1))),
+            Err(ComposeError::LimitExceeded(message)) if message.contains("output size")
+        ));
+    }
+
+    #[test]
+    fn unlimited_output_budget_allows_cumulative_alias_materialization() {
+        let input = "base: &base [one, two, three]\na: *base\nb: *base\nc: *base";
+        assert!(compose_with_unchecked_parser(input, &output_config(None)).is_ok());
+    }
+
+    #[test]
+    fn materialized_weight_is_stack_safe_on_a_deep_public_value() {
+        if std::env::var_os(DEEP_WEIGHT_WORKER).is_some() {
+            let mut value = Value::Null;
+            for _ in 0..100_000 {
+                value = Value::Sequence(vec![value]);
+            }
+            assert_eq!(
+                materialized_weight(&value).unwrap(),
+                100_001 * std::mem::size_of::<Value>()
+            );
+            std::mem::forget(value);
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .env(DEEP_WEIGHT_WORKER, "1")
+            .args([
+                "--exact",
+                "tests::materialized_weight_is_stack_safe_on_a_deep_public_value",
+                "--nocapture",
+            ])
+            .output()
+            .expect("run deep materialized-weight worker");
+        assert!(
+            output.status.success(),
+            "deep weight worker failed: status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]
