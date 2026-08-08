@@ -16,3 +16,4 @@ evolution record.
 | ✅ | [0008: Bound the foreign config parser interim to yamalgam publication](0008-bound-config-parser-interim.md) | 2026-08-03 |
 | ✅ | [0009: Retain jaq time until native registries are composable](0009-retain-jaq-time-until-registries-compose.md) | 2026-08-03 |
 | ✅ | [0010: Use stateful event resolver adapters across consumers](0010-use-stateful-event-resolver-adapters.md) | 2026-08-08 |
+| ✅ | [0011: Reject unhandled resolution policy on no-op paths](0011-reject-unhandled-resolution-policy.md) | 2026-08-08 |
