@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 19
+  fixed: 20
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 8
+  open: 7
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -383,5 +383,33 @@ or sibling branch for inference.
 All 220 focused query and CLI tests, workspace clippy, and the full repository
 check with 1,919 tests pass. This type-annotation cleanup did not require an
 ADR.
+
+---
+
+## 2026-08-08 — Unhandled resolution policy rejected
+
+**Disposition:** fixed
+**Addresses:** [loader-resolution-policy-is-entirely-unwired](README.md#loader-resolution-policy-is-entirely-unwired)
+**Commit:** 37738175ffa35aca0ded64b83763fc1b2764d9b5
+**Author:** Codex
+
+`NoopResolver` now rejects enabled include or reference policy with a single
+typed error instead of silently accepting an unsupported request. The shared
+config-aware resolver adapter makes that boundary consistent across ordinary
+composer, serde, CST, and query loading paths, while explicit custom resolvers
+continue to receive and own enforcement of caller-selected policy. Resolver
+failures terminate the adapter after one diagnostic; upstream parser recovery
+retains its previous behavior.
+
+ADR-0011 records the boundary and the deliberate pre-first-tag 0.1.0 source
+break required to add typed parser and resolver diagnostics. Both public error
+enums are now non-exhaustive, preventing later M11 variants from repeating that
+break. The compatibility CST report mirrors the policy diagnostic without
+changing its public type and remains byte-lossless.
+
+All 527 affected core, parser, composer, serde, CST, and query tests, all 351
+CST round-trip cases, workspace clippy, and the full repository check with
+1,926 tests pass. Independent review found and verified the explicit public-
+error compatibility treatment before commit.
 
 ---
