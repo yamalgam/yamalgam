@@ -278,6 +278,12 @@ fn tree_scalar_plain_style() {
 }
 
 #[test]
+fn tree_scalar_rejects_non_ascii_style() {
+    let events = parse_tree("=VALé\n");
+    assert!(events.is_empty());
+}
+
+#[test]
 fn tree_scalar_single_quoted() {
     let events = parse_tree("=VAL 'hello world\n");
     assert_eq!(events.len(), 1);
