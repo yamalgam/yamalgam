@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 17
+  fixed: 18
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 10
+  open: 9
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -348,5 +348,22 @@ constructor remains unchanged.
 All 68 core tests, workspace clippy, and the full repository check with 1,919
 tests pass. This behavior-preserving implementation cleanup did not require an
 ADR.
+
+---
+
+## 2026-08-08 — Stream comparisons zipped
+
+**Disposition:** fixed
+**Addresses:** [compare-streams-use-index-loops](README.md#compare-streams-use-index-loops)
+**Commit:** 0a6a61d37af58a12b9f66c4a78f421901547a9ab
+**Author:** Codex
+
+Token comparison and both event comparison modes now traverse their input
+slices with `zip` and `enumerate`. The code retains the first mismatch index,
+context window, and shorter-stream EOF reporting while cloning only the pair
+that actually differs.
+
+All 1,113 compare-crate tests, workspace clippy, and the full repository check
+with 1,919 tests pass. This mechanical iterator refactor did not require an ADR.
 
 ---
