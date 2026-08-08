@@ -144,9 +144,8 @@ impl jaq_core::ValT for YamlVal {
             }
             Data::Str(string) => {
                 let (skip, take) = skip_take(start, end, string.chars().count());
-                Ok(Self::str(
-                    string.chars().skip(skip).take(take).collect::<String>(),
-                ))
+                let (start_byte, end_byte) = char_byte_range(&string, skip, take);
+                Ok(Self::str(&string[start_byte..end_byte]))
             }
             data => Err(Error::typ(
                 yaml_value(data),
@@ -475,6 +474,9 @@ fn skip_take(start: Option<i64>, end: Option<i64>, len: usize) -> (usize, usize)
 }
 
 fn char_byte_range(string: &str, skip: usize, take: usize) -> (usize, usize) {
+    #[cfg(test)]
+    CHAR_BYTE_RANGE_CALLS.set(CHAR_BYTE_RANGE_CALLS.get().saturating_add(1));
+
     let byte_offset = |character| {
         string
             .char_indices()
@@ -482,6 +484,21 @@ fn char_byte_range(string: &str, skip: usize, take: usize) -> (usize, usize) {
             .map_or(string.len(), |(offset, _)| offset)
     };
     (byte_offset(skip), byte_offset(skip.saturating_add(take)))
+}
+
+#[cfg(test)]
+thread_local! {
+    static CHAR_BYTE_RANGE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_char_byte_range_calls() {
+    CHAR_BYTE_RANGE_CALLS.set(0);
+}
+
+#[cfg(test)]
+fn char_byte_range_calls() -> usize {
+    CHAR_BYTE_RANGE_CALLS.get()
 }
 
 fn lossy_rc_str(bytes: &[u8]) -> Rc<str> {
@@ -532,7 +549,7 @@ impl jaq_std::ValT for YamlVal {
 
 #[cfg(test)]
 mod tests {
-    use super::lossy_rc_str;
+    use super::{char_byte_range_calls, lossy_rc_str, reset_char_byte_range_calls};
     use jaq_core::{ValT as _, path::Opt};
 
     use crate::build::parse_str;
@@ -638,12 +655,22 @@ mod tests {
 
     #[test]
     fn ranges_slice_sequences_and_strings_by_value_units() {
+        reset_char_byte_range_calls();
+
         let sequence = parse_str("[0, 1, 2, 3]\n").unwrap().remove(0);
         assert_eq!(
             sequence
                 .range(Some(&YamlVal::int(1))..Some(&YamlVal::int(-1)))
                 .unwrap(),
             YamlVal::seq(vec![YamlVal::int(1), YamlVal::int(2)])
+        );
+
+        let ascii = YamlVal::str("hello");
+        assert_eq!(
+            ascii
+                .range(Some(&YamlVal::int(1))..Some(&YamlVal::int(-1)))
+                .unwrap(),
+            YamlVal::str("ell")
         );
 
         let string = YamlVal::str("héllo");
@@ -653,6 +680,7 @@ mod tests {
                 .unwrap(),
             YamlVal::str("él")
         );
+        assert_eq!(char_byte_range_calls(), 2);
     }
 
     #[test]
