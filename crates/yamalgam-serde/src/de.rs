@@ -13,6 +13,23 @@ use yamalgam_parser::{
 
 use crate::error::Error;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeekEventKind {
+    End,
+    Scalar,
+    Other,
+}
+
+impl From<&Event<'_>> for PeekEventKind {
+    fn from(event: &Event<'_>) -> Self {
+        match event {
+            Event::StreamEnd | Event::DocumentEnd { .. } => Self::End,
+            Event::Scalar { .. } => Self::Scalar,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// A streaming serde `Deserializer` that consumes YAML parser events directly.
 ///
 /// No intermediate DOM is built — events are consumed on the fly. This means
@@ -468,22 +485,21 @@ impl<'input> Deserializer<'input> {
     /// Returns `true` if the next event is a scalar that resolves to null,
     /// or if we've reached the end of the document/stream (empty doc = null).
     fn peek_is_null(&mut self) -> Result<bool, Error> {
-        let event = self.peek_event()?;
-        match event {
+        let event = self.next_event()?;
+        let is_null = match &event {
             Event::Scalar { value, style, .. } => {
                 if *style != ScalarStyle::Plain {
-                    return Ok(false);
+                    false
+                } else {
+                    matches!(self.tag_resolver.resolve_scalar(value), Value::Null)
                 }
-                let value = value.clone();
-                Ok(matches!(
-                    self.tag_resolver.resolve_scalar(&value),
-                    Value::Null
-                ))
             }
             // Empty document / stream → null.
-            Event::StreamEnd | Event::DocumentEnd { .. } => Ok(true),
-            _ => Ok(false),
-        }
+            Event::StreamEnd | Event::DocumentEnd { .. } => true,
+            _ => false,
+        };
+        self.replay_buffer.push_front(event);
+        Ok(is_null)
     }
 }
 
@@ -675,14 +691,13 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let event = self.peek_event()?.clone();
-        match event {
-            Event::StreamEnd | Event::DocumentEnd { .. } => {
+        match PeekEventKind::from(self.peek_event()?) {
+            PeekEventKind::End => {
                 // Empty document = null.
                 let _ = self.next_event()?;
                 visitor.visit_unit()
             }
-            Event::Scalar { .. } => {
+            PeekEventKind::Scalar => {
                 let (value, style, span) = self.expect_scalar()?;
                 if style == ScalarStyle::Plain {
                     match self.tag_resolver.resolve_scalar(&value) {
@@ -704,7 +719,8 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                     }))
                 }
             }
-            other => {
+            PeekEventKind::Other => {
+                let other = self.next_event()?;
                 let found = format!("{other:?}");
                 let span = other.span();
                 Err(self.stash(Error::Unexpected {
@@ -819,24 +835,19 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        let event = self.peek_event()?.clone();
-        match event {
+        match self.next_event()? {
             // Unit variant: bare scalar like `Red`
-            Event::Scalar { value, .. } => {
-                let _ = self.next_event()?;
-                visitor.visit_enum(EnumAccess {
-                    de: self,
-                    variant: value,
-                    in_mapping: false,
-                })
-            }
+            Event::Scalar { value, .. } => visitor.visit_enum(EnumAccess {
+                de: self,
+                variant: Some(value),
+                in_mapping: false,
+            }),
             // Newtype/tuple/struct variant: single-key mapping like `Circle: 5.0`
             Event::MappingStart { .. } => {
-                let _ = self.next_event()?; // consume MappingStart
                 let (variant_name, _style, _span) = self.expect_scalar()?;
                 visitor.visit_enum(EnumAccess {
                     de: self,
-                    variant: variant_name,
+                    variant: Some(variant_name),
                     in_mapping: true,
                 })
             }
@@ -1153,7 +1164,7 @@ impl<'de> de::MapAccess<'de> for &mut MapAccess<'_, 'de> {
 struct EnumAccess<'a, 'de> {
     de: &'a mut Deserializer<'de>,
     /// Variant name, already consumed from the event stream.
-    variant: Cow<'de, str>,
+    variant: Option<Cow<'de, str>>,
     /// `true` if we consumed a `MappingStart` (non-unit variant).
     in_mapping: bool,
 }
@@ -1162,10 +1173,15 @@ impl<'de> de::EnumAccess<'de> for EnumAccess<'_, 'de> {
     type Error = Error;
     type Variant = Self;
 
-    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
-        let variant = seed.deserialize(VariantNameDeserializer {
-            value: self.variant.clone(),
-        })?;
+    fn variant_seed<V: DeserializeSeed<'de>>(mut self, seed: V) -> Result<(V::Value, Self), Error> {
+        let Some(name) = self.variant.take() else {
+            return Err(self.de.stash(Error::Unexpected {
+                expected: "enum variant name",
+                found: "variant name already consumed".into(),
+                span: None,
+            }));
+        };
+        let variant = seed.deserialize(VariantNameDeserializer { value: name })?;
         Ok((variant, self))
     }
 }
@@ -1292,5 +1308,18 @@ impl<'de> de::Deserializer<'de> for VariantNameDeserializer<'de> {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char bytes byte_buf
         option unit unit_struct newtype_struct seq tuple tuple_struct
         map struct enum ignored_any
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PeekEventKind;
+
+    #[test]
+    fn peek_event_kind_is_a_small_copy_discriminant() {
+        fn assert_copy<T: Copy>() {}
+
+        assert_copy::<PeekEventKind>();
+        assert_eq!(std::mem::size_of::<PeekEventKind>(), 1);
     }
 }
