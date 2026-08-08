@@ -606,7 +606,8 @@ where
             Some(TokenKind::BlockEntry) => {
                 // Indentless sequence: BlockEntry in mapping value/key context.
                 // cref: fy-parse.c:5781-5812
-                let span = self.peeked_token()?.atom.span;
+                let visible_span = self.peeked_token()?.atom.span;
+                let start = visible_span.start;
                 let return_state = self.state_stack.last().copied();
                 let in_mapping_context = matches!(
                     return_state,
@@ -621,7 +622,7 @@ where
                         anchor,
                         tag,
                         style: CollectionStyle::Block,
-                        span,
+                        span: Span { start, end: start },
                     }))
                 } else if anchor.is_some() || tag.is_some() {
                     // cref: tag/anchor on empty scalar in block sequence —
@@ -640,7 +641,7 @@ where
                     Err(ParseError::UnexpectedToken {
                         expected: "node content",
                         got: TokenKind::BlockEntry,
-                        span,
+                        span: visible_span,
                     })
                 }
             }
@@ -953,9 +954,10 @@ where
             }
             _ => {
                 // No more BlockEntry tokens — sequence is done.
-                let span = self
-                    .peek_token()?
-                    .map_or_else(Span::default, |t| t.atom.span);
+                let span = self.peek_token()?.map_or_else(Span::default, |t| Span {
+                    start: t.atom.span.start,
+                    end: t.atom.span.start,
+                });
                 self.state = self.pop_state();
                 Ok(Some(Event::SequenceEnd { span }))
             }

@@ -831,6 +831,74 @@ fn indentless_sequence_in_mapping() {
 }
 
 #[test]
+fn indentless_sequence_boundaries_do_not_own_visible_tokens() {
+    let events: Vec<_> = Parser::new("key:\n- a\nnext: b")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let sequence_start = events
+        .iter()
+        .find_map(|event| match event {
+            Event::SequenceStart {
+                style: CollectionStyle::Block,
+                span,
+                ..
+            } => Some(*span),
+            _ => None,
+        })
+        .expect("indentless sequence start");
+    assert_eq!(sequence_start.start.offset, 5);
+    assert_eq!(sequence_start.start, sequence_start.end);
+
+    let entry = events
+        .iter()
+        .find_map(|event| match event {
+            Event::BlockEntry { span } => Some(*span),
+            _ => None,
+        })
+        .expect("indentless block entry");
+    assert_eq!(entry.start.offset, 5);
+    assert_eq!(entry.end.offset, 6);
+
+    let sequence_end = events
+        .iter()
+        .find_map(|event| match event {
+            Event::SequenceEnd { span } => Some(*span),
+            _ => None,
+        })
+        .expect("indentless sequence end");
+    assert_eq!(sequence_end.start.offset, 9);
+    assert_eq!(sequence_end.start, sequence_end.end);
+}
+
+#[test]
+fn indentless_sequence_end_does_not_own_value_indicator() {
+    let events: Vec<_> = Parser::new("---\n?\n- a\n:\n- b")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let sequence_end = events
+        .iter()
+        .find_map(|event| match event {
+            Event::SequenceEnd { span } => Some(*span),
+            _ => None,
+        })
+        .expect("key-side indentless sequence end");
+    assert_eq!(sequence_end.start.offset, 10);
+    assert_eq!(sequence_end.start, sequence_end.end);
+
+    let value_indicator = events
+        .iter()
+        .find_map(|event| match event {
+            Event::ValueIndicator { span } => Some(*span),
+            _ => None,
+        })
+        .expect("mapping value indicator");
+    assert_eq!(value_indicator.start.offset, 10);
+    assert_eq!(value_indicator.end.offset, 11);
+}
+
+#[test]
 fn indentless_sequence_with_nested_mapping() {
     let events: Vec<_> = Parser::new("key:\n- a: b\n- c: d")
         .collect::<Result<Vec<_>, _>>()
