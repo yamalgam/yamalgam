@@ -2,12 +2,12 @@
 audit: 2026-08-04-16-m10-post-remediation
 last_updated: 2026-08-08
 status:
-  fixed: 5
+  fixed: 6
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 22
+  open: 21
 ---
 
 # Actions Taken: Full Repository Post-Remediation Audit
@@ -93,5 +93,27 @@ owned `String` or temporary `Value`. Focused tests cover duplicate replacement,
 NaN, signed zero, collection keys, synthetic collisions, and absent scalar
 lookups. Divan benchmarks cover insertion and lookup at fixed sizes through
 10,000 entries.
+
+---
+
+## 2026-08-08 — Alias materialization size bounded
+
+**Disposition:** fixed
+**Addresses:** [composer-alias-deep-clone-is-size-unbudgeted](README.md#composer-alias-deep-clone-is-size-unbudgeted)
+**Commit:** f064f64656937f8d4e378a7e4518c5c4a94113bb
+**Author:** Codex
+
+Composer anchors now cache an iterative recursive materialization weight that
+accounts for every `Value` slot and owned UTF-8 string byte. Each alias charges
+that cached weight to a checked stream-cumulative total and validates it
+against `max_output_bytes` before cloning. The independent alias-count limit
+remains enforced, and arithmetic overflow produces `ComposeError::LimitExceeded`.
+
+Anchor names remain document-local, while materialized-byte accounting remains
+cumulative across documents. Redefinition replaces both the cached value and
+its weight without inflating the distinct-anchor count. Regression tests cover
+exact output-budget boundaries, differently sized anchors, redefinition,
+cross-document scope, unlimited configuration, overflow, and iterative weight
+calculation over a 100,000-node public value.
 
 ---
