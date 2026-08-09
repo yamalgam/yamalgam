@@ -333,6 +333,11 @@ explicit `include` or `ref` filter to resolve relative to the node's actual
 resource. Constructed values without source metadata require an explicit base
 when they contain a relative directive.
 
+Owned-tree/query-value conversion and query-session annotation use explicit
+work stacks. Unchecked loading therefore removes policy depth ceilings without
+turning input depth into Rust call-stack depth; mapping order, anchors,
+metadata, and copy-on-write value sharing remain intact.
+
 ### Resolution report
 
 Every session builds a `ResolutionReport` on success or failure. The report is

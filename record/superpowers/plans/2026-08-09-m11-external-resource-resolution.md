@@ -1399,7 +1399,8 @@ Round-trip every YAML data type. Preserve tags, anchors, aliases, style, raw
 scalar text, chomp, flags, mapping order, and arbitrary keys. Preserve each
 node's `ResourceOrigin`. Constructed strings that resemble booleans, numbers,
 or null must remain strings. Imported nested nodes retain their parsed resource
-rather than the root input resource.
+rather than the root input resource. Exercise owned-tree conversion and query
+session assignment at 20,000 levels on a 128 KiB thread stack.
 
 - [x] **Step 2: Write policy/filter tests**
 
@@ -1430,7 +1431,10 @@ cargo nextest run -p yamalgam-query --test resolution
 Add `Meta::origin`. Refactor scalar construction from `build.rs` into a shared
 crate-private helper so `OwnedNode -> YamlVal` follows the same schema logic.
 Implement `YamlVal -> OwnedNode` with canonical scalar presentation when a
-constructed value lacks raw metadata.
+constructed value lacks raw metadata. Both owned-tree conversion and query
+session assignment use explicit reconstruction stacks, including mapping keys,
+so unchecked loading never maps YAML depth to Rust call-stack depth. Preserve
+anchor visibility, insertion order, metadata, and `Rc` copy-on-write behavior.
 
 `RunCtx` owns an opaque session registry and stages the active session with
 `InputMeta`. Native filters select a session from the value's origin first,

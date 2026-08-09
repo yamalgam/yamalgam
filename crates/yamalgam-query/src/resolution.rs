@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use yamalgam_core::{LimitExceeded, LoaderConfig, ResolutionCapability, ResourceLimits};
 use yamalgam_parser::{
@@ -265,7 +266,7 @@ pub(crate) fn value_from_owned_node(
     config: &LoaderConfig,
 ) -> Result<YamlVal, YgError> {
     let mut anchors = HashMap::new();
-    let value = owned_to_value(node, session, config, &mut anchors, 0)?;
+    let value = owned_to_value(node, session, config, &mut anchors)?;
     value
         .check_depth(&config.limits)
         .map_err(|error| match error {
@@ -280,27 +281,88 @@ pub(crate) fn value_from_owned_node(
 }
 
 pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey) {
-    if let Some(metadata) = &mut value.meta
-        && let Some(origin) = &mut Rc::make_mut(metadata).origin
-    {
-        origin.session = session;
-    }
-    match &mut value.data {
-        Data::Seq(items) => {
-            for item in &mut Rc::make_mut(items).0 {
-                assign_session(item, session);
+    let mut pending = vec![AssignSessionWork::Visit(std::mem::take(value))];
+    let mut resolved = Vec::new();
+
+    while let Some(work) = pending.pop() {
+        match work {
+            AssignSessionWork::Visit(value) => {
+                let YamlVal {
+                    data,
+                    mut meta,
+                    runtime_resolution_error,
+                } = value;
+                if let Some(metadata) = &mut meta
+                    && let Some(origin) = &mut Rc::make_mut(metadata).origin
+                {
+                    origin.session = session;
+                }
+                match data {
+                    Data::Seq(mut items) => {
+                        let values = std::mem::take(&mut Rc::make_mut(&mut items).0);
+                        pending.push(AssignSessionWork::FinishSequence {
+                            meta,
+                            runtime_resolution_error,
+                            resolved_start: resolved.len(),
+                        });
+                        pending.extend(values.into_iter().rev().map(AssignSessionWork::Visit));
+                    }
+                    Data::Map(mut mapping) => {
+                        let entries = std::mem::take(&mut Rc::make_mut(&mut mapping).0);
+                        pending.push(AssignSessionWork::FinishMapping {
+                            meta,
+                            runtime_resolution_error,
+                            resolved_start: resolved.len(),
+                        });
+                        for (key, value) in entries.into_iter().rev() {
+                            pending.push(AssignSessionWork::Visit(value));
+                            pending.push(AssignSessionWork::Visit(key));
+                        }
+                    }
+                    data => resolved.push(YamlVal {
+                        data,
+                        meta,
+                        runtime_resolution_error,
+                    }),
+                }
+            }
+            AssignSessionWork::FinishSequence {
+                meta,
+                runtime_resolution_error,
+                resolved_start,
+            } => {
+                let items = resolved.split_off(resolved_start);
+                resolved.push(YamlVal {
+                    data: Data::Seq(Rc::new(YgSeq(items))),
+                    meta,
+                    runtime_resolution_error,
+                });
+            }
+            AssignSessionWork::FinishMapping {
+                meta,
+                runtime_resolution_error,
+                resolved_start,
+            } => {
+                let mut nodes = resolved.split_off(resolved_start).into_iter();
+                let mut mapping = YgMap::default();
+                while let Some(key) = nodes.next() {
+                    let value = nodes
+                        .next()
+                        .expect("session assignment mapping has key/value parity");
+                    mapping.0.insert(key, value);
+                }
+                resolved.push(YamlVal {
+                    data: Data::Map(Rc::new(mapping)),
+                    meta,
+                    runtime_resolution_error,
+                });
             }
         }
-        Data::Map(mapping) => {
-            let entries = std::mem::take(&mut Rc::make_mut(mapping).0);
-            for (mut key, mut value) in entries {
-                assign_session(&mut key, session);
-                assign_session(&mut value, session);
-                Rc::make_mut(mapping).0.insert(key, value);
-            }
-        }
-        Data::Null | Data::Bool(_) | Data::Int(_) | Data::Float(_) | Data::Str(_) => {}
     }
+
+    *value = resolved
+        .pop()
+        .expect("session assignment always reconstructs its root");
 }
 
 fn owned_to_value(
@@ -308,102 +370,278 @@ fn owned_to_value(
     session: ResolutionSessionKey,
     config: &LoaderConfig,
     anchors: &mut HashMap<String, YamlVal>,
-    depth: usize,
 ) -> Result<YamlVal, YgError> {
-    config
-        .limits
-        .check_depth(depth)
-        .map_err(|error| YgError::input_limit(error, error.to_string()))?;
-    let OwnedNode {
-        origin,
-        anchor,
-        tag,
-        kind,
-        ..
-    } = node;
-    if let OwnedKind::Alias { name } = kind {
-        let mut value = anchors.get(&name).cloned().ok_or_else(|| {
-            YgError::InputParse(format!("unknown alias *{name} in resolved resource"))
-        })?;
-        let metadata = value.meta_mut();
-        metadata.anchor = None;
-        metadata.alias_of = Some(Rc::from(name));
-        metadata.origin = Some(ResourceOrigin {
-            resource: origin,
-            session,
-        });
-        return Ok(value);
+    let mut pending = vec![OwnedToValueWork::Visit { node, depth: 0 }];
+    let mut resolved = Vec::new();
+
+    while let Some(work) = pending.pop() {
+        match work {
+            OwnedToValueWork::Visit { node, depth } => {
+                if let Err(error) = config.limits.check_depth(depth) {
+                    pending.push(OwnedToValueWork::Visit { node, depth });
+                    discard_owned_work(pending);
+                    return Err(YgError::input_limit(error, error.to_string()));
+                }
+                let OwnedNode {
+                    origin,
+                    anchor,
+                    tag,
+                    kind,
+                    ..
+                } = node;
+                if let OwnedKind::Alias { name } = kind {
+                    let Some(mut value) = anchors.get(&name).cloned() else {
+                        discard_owned_work(pending);
+                        return Err(YgError::InputParse(format!(
+                            "unknown alias *{name} in resolved resource"
+                        )));
+                    };
+                    let metadata = value.meta_mut();
+                    metadata.anchor = None;
+                    metadata.alias_of = Some(Rc::from(name));
+                    metadata.origin = Some(ResourceOrigin {
+                        resource: origin,
+                        session,
+                    });
+                    resolved.push(value);
+                    continue;
+                }
+
+                let metadata = OwnedValueMetadata {
+                    origin,
+                    anchor,
+                    tag,
+                };
+                match kind {
+                    OwnedKind::Scalar(scalar) => {
+                        let raw: Rc<str> = Rc::from(scalar.value.as_str());
+                        let data = crate::build::resolve_scalar_data(
+                            Rc::clone(&raw),
+                            scalar.style,
+                            metadata.tag.as_deref(),
+                            config.tag_resolution,
+                        );
+                        resolved.push(finish_owned_value(
+                            metadata,
+                            data,
+                            NodeStyle::Scalar(scalar.style),
+                            Some(raw),
+                            Some(ScalarPresentation {
+                                chomp: scalar.chomp,
+                                flags: scalar.flags,
+                            }),
+                            session,
+                            anchors,
+                        ));
+                    }
+                    OwnedKind::Sequence { style, items } => {
+                        let Some(child_depth) = depth.checked_add(1) else {
+                            pending.extend(
+                                items
+                                    .into_iter()
+                                    .map(|node| OwnedToValueWork::Visit { node, depth }),
+                            );
+                            discard_owned_work(pending);
+                            return Err(YgError::resource_overflow(
+                                "query value depth",
+                                "query value depth overflow",
+                            ));
+                        };
+                        pending.push(OwnedToValueWork::FinishSequence {
+                            metadata,
+                            style,
+                            resolved_start: resolved.len(),
+                        });
+                        pending.extend(items.into_iter().rev().map(|node| {
+                            OwnedToValueWork::Visit {
+                                node,
+                                depth: child_depth,
+                            }
+                        }));
+                    }
+                    OwnedKind::Mapping { style, entries } => {
+                        let Some(child_depth) = depth.checked_add(1) else {
+                            for (key, value) in entries {
+                                pending.push(OwnedToValueWork::Visit { node: key, depth });
+                                pending.push(OwnedToValueWork::Visit { node: value, depth });
+                            }
+                            discard_owned_work(pending);
+                            return Err(YgError::resource_overflow(
+                                "query value depth",
+                                "query value depth overflow",
+                            ));
+                        };
+                        pending.push(OwnedToValueWork::FinishMapping {
+                            metadata,
+                            style,
+                            resolved_start: resolved.len(),
+                        });
+                        for (key, value) in entries.into_iter().rev() {
+                            pending.push(OwnedToValueWork::Visit {
+                                node: value,
+                                depth: child_depth,
+                            });
+                            pending.push(OwnedToValueWork::Visit {
+                                node: key,
+                                depth: child_depth,
+                            });
+                        }
+                    }
+                    OwnedKind::Alias { .. } => unreachable!("aliases returned above"),
+                }
+            }
+            OwnedToValueWork::FinishSequence {
+                metadata,
+                style,
+                resolved_start,
+            } => {
+                let items = resolved.split_off(resolved_start);
+                resolved.push(finish_owned_value(
+                    metadata,
+                    Data::Seq(Rc::new(YgSeq(items))),
+                    NodeStyle::Collection(style),
+                    None,
+                    None,
+                    session,
+                    anchors,
+                ));
+            }
+            OwnedToValueWork::FinishMapping {
+                metadata,
+                style,
+                resolved_start,
+            } => {
+                let mut nodes = resolved.split_off(resolved_start).into_iter();
+                let mut mapping = YgMap::default();
+                while let Some(key) = nodes.next() {
+                    let value = nodes
+                        .next()
+                        .expect("owned mapping conversion has key/value parity");
+                    mapping.0.insert(key, value);
+                }
+                resolved.push(finish_owned_value(
+                    metadata,
+                    Data::Map(Rc::new(mapping)),
+                    NodeStyle::Collection(style),
+                    None,
+                    None,
+                    session,
+                    anchors,
+                ));
+            }
+        }
     }
 
-    let (data, style, raw, scalar_presentation) = match kind {
-        OwnedKind::Scalar(scalar) => {
-            let raw: Rc<str> = Rc::from(scalar.value.as_str());
-            let data = crate::build::resolve_scalar_data(
-                Rc::clone(&raw),
-                scalar.style,
-                tag.as_deref(),
-                config.tag_resolution,
-            );
-            (
-                data,
-                NodeStyle::Scalar(scalar.style),
-                Some(raw),
-                Some(ScalarPresentation {
-                    chomp: scalar.chomp,
-                    flags: scalar.flags,
-                }),
-            )
-        }
-        OwnedKind::Sequence { style, items } => {
-            let child_depth = checked_child_depth(depth)?;
-            let mut values = Vec::with_capacity(items.len());
-            for item in items {
-                values.push(owned_to_value(item, session, config, anchors, child_depth)?);
-            }
-            (
-                Data::Seq(Rc::new(YgSeq(values))),
-                NodeStyle::Collection(style),
-                None,
-                None,
-            )
-        }
-        OwnedKind::Mapping { style, entries } => {
-            let child_depth = checked_child_depth(depth)?;
-            let mut mapping = YgMap::default();
-            for (key, value) in entries {
-                let key = owned_to_value(key, session, config, anchors, child_depth)?;
-                let value = owned_to_value(value, session, config, anchors, child_depth)?;
-                mapping.0.insert(key, value);
-            }
-            (
-                Data::Map(Rc::new(mapping)),
-                NodeStyle::Collection(style),
-                None,
-                None,
-            )
-        }
-        OwnedKind::Alias { .. } => unreachable!("aliases returned above"),
-    };
+    if resolved.len() != 1 {
+        return Err(YgError::resource_overflow(
+            "query value conversion",
+            "query value conversion work imbalance",
+        ));
+    }
+    Ok(resolved
+        .pop()
+        .expect("owned conversion reconstructs exactly one root"))
+}
+
+enum AssignSessionWork {
+    Visit(YamlVal),
+    FinishSequence {
+        meta: Option<Rc<Meta>>,
+        runtime_resolution_error: Option<Arc<ResolveError>>,
+        resolved_start: usize,
+    },
+    FinishMapping {
+        meta: Option<Rc<Meta>>,
+        runtime_resolution_error: Option<Arc<ResolveError>>,
+        resolved_start: usize,
+    },
+}
+
+struct OwnedValueMetadata {
+    origin: ResourceId,
+    anchor: Option<String>,
+    tag: Option<String>,
+}
+
+enum OwnedToValueWork {
+    Visit {
+        node: OwnedNode,
+        depth: usize,
+    },
+    FinishSequence {
+        metadata: OwnedValueMetadata,
+        style: CollectionStyle,
+        resolved_start: usize,
+    },
+    FinishMapping {
+        metadata: OwnedValueMetadata,
+        style: CollectionStyle,
+        resolved_start: usize,
+    },
+}
+
+fn finish_owned_value(
+    metadata: OwnedValueMetadata,
+    data: Data,
+    style: NodeStyle,
+    raw: Option<Rc<str>>,
+    scalar_presentation: Option<ScalarPresentation>,
+    session: ResolutionSessionKey,
+    anchors: &mut HashMap<String, YamlVal>,
+) -> YamlVal {
+    let anchor = metadata.anchor.as_deref().map(Rc::from);
     let value = YamlVal {
         data,
         meta: Some(Rc::new(Meta {
-            tag: tag.map(Rc::from),
-            anchor: anchor.as_deref().map(Rc::from),
+            tag: metadata.tag.map(Rc::from),
+            anchor,
             alias_of: None,
             style: Some(style),
             raw,
             scalar_presentation,
             origin: Some(ResourceOrigin {
-                resource: origin,
+                resource: metadata.origin,
                 session,
             }),
         })),
         runtime_resolution_error: None,
     };
-    if let Some(anchor) = anchor {
+    if let Some(anchor) = metadata.anchor {
         anchors.insert(anchor, value.clone());
     }
-    Ok(value)
+    value
+}
+
+fn discard_owned_work(mut pending: Vec<OwnedToValueWork>) {
+    while let Some(work) = pending.pop() {
+        let OwnedToValueWork::Visit { mut node, .. } = work else {
+            continue;
+        };
+        match std::mem::replace(
+            &mut node.kind,
+            OwnedKind::Sequence {
+                style: CollectionStyle::Block,
+                items: Vec::new(),
+            },
+        ) {
+            OwnedKind::Sequence { items, .. } => {
+                pending.extend(
+                    items
+                        .into_iter()
+                        .map(|node| OwnedToValueWork::Visit { node, depth: 0 }),
+                );
+            }
+            OwnedKind::Mapping { entries, .. } => {
+                pending.extend(
+                    entries
+                        .into_iter()
+                        .flat_map(<[_; 2]>::from)
+                        .map(|node| OwnedToValueWork::Visit { node, depth: 0 }),
+                );
+            }
+            OwnedKind::Scalar(_) | OwnedKind::Alias { .. } => {}
+        }
+    }
 }
 
 #[allow(clippy::result_large_err)] // QueryResolver returns the shared typed error directly.
@@ -593,12 +831,6 @@ const fn collection_style(style: Option<NodeStyle>) -> CollectionStyle {
     }
 }
 
-fn checked_child_depth(depth: usize) -> Result<usize, YgError> {
-    depth.checked_add(1).ok_or_else(|| {
-        YgError::resource_overflow("query value depth", "query value depth overflow")
-    })
-}
-
 #[allow(clippy::result_large_err)] // QueryResolver returns the shared typed error directly.
 fn checked_resolution_depth(
     depth: usize,
@@ -643,5 +875,199 @@ fn value_depth_overflow(capability: ResolutionCapability, resource: &'static str
 impl From<DocumentError> for YgError {
     fn from(error: DocumentError) -> Self {
         Self::InputParse(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEEP_NESTING: usize = 20_000;
+    const SMALL_STACK: usize = 128 * 1024;
+
+    #[test]
+    fn owned_tree_conversion_is_stack_safe_when_depth_is_unchecked() {
+        std::thread::Builder::new()
+            .stack_size(SMALL_STACK)
+            .spawn(|| {
+                let origin = ResourceId::anonymous();
+                let node = deep_owned_sequence(&origin);
+
+                let value = value_from_owned_node(
+                    node,
+                    ResolutionSessionKey::UNREGISTERED,
+                    &LoaderConfig::unchecked(),
+                )
+                .unwrap();
+                assert_eq!(nested_sequence_depth(&value), DEEP_NESTING);
+            })
+            .unwrap()
+            .join()
+            .expect("iterative owned conversion must not overflow a small thread stack");
+    }
+
+    #[test]
+    fn owned_tree_depth_failure_discards_remaining_work_without_recursion() {
+        std::thread::Builder::new()
+            .stack_size(SMALL_STACK)
+            .spawn(|| {
+                let origin = ResourceId::anonymous();
+                let node = deep_owned_sequence(&origin);
+                let mut config = LoaderConfig::unchecked();
+                config.limits.max_depth = Some(8);
+
+                let error =
+                    value_from_owned_node(node, ResolutionSessionKey::UNREGISTERED, &config)
+                        .unwrap_err();
+
+                assert!(matches!(error, YgError::InputLimit { .. }));
+            })
+            .unwrap()
+            .join()
+            .expect("depth failure cleanup must not overflow a small thread stack");
+    }
+
+    #[test]
+    fn session_assignment_is_stack_safe_and_updates_every_origin() {
+        std::thread::Builder::new()
+            .stack_size(SMALL_STACK)
+            .spawn(|| {
+                let resource = ResourceId::anonymous();
+                let unregistered = ResourceOrigin {
+                    resource,
+                    session: ResolutionSessionKey::UNREGISTERED,
+                };
+                let mut value = YamlVal::str("leaf").with_meta(Meta {
+                    origin: Some(unregistered.clone()),
+                    ..Meta::default()
+                });
+                for _ in 0..DEEP_NESTING {
+                    value = YamlVal::seq(vec![value]).with_meta(Meta {
+                        origin: Some(unregistered.clone()),
+                        ..Meta::default()
+                    });
+                }
+
+                let registered = ResolutionSessionKey::registered(7, 11);
+                assign_session(&mut value, registered);
+
+                let mut current = &value;
+                let mut depth = 0;
+                loop {
+                    assert_eq!(
+                        current
+                            .meta()
+                            .and_then(|metadata| metadata.origin.as_ref())
+                            .map(|origin| origin.session),
+                        Some(registered)
+                    );
+                    let Some(sequence) = current.as_sequence() else {
+                        break;
+                    };
+                    let [child] = sequence else {
+                        panic!("deep assignment fixture must remain unary");
+                    };
+                    current = child;
+                    depth += 1;
+                }
+                assert_eq!(depth, DEEP_NESTING);
+                assert_eq!(current.as_str_content(), Some("leaf"));
+            })
+            .unwrap()
+            .join()
+            .expect("iterative session assignment must not overflow a small thread stack");
+    }
+
+    #[test]
+    fn session_assignment_preserves_mapping_order_and_shared_values() {
+        let resource = ResourceId::anonymous();
+        let origin = ResourceOrigin {
+            resource,
+            session: ResolutionSessionKey::UNREGISTERED,
+        };
+        let metadata = || Meta {
+            origin: Some(origin.clone()),
+            ..Meta::default()
+        };
+        let original = YamlVal::map(vec![
+            (
+                YamlVal::str("first").with_meta(metadata()),
+                YamlVal::int(1).with_meta(metadata()),
+            ),
+            (
+                YamlVal::str("second").with_meta(metadata()),
+                YamlVal::int(2).with_meta(metadata()),
+            ),
+        ])
+        .with_meta(metadata());
+        let mut assigned = original.clone();
+        let registered = ResolutionSessionKey::registered(13, 17);
+
+        assign_session(&mut assigned, registered);
+
+        let assigned_entries = assigned.entries().unwrap().collect::<Vec<_>>();
+        assert_eq!(
+            assigned_entries
+                .iter()
+                .map(|(key, _)| key.as_str_content().unwrap())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert!(assigned_entries.iter().all(|(key, value)| {
+            has_session(key, registered) && has_session(value, registered)
+        }));
+        assert!(original.entries().unwrap().all(|(key, value)| {
+            has_session(key, ResolutionSessionKey::UNREGISTERED)
+                && has_session(value, ResolutionSessionKey::UNREGISTERED)
+        }));
+    }
+
+    fn nested_sequence_depth(value: &YamlVal) -> usize {
+        let mut current = value;
+        let mut depth = 0;
+        while let Some(sequence) = current.as_sequence() {
+            let [child] = sequence else {
+                panic!("deep conversion fixture must remain unary");
+            };
+            current = child;
+            depth += 1;
+        }
+        assert_eq!(current.as_str_content(), Some("leaf"));
+        depth
+    }
+
+    fn deep_owned_sequence(origin: &ResourceId) -> OwnedNode {
+        let mut node = OwnedNode {
+            origin: origin.clone(),
+            span: Default::default(),
+            anchor: None,
+            tag: None,
+            kind: OwnedKind::Scalar(OwnedScalar {
+                value: "leaf".into(),
+                style: ScalarStyle::Plain,
+                chomp: Chomp::Clip,
+                flags: AtomFlags::DIRECT_OUTPUT,
+            }),
+        };
+        for _ in 0..DEEP_NESTING {
+            node = OwnedNode {
+                origin: origin.clone(),
+                span: Default::default(),
+                anchor: None,
+                tag: None,
+                kind: OwnedKind::Sequence {
+                    style: CollectionStyle::Block,
+                    items: vec![node],
+                },
+            };
+        }
+        node
+    }
+
+    fn has_session(value: &YamlVal, session: ResolutionSessionKey) -> bool {
+        value
+            .meta()
+            .and_then(|metadata| metadata.origin.as_ref())
+            .is_some_and(|origin| origin.session == session)
     }
 }
