@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use crate::{ResourceId, RetrieveError};
 
+mod file;
 mod memory;
 mod router;
 
+pub use file::FileRetriever;
 pub use memory::MemoryRetriever;
 pub use router::RetrieverRouter;
 

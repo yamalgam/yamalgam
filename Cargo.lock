@@ -2666,6 +2666,7 @@ dependencies = [
  "globset",
  "librebar",
  "percent-encoding",
+ "tempfile",
  "thiserror",
  "tokio",
  "url",

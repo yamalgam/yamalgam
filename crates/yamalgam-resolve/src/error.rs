@@ -6,6 +6,12 @@ use crate::ResourceId;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RetrieveError {
+    /// Filesystem retrieval was configured without a capability root.
+    #[error("filesystem retrieval requires a configured root")]
+    MissingRoot,
+    /// A configured discovery or policy glob was invalid.
+    #[error("invalid glob pattern: {0}")]
+    InvalidPattern(String),
     /// A router already has a backend for the scheme.
     #[error("a retriever is already registered for scheme {0}")]
     DuplicateScheme(String),

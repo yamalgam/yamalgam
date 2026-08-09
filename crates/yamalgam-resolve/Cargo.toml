@@ -20,5 +20,8 @@ yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-parser = { path = "../yamalgam-parser" }
 yamalgam-scanner = { path = "../yamalgam-scanner" }
 
+[dev-dependencies]
+tempfile = "3.27"
+
 [lints]
 workspace = true
