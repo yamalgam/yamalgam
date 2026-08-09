@@ -59,6 +59,7 @@ fn meta_accessors_preserve_yaml_presentation() {
         raw: Some("x".into()),
         alias_of: None,
         scalar_presentation: None,
+        origin: None,
     });
 
     assert_eq!(v.meta().and_then(|m| m.anchor.as_deref()), Some("base"));

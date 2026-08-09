@@ -74,6 +74,15 @@ pub enum YgError {
         /// prefix.
         message: String,
     },
+    /// Automatic external resolution failed while loading an input document.
+    #[error("{message}")]
+    InputResolution {
+        /// Structured resolver failure.
+        #[source]
+        error: Box<yamalgam_parser::ResolveError>,
+        /// Rendered diagnostic, including input context when available.
+        message: String,
+    },
     /// The filter failed while running.
     #[error("{0}")]
     Runtime(String),
@@ -83,6 +92,15 @@ pub enum YgError {
         /// Structured resource-limit failure.
         #[source]
         error: LimitExceeded,
+        /// Rendered diagnostic, including input context when available.
+        message: String,
+    },
+    /// An explicit `include` or `ref` filter failed.
+    #[error("{message}")]
+    RuntimeResolution {
+        /// Structured resolver failure.
+        #[source]
+        error: Box<yamalgam_parser::ResolveError>,
         /// Rendered diagnostic, including input context when available.
         message: String,
     },
@@ -124,6 +142,26 @@ impl YgError {
     pub(crate) fn runtime_limit(error: LimitExceeded, message: impl Into<String>) -> Self {
         Self::RuntimeLimit {
             error,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn input_resolution(
+        error: yamalgam_parser::ResolveError,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::InputResolution {
+            error: Box::new(error),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn runtime_resolution(
+        error: yamalgam_parser::ResolveError,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::RuntimeResolution {
+            error: Box::new(error),
             message: message.into(),
         }
     }
@@ -187,7 +225,7 @@ fn resolve_error(error: yamalgam_parser::ResolveError) -> YgError {
     match error {
         yamalgam_parser::ResolveError::LimitExceeded(error) => YgError::input_limit(error, message),
         yamalgam_parser::ResolveError::Parse(error) => parse_error(error),
-        _ => YgError::InputParse(message),
+        error => YgError::input_resolution(error, message),
     }
 }
 

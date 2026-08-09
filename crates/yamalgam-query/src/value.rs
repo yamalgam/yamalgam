@@ -42,6 +42,8 @@ pub struct Meta {
     pub raw: Option<Rc<str>>,
     /// Scanner-derived metadata for scalar nodes.
     pub scalar_presentation: Option<ScalarPresentation>,
+    /// Resource and query session from which this node originated.
+    pub origin: Option<crate::resolution::ResourceOrigin>,
 }
 
 /// Order-preserving YAML mapping with order-sensitive equality.

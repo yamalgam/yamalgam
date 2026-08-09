@@ -2656,6 +2656,7 @@ dependencies = [
  "thiserror",
  "yamalgam-core",
  "yamalgam-parser",
+ "yamalgam-resolve",
  "yamalgam-scanner",
  "yamalgam-serde",
 ]
