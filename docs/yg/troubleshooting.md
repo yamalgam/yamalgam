@@ -64,8 +64,42 @@ yg --trusted '.items[]' large-local.yaml
 `--strict` uses tight limits for input you do not trust. The default uses the
 moderate profile. `--trusted` raises limits for large, trusted local data.
 
-Limits apply to parsing, query work, generated values, and output. Do not use
-`--trusted` as a way to silence a limit on unknown input.
+Limits apply to parsing, query work, generated values, output, resolution
+depth and edges, materialized resource bytes, and HTTP response bodies. Do not
+use `--trusted` as a way to silence a limit on unknown input.
+
+## Diagnose include and ref failures
+
+```yaml file=examples/troubleshooting/missing.yaml
+$ref: ./not-there.yaml
+```
+
+```console
+$ yg --resolve-refs=file '.' examples/troubleshooting/missing.yaml
+yg: examples/troubleshooting/missing.yaml document 1: ... resource not found ...
+$ echo $?
+5
+```
+
+Resolution errors retain the input file and document number. Start with the
+policy flags, then check the base and root:
+
+- No retrieval happens unless `--allow-*` or `--resolve-*` enables it.
+- `--allow-*` permits the explicit `include` or `ref` filter.
+- `--resolve-*` resolves matching directives while loading.
+- File targets must remain below `--resolution-root`. Without that flag, an
+  input file's containing directory is the root.
+- Standard input needs `--base-uri` for relative refs and
+  `--resolution-root` for includes.
+- HTTP and HTTPS require both the scheme and an exact `--allow-ref-host`.
+
+HTTP status errors and redirects are hard failures. Redirects are disabled,
+so add the final URL as the `$ref` target instead of allowlisting a redirect
+destination. Includes cannot use HTTP.
+
+If retrieval succeeds but parsing fails, check the resource itself. It must be
+valid UTF-8 YAML with exactly one document. A `$ref` mapping may contain no
+sibling keys, and its fragment must be an RFC 6901 JSON Pointer.
 
 ## Disable environment access
 
@@ -137,5 +171,13 @@ check_status() {
 check_status 2 "$YG_BIN" -n '.a |'
 check_status 3 "$YG_BIN" -n nosuchfilter
 check_status 5 "$YG_BIN" -n '1 + true'
+
+set +e
+error="$("$YG_BIN" --resolve-refs=file '.' examples/troubleshooting/missing.yaml 2>&1 >/dev/null)"
+status="$?"
+set -e
+test "$status" -eq 5
+printf '%s\n' "$error" | grep -F 'examples/troubleshooting/missing.yaml document 1:' >/dev/null
+printf '%s\n' "$error" | grep -F 'resource not found' >/dev/null
 ```
 </script>-->

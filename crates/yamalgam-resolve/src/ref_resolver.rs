@@ -1,5 +1,9 @@
 //! Sole-key `$ref` recognition and RFC 6901 node selection.
 
+// r[impl resolution.ref]
+// r[impl resolution.ref.fragment]
+// r[impl resolution.ref.document]
+
 use yamalgam_core::{Span, TagResolution, TagResolver};
 use yamalgam_parser::ScalarStyle;
 

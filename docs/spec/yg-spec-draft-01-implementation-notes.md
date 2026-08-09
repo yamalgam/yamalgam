@@ -1,7 +1,8 @@
 # yg Draft 01 Implementation Notes
 
-Milestone 10 implements Phases 1 and 2 of
+Milestone 10 implemented Phases 1 and 2 of
 [`yg-query-language-spec-draft-01.md`](yg-query-language-spec-draft-01.md).
+Milestone 11 adds Phase 4 external resolution.
 This document records deliberate deviations and implementation-driven changes
 for the draft-02 revision. It does not edit or reinterpret draft 01.
 Bracketed `r[...]` links identify Tracey requirement IDs in draft 01.
@@ -65,7 +66,7 @@ CST phase, consistent with its absence from the Phase 1 filter list
 and floats are IEEE 754 binary64. Checked integer arithmetic promotes to `f64`
 on overflow. Four jq-manual cases remain expected failures because arbitrary
 precision and original decimal literal spelling are not preserved
-([`r[datamodel.types.int]`](yg-query-language-spec-draft-01.md#21-resolved-value-types),
+([`r[datamodel.types.int]`](yg-query-language-spec-draft-01.md#21-value-types),
 [`r[comparison.resolved.numeric]`](yg-query-language-spec-draft-01.md#31-resolved-comparison--)).
 
 ## 6. Mapping ordering follows mapping equality
@@ -89,7 +90,7 @@ shorthand and full URI forms, into one deterministic rule
 Milestone 10 ships explicit `--schema` selection and the `schema`, `resolve`,
 and `resolve_as` filters. It does not inspect the `# yg-schema:` document
 pragma, which was not part of Phases 1 or 2
-([`r[datamodel.schema.document-declared]`](yg-query-language-spec-draft-01.md#23-document-declared-schema),
+([`r[datamodel.schema.document-declared]`](yg-query-language-spec-draft-01.md#23-schema-resolution),
 [`r[cli.schema-flag]`](yg-query-language-spec-draft-01.md#84-schema-and-security-flags)).
 
 ## 9. Exit code 4 represents no output
@@ -98,14 +99,22 @@ With `-e`, `yg` returns 4 when a successful filter emits no values. This follows
 jq and does not conflict with draft 01's defined 0, 1, 2, 3, and 5 classes
 ([`r[cli.exit]`](yg-query-language-spec-draft-01.md#85-exit-codes)).
 
-## 10. External-resolution flags wait for M11
+## 10. External resolution has explicit and automatic modes
 
-`--allow-includes` and `--allow-refs` would be dead controls before the resolver
-filters exist, so they are deferred with external resolution. `--trusted` and
-`--strict` ship now because they select existing loader resource policies
-([`r[cli.allow-includes]`](yg-query-language-spec-draft-01.md#84-schema-and-security-flags),
+M11 replaces draft 01's optional-value flags with separate modes.
+`--allow-includes` and `--allow-refs=SCHEMES` permit the explicit `include` and
+`ref` filters. `--resolve-includes` and `--resolve-refs=SCHEMES` resolve during
+loading. The modes conflict for the same capability. `--resolution-root`
+selects the file sandbox. `--base-uri` supplies a base for standard input and
+constructed values.
+
+HTTP and HTTPS also require repeated `--allow-ref-host=HOST` entries. This
+keeps scheme selection and host authority separate. It also separates base
+identity from filesystem authority. No overloaded option value hides them
+([`r[resolution.modes]`](yg-query-language-spec-draft-01.md#7-external-resolution),
+[`r[cli.allow-includes]`](yg-query-language-spec-draft-01.md#84-schema-and-security-flags),
 [`r[cli.allow-refs]`](yg-query-language-spec-draft-01.md#84-schema-and-security-flags),
-[`r[phases.resolution]`](yg-query-language-spec-draft-01.md#phase-4-external-resolution)).
+[`r[cli.resolve-refs]`](yg-query-language-spec-draft-01.md#84-schema-and-security-flags)).
 
 ## 11. Library paths remain deferred; variable arguments ship
 
@@ -123,7 +132,7 @@ engine. Common jq patterns, named captures, and flags work, but lookaround,
 backreferences, atomic groups, and possessive quantifiers are unsupported.
 Draft 02 should replace the draft-01 "PCRE-compatible" promise with this
 finite-automata constraint
-([`r[filters.regex]`](yg-query-language-spec-draft-01.md#45-regular-expressions)).
+([`r[filters.regex]`](yg-query-language-spec-draft-01.md#49-regular-expressions)).
 
 ## 13. Normal file input is lazy per file, not per document
 
@@ -145,24 +154,58 @@ of the newly resolved value. Draft 02 should either remove the redundant filter
 or define a distinct result that the value model can represent
 ([`r[ext.resolved-type]`](yg-query-language-spec-draft-01.md#62-type-introspection)).
 
-## 15. Librebar expands the reviewed trust boundary
+## 15. Librebar 0.6 owns HTTP transport and expands the trust boundary
 
-Librebar 0.4 is consumed with default features disabled and only `cli`,
-`config`, `logging`, and `diagnostics` enabled. The latter two add
-`rust-zstd` 0.1.0 and `leakguard` 0.8.0 to the shipped binary. The locked
-`rust-zstd` source contains no unsafe code, and `leakguard` declares
-`forbid(unsafe_code)`; Cargo Deny and Cargo Audit report no advisory for either
-crate.
+The `yamalgam` dependency edge requests Librebar's `cli`, `config`, `logging`,
+and `diagnostics` features. `yamalgam-resolve` requests `http`. Cargo unifies
+all five features in the `yg` binary; a standalone resolver consumer requests
+only `http`.
+
+The logging and diagnostics features add `rust-zstd` 0.1.0 and `leakguard`
+0.8.0 to the shipped binary. The locked `rust-zstd` source contains no unsafe
+code, and `leakguard` declares `forbid(unsafe_code)`; Cargo Deny and Cargo Audit
+report no advisory for either crate.
 
 The residual risk is their limited 0.x maintenance history. `rust-zstd`
-remains required by librebar's `logging` feature even without `diagnostics`,
-so removing that decompressor requires librebar to expose compressed rotation
-as a separate optional feature. Until then, yamalgam keeps librebar's feature
+remains required by Librebar's `logging` feature even without `diagnostics`,
+so removing that decompressor requires Librebar to expose compressed rotation
+as a separate optional feature. Until then, Yamalgam keeps Librebar's feature
 set explicit and reviews changes to these locked transitive versions.
+
+When a network scheme is enabled, one private worker thread owns a
+current-thread Tokio runtime and Librebar HTTP client. Yamalgam disables
+redirects, retries, cookies, authentication, and persistent cache state. It
+checks scheme, host, and user information before retrieval. It applies timeout
+and body-size policy during retrieval. Response bytes return to Yamalgam's
+scanner and parser. Librebar never interprets YAML
+([`r[resolution.ref.network]`](yg-query-language-spec-draft-01.md#72-ref-resolution)).
+
+## 16. M11 keeps resolution reports in memory and lockfiles deferred
+
+Each top-level document receives an independent resolution session. Nested
+includes and refs share that session's cache and cycle stack. They also share
+budgets, the origin registry, and a deterministic report. Query values retain
+an opaque session key. Explicit filters can then continue the correct cache and
+report after slurp or other query composition.
+
+`ResolutionReport` records resources, edges, directive sites, fragments,
+discovery matches, byte counts, and cache hits. It can retain provenance,
+integrity data, and failed outcomes. Public rendering redacts credentials and
+query values. Reports never store response bodies, cookies, or authorization
+data.
+
+M11 does not expose a report command or write reports to disk. It preserves a
+digest and validator seam. It does not define pins, update mode, frozen mode,
+or a dependency-lockfile schema. Redirect-hop validation remains deferred.
+HTTP includes, authenticated retrieval, persistent HTTP caching, and
+parameterized includes also remain deferred
+([`r[resolution.session]`](yg-query-language-spec-draft-01.md#73-sessions-reports-and-integrity),
+[`r[resolution.report]`](yg-query-language-spec-draft-01.md#73-sessions-reports-and-integrity),
+[`r[resolution.integrity]`](yg-query-language-spec-draft-01.md#73-sessions-reports-and-integrity)).
 
 ## Additional implementation-driven changes
 
-- Librebar 0.4 reserves `-C` for changing directory and exposes the canonical
+- Librebar reserves `-C` for changing directory and exposes the canonical
   `--color auto|always|never` control. `yg` uses that shared interface instead
   of draft 01's `-C`/`-M` color pair
   ([`r[cli.color]`](yg-query-language-spec-draft-01.md#83-output-flags)).

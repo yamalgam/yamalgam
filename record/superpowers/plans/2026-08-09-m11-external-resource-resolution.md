@@ -151,7 +151,7 @@ pub struct RefPolicy {
 }
 ```
 
-- [ ] **Step 1: Write policy-mode and preset tests**
+- [x] **Step 1: Write policy-mode and preset tests**
 
 Add exact tests for these contracts:
 
@@ -187,7 +187,7 @@ Add `ResolutionDepth`, `ResolutionEdges`, and `MaterializedBytes` to
 `ResourceLimit`. For each one, test the category, observed count, maximum, and
 display text.
 
-- [ ] **Step 2: Run the focused tests to verify RED**
+- [x] **Step 2: Run the focused tests to verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-core -E 'test(resolution_presets_match_adr_0016) | test(explicit_and_automatic_modes_are_distinct)'
@@ -196,7 +196,7 @@ cargo nextest run -p yamalgam-core -E 'test(resolution_presets_match_adr_0016) |
 Expected: compilation fails because the mode, capability, and resolution-limit
 types do not exist.
 
-- [ ] **Step 3: Implement the policy types and presets**
+- [x] **Step 3: Implement the policy types and presets**
 
 `ResolutionPolicy::{moderate,strict,trusted,unchecked}` must return disabled
 capabilities with the accepted limits. `ResolutionPolicy::disabled()` remains
@@ -205,13 +205,13 @@ matching policy constructor. Remove `IncludePolicy::{enabled,max_depth,
 max_total_bytes}` and `RefPolicy::enabled`; update existing core/parser tests
 to use `ResolutionMode` without adding behavior yet.
 
-- [ ] **Step 4: Run core and parser policy tests to verify GREEN**
+- [x] **Step 4: Run core and parser policy tests to verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-core -p yamalgam-parser -E 'test(resolution) | test(noop_resolver) | test(enabled_policy)'
 ```
 
-- [ ] **Step 5: Commit the focused policy change**
+- [x] **Step 5: Commit the focused policy change**
 
 ```bash
 git add crates/yamalgam-core crates/yamalgam-parser
@@ -245,21 +245,21 @@ yamalgam-parser = { path = "../yamalgam-parser" }
 yamalgam-scanner = { path = "../yamalgam-scanner" }
 ```
 
-- [ ] **Step 1: Add the crate manifest and documented empty library root**
+- [x] **Step 1: Add the crate manifest and documented empty library root**
 
 Create the manifest with the dependency table above. Create `src/lib.rs` with
 crate-level documentation describing the parser-above/query-below boundary and
 `#![deny(unsafe_code)]`. Do not declare placeholder public types; subsequent
 tasks add each real module with its tests.
 
-- [ ] **Step 2: Update the CLI manifest**
+- [x] **Step 2: Update the CLI manifest**
 
 Update the CLI's Librebar dependency from 0.4 to 0.6.0. Retain the explicit
 `cli`, `config`, `logging`, and `diagnostics` features. Add
 `yamalgam-resolve` as a CLI dependency. Do not enable Librebar cookies, HTTP
 cache, update, or default features.
 
-- [ ] **Step 3: Update the lockfile deliberately**
+- [x] **Step 3: Update the lockfile deliberately**
 
 ```bash
 cargo update -p librebar --precise 0.6.0
@@ -268,7 +268,7 @@ cargo update -p librebar --precise 0.6.0
 Inspect the complete dependency diff. Confirm that Librebar's HTTP feature is
 the only reason Hyper, Tokio, or TLS packages enter the shipped graph.
 
-- [ ] **Step 4: Compile both dependency surfaces**
+- [x] **Step 4: Compile both dependency surfaces**
 
 ```bash
 cargo check -p yamalgam-resolve -p yamalgam
@@ -278,7 +278,7 @@ Expected: both packages compile against Librebar 0.6.0. Fix any Librebar API
 breakage only in the CLI integration that uses the changed API; do not enable
 additional Librebar features.
 
-- [ ] **Step 5: Verify the dependency boundary**
+- [x] **Step 5: Verify the dependency boundary**
 
 ```bash
 cargo check -p yamalgam-resolve
@@ -286,7 +286,7 @@ cargo tree -p yamalgam -e features -i librebar
 just deny
 ```
 
-- [ ] **Step 6: Commit the crate and dependency foundation**
+- [x] **Step 6: Commit the crate and dependency foundation**
 
 ```bash
 git add Cargo.lock crates/yamalgam/Cargo.toml crates/yamalgam-resolve
@@ -330,7 +330,7 @@ pub enum Fragment {
 and application-defined schemes. File identities retain `PathBuf`. This avoids
 silent corruption of non-UTF-8 Unix names.
 
-- [ ] **Step 1: Write table-driven resource tests**
+- [x] **Step 1: Write table-driven resource tests**
 
 Cover:
 
@@ -354,13 +354,13 @@ assert_eq!(
 assert_eq!(base.resolve("#")?.fragment, Fragment::Root);
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test resource_id
 ```
 
-- [ ] **Step 3: Implement resolution without ambient I/O**
+- [x] **Step 3: Implement resolution without ambient I/O**
 
 Use `Url::join` for hierarchical URI references and `percent_encoding` for
 fragment decoding. Implement file-relative joining lexically; do not
@@ -370,14 +370,14 @@ default: omit URI userinfo and query values. Expose full parsed components
 through accessors used by policy and retrieval, not a full-identity formatter.
 The cache key still retains the complete fragmentless URL.
 
-- [ ] **Step 4: Verify GREEN and Clippy**
+- [x] **Step 4: Verify GREEN and Clippy**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test resource_id
 cargo clippy -p yamalgam-resolve --all-targets -- -D warnings
 ```
 
-- [ ] **Step 5: Commit resource identity**
+- [x] **Step 5: Commit resource identity**
 
 ```bash
 git add crates/yamalgam-resolve
@@ -559,7 +559,7 @@ pub enum ResolutionErrorCategory {
 does not compute, require, or verify it. Reports retain full IDs internally;
 their `Display`/diagnostic rendering uses sanitized IDs.
 
-- [ ] **Step 1: Write structured-contract tests**
+- [x] **Step 1: Write structured-contract tests**
 
 Test that:
 
@@ -572,14 +572,14 @@ Test that:
   values.
 - `ResolveError::clone_structured` preserves every new built-in resolution
   category and the original display prefix.
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test report
 cargo nextest run -p yamalgam-parser -E 'test(resolve_error)'
 ```
 
-- [ ] **Step 3: Implement typed errors and deterministic reports**
+- [x] **Step 3: Implement typed errors and deterministic reports**
 
 Add a typed built-in `ResolveError::Resolution` variant in the parser. It
 carries category, capability, directive span, sanitized target, reference
@@ -591,13 +591,13 @@ Expose `ResolutionReport::{resources,edges}` as slices, plus safe rendering.
 Never expose a response body through `Debug` or `Display`; custom `Debug` for
 `RetrievedResource` prints `bytes_len` only.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-parser -p yamalgam-resolve
 ```
 
-- [ ] **Step 5: Commit contracts**
+- [x] **Step 5: Commit contracts**
 
 ```bash
 git add crates/yamalgam-parser crates/yamalgam-resolve
@@ -637,32 +637,32 @@ impl RetrieverRouter {
 }
 ```
 
-- [ ] **Step 1: Write memory and routing tests**
+- [x] **Step 1: Write memory and routing tests**
 
 Prove exact retrieval, byte ceilings, and missing resources. Test duplicate
 scheme registration, unsupported schemes, and `memory:` relative bases. A
 denied or unsupported request must never call a spy retriever.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test memory_retriever
 ```
 
-- [ ] **Step 3: Implement the backends**
+- [x] **Step 3: Implement the backends**
 
 Enforce `ResourceRequest::max_bytes` in every backend even when the session has
 already checked a budget. Provide blanket `ResourceRetriever` implementations
 for `Box<T>` and `Arc<T>` so sessions can share a router without sharing
 mutable resolution state.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test memory_retriever
 ```
 
-- [ ] **Step 5: Commit routing and memory retrieval**
+- [x] **Step 5: Commit routing and memory retrieval**
 
 ```bash
 git add crates/yamalgam-resolve
@@ -695,7 +695,7 @@ impl FileRetriever {
 }
 ```
 
-- [ ] **Step 1: Write sandbox tests before implementation**
+- [x] **Step 1: Write sandbox tests before implementation**
 
 Use `tempfile` and cover:
 
@@ -715,13 +715,13 @@ Use `tempfile` and cover:
   `named` key later rejects names that cannot become YAML strings.
 - discovered symlink files that match a selector fail when symlinks are off;
   recursive walks skip, but never follow, unrelated symlink directories.
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test file_retriever
 ```
 
-- [ ] **Step 3: Implement capability-relative access**
+- [x] **Step 3: Implement capability-relative access**
 
 Open ambient authority exactly once in `FileRetriever::open`. Every later
 metadata or directory operation uses the held `cap_std::fs::Dir`. The same is
@@ -746,7 +746,7 @@ Stop discovery as soon as `max_matches + 1` approved candidates are found.
 Return `RetrieveError::TooManyMatches`. The session supplies its remaining
 edge budget as `DiscoveryRequest::max_matches`.
 
-- [ ] **Step 4: Verify GREEN and the dependency policy**
+- [x] **Step 4: Verify GREEN and the dependency policy**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test file_retriever
@@ -754,7 +754,7 @@ cargo clippy -p yamalgam-resolve --all-targets -- -D warnings
 just deny
 ```
 
-- [ ] **Step 5: Commit the file backend**
+- [x] **Step 5: Commit the file backend**
 
 ```bash
 git add crates/yamalgam-resolve Cargo.lock
@@ -787,7 +787,7 @@ struct HttpWork {
 }
 ```
 
-- [ ] **Step 1: Adapt Librebar's local test server and write HTTP tests**
+- [x] **Step 1: Adapt Librebar's local test server and write HTTP tests**
 
 Keep the server inside the test process. Cover:
 
@@ -802,13 +802,13 @@ Keep the server inside the test process. Cover:
 - invalid UTF-8 left for the session's typed text error.
 - clean worker shutdown, failed runtime construction, worker panic/channel
   closure, and repeated requests through one worker.
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test http_retriever
 ```
 
-- [ ] **Step 3: Implement the private runtime adapter**
+- [x] **Step 3: Implement the private runtime adapter**
 
 Follow Librebar 0.6.0's `src/otel/blocking_hyper.rs` ownership pattern. Use a
 bounded work channel and readiness handshake. Run one current-thread Tokio
@@ -833,14 +833,14 @@ Do not enable cookie or cache features. Check `is_success`, capture opaque ETag
 and Last-Modified values into `ResourceValidator`, then consume `into_parts`.
 Custom `Debug` must not render bodies or validator contents.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test http_retriever
 cargo clippy -p yamalgam-resolve --all-targets -- -D warnings
 ```
 
-- [ ] **Step 5: Commit HTTP retrieval**
+- [x] **Step 5: Commit HTTP retrieval**
 
 ```bash
 git add crates/yamalgam-resolve
@@ -888,7 +888,7 @@ pub struct OwnedScalar {
 }
 ```
 
-- [ ] **Step 1: Write event/document round-trip tests**
+- [x] **Step 1: Write event/document round-trip tests**
 
 Parse representative scalars and flow/block collections. Include arbitrary
 mapping keys, tags, anchors, aliases, styles, chomping, and flags. Also cover
@@ -899,13 +899,13 @@ equivalence after `events -> OwnedDocument -> events`. Imported strings must be
 Add malformed-event tests for truncated collections, mapping parity, multiple
 roots, and stream events in a node.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test document
 ```
 
-- [ ] **Step 3: Implement owned conversion iteratively where depth is unbounded**
+- [x] **Step 3: Implement owned conversion iteratively where depth is unbounded**
 
 Add `Event::into_owned(self) -> Event<'static>` in the parser. This avoids
 repeated Cow conversion in consumers. `OwnedDocument` parsing consumes
@@ -918,14 +918,14 @@ Count each node allocation, scalar/tag/anchor/alias bytes, collection storage,
 and mapping pair storage. Return a typed resource-overflow error instead of
 wrapping.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-parser
 cargo nextest run -p yamalgam-resolve --test document
 ```
 
-- [ ] **Step 5: Commit the owned model**
+- [x] **Step 5: Commit the owned model**
 
 ```bash
 git add crates/yamalgam-parser crates/yamalgam-resolve
@@ -986,7 +986,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
 }
 ```
 
-- [ ] **Step 1: Write session-invariant tests with a spy retriever**
+- [x] **Step 1: Write session-invariant tests with a spy retriever**
 
 Prove:
 
@@ -1005,13 +1005,13 @@ Prove:
 - counter overflow is structured and never wraps.
 - explicit capability recursion resolves the same capability; the other
   capability resolves only in `Automatic` mode.
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test session
 ```
 
-- [ ] **Step 3: Implement the session state machine**
+- [x] **Step 3: Implement the session state machine**
 
 Cache parsed unresolved documents. Record an edge before handling each target.
 Check its edge and depth budgets. Retrieve the raw document or clone it from
@@ -1024,13 +1024,13 @@ Use RAII or one cleanup function so the active cycle stack is popped on every
 success/error path. Never hold a cache or report mutable borrow while calling
 the retriever or recursing.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test session
 ```
 
-- [ ] **Step 5: Commit the session engine**
+- [x] **Step 5: Commit the session engine**
 
 ```bash
 git add crates/yamalgam-resolve
@@ -1047,7 +1047,7 @@ git commit -m "feat(resolve): share caches budgets and reports"
 - Modify `crates/yamalgam-resolve/src/pointer.rs`.
 - Modify `crates/yamalgam-resolve/src/session.rs`.
 - Test in `crates/yamalgam-resolve/tests/ref_resolution.rs`.
-- [ ] **Step 1: Write the complete `$ref` behavior matrix**
+- [x] **Step 1: Write the complete `$ref` behavior matrix**
 
 Cover:
 
@@ -1072,13 +1072,13 @@ $ref: ./shared.yaml#/defaults
 local: must-not-be-silently-merged
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test ref_resolution
 ```
 
-- [ ] **Step 3: Implement replacement and selection**
+- [x] **Step 3: Implement replacement and selection**
 
 Recognize `$ref` only when ref resolution should run. If any `$ref` key is
 present in a mapping being resolved, require exactly one entry and a YAML
@@ -1086,13 +1086,13 @@ string value. Resolve the URI reference from the directive node's `origin`,
 not the root input. Select from the unresolved cached tree before recursively
 resolving the selected clone.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test ref_resolution
 ```
 
-- [ ] **Step 5: Commit `$ref`**
+- [x] **Step 5: Commit `$ref`**
 
 ```bash
 git add crates/yamalgam-resolve
@@ -1129,7 +1129,7 @@ struct IncludeSpec {
 }
 ```
 
-- [ ] **Step 1: Write directive-shape tests**
+- [x] **Step 1: Write directive-shape tests**
 
 Cover scalar shorthand and structured mappings with exactly one of `path`,
 `glob`, or `dir`. Reject unknown or duplicate options. Reject wrong scalar
@@ -1137,7 +1137,7 @@ types, selector conflicts, and invalid enums. Reject `recursive`/`match`
 outside `dir`, `key` outside `named`, and `on_conflict` outside mapping
 `merge`.
 
-- [ ] **Step 2: Write every mode and context test**
+- [x] **Step 2: Write every mode and context test**
 
 Cover:
 
@@ -1155,13 +1155,13 @@ Cover:
   creation order.
 - HTTP/HTTPS include rejection even when HTTP refs are enabled.
 - per-match edge/byte/report accounting.
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test include_resolution
 ```
 
-- [ ] **Step 4: Implement context-aware aggregation**
+- [x] **Step 4: Implement context-aware aggregation**
 
 Parse options without serializing the node. Resolve discovered resources in
 the retriever's deterministic order. Apply `on_conflict` only among included
@@ -1172,13 +1172,13 @@ For `splice`, replace the directive item with the selected sequence items.
 Charge each matched root independently. Then charge synthesized list/named keys
 and container storage. Aggregate wrappers cannot evade the byte budget.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test include_resolution
 ```
 
-- [ ] **Step 6: Commit includes**
+- [x] **Step 6: Commit includes**
 
 ```bash
 git add crates/yamalgam-resolve
@@ -1194,7 +1194,7 @@ git commit -m "feat(resolve): aggregate structured includes"
 - Create `crates/yamalgam-resolve/src/anchors.rs`.
 - Modify `crates/yamalgam-resolve/src/session.rs`.
 - Test in `crates/yamalgam-resolve/tests/anchors.rs`.
-- [ ] **Step 1: Write anchor and alias tests**
+- [x] **Step 1: Write anchor and alias tests**
 
 Cover duplicate source anchor names from two imports. Repeat one cached
 fragment at two insertion sites. Test aliases wholly inside a selected subtree
@@ -1205,26 +1205,26 @@ Assert names are stable across runs and unique per materialization edge. Use a
 YAML-valid prefix such as `yg_r{resource_ordinal}_e{edge_ordinal}_` and verify
 all alias references are rewritten with the corresponding definition.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test anchors
 ```
 
-- [ ] **Step 3: Implement two-pass subtree analysis**
+- [x] **Step 3: Implement two-pass subtree analysis**
 
 First collect anchors defined in the selected subtree and aliases used there.
 Reject `used - defined`. Then allocate deterministic names from report resource
 ordinal plus edge ordinal and rewrite definitions and references. Do not use a
 hash digest or process-random state in emitted names.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-resolve --test anchors
 ```
 
-- [ ] **Step 5: Commit anchor handling**
+- [x] **Step 5: Commit anchor handling**
 
 ```bash
 git add crates/yamalgam-resolve
@@ -1268,7 +1268,7 @@ top-level `DocumentEnd`, call `session.reset_for_next_root()`. Move its result
 into `completed_reports`. The next document gets a fresh cache, cycle stack,
 budgets, and report. It retains the same retriever.
 
-- [ ] **Step 1: Write middleware tests**
+- [x] **Step 1: Write middleware tests**
 
 Prove that the resolver:
 
@@ -1281,7 +1281,7 @@ Prove that the resolver:
   `ResolvedEvents`.
 - passes all events through unchanged with no owned conversion or retrieval
   when both capabilities are disabled.
-- [ ] **Step 2: Write cross-consumer integration tests**
+- [x] **Step 2: Write cross-consumer integration tests**
 
 Run the same memory-backed `$ref` and `!include` fixtures through:
 
@@ -1293,13 +1293,13 @@ Assert equivalent resolved values. For CST, assert `cst.to_text() == input`.
 Injected semantic nodes must be synthetic. The original directive text remains
 recoverable from gap coverage.
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-resolve -p yamalgam-compose -p yamalgam-serde -p yamalgam-cst -E 'test(builtin_resolution)'
 ```
 
-- [ ] **Step 4: Implement the adapter**
+- [x] **Step 4: Implement the adapter**
 
 Use the neutral document/session APIs; do not duplicate `$ref` or include
 logic. Replay borrowed input events on disabled policy. When resolution is
@@ -1308,13 +1308,13 @@ resolved semantic nodes as owned events. Imported nodes use synthetic
 zero-width spans at the directive site while the report retains original
 resource spans.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-resolve -p yamalgam-compose -p yamalgam-serde -p yamalgam-cst
 ```
 
-- [ ] **Step 6: Commit consumer integration**
+- [x] **Step 6: Commit consumer integration**
 
 ```bash
 git add crates/yamalgam-resolve crates/yamalgam-compose crates/yamalgam-serde crates/yamalgam-cst
@@ -1368,7 +1368,7 @@ pub struct ResolvedInput {
 }
 ```
 
-- [ ] **Step 1: Write owned-node/query-value adapter tests**
+- [x] **Step 1: Write owned-node/query-value adapter tests**
 
 Round-trip every YAML data type. Preserve tags, anchors, aliases, style, raw
 scalar text, chomp, flags, mapping order, and arbitrary keys. Preserve each
@@ -1376,7 +1376,7 @@ node's `ResourceOrigin`. Constructed strings that resemble booleans, numbers,
 or null must remain strings. Imported nested nodes retain their parsed resource
 rather than the root input resource.
 
-- [ ] **Step 2: Write policy/filter tests**
+- [x] **Step 2: Write policy/filter tests**
 
 Cover:
 
@@ -1394,13 +1394,13 @@ Cover:
   session key.
 - report access after success and failure.
 - typed runtime resolution errors surviving the jaq error boundary.
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-query --test resolution
 ```
 
-- [ ] **Step 4: Implement the query adapter and session registry**
+- [x] **Step 4: Implement the query adapter and session registry**
 
 Add `Meta::origin`. Refactor scalar construction from `build.rs` into a shared
 crate-private helper so `OwnedNode -> YamlVal` follows the same schema logic.
@@ -1422,20 +1422,20 @@ a stable jaq text error. Recover the typed values during engine normalization.
 Add structured `YgError::{InputResolution,RuntimeResolution}` variants with
 preserved rendered context and sources.
 
-- [ ] **Step 5: Preserve the disabled fast path**
+- [x] **Step 5: Preserve the disabled fast path**
 
 Existing `parse_str_with_config` must continue through `NoopResolver` with no
 resolver crate allocation when policy is disabled. Add a spy/allocation-neutral
 regression that disabled query parsing never calls a retriever or creates an
 HTTP worker.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-query
 ```
 
-- [ ] **Step 7: Commit query integration**
+- [x] **Step 7: Commit query integration**
 
 ```bash
 git add crates/yamalgam-query
@@ -1480,7 +1480,7 @@ pub resolution_root: Option<Utf8PathBuf>,
 pub base_uri: Option<String>,
 ```
 
-- [ ] **Step 1: Write argument and validation tests**
+- [x] **Step 1: Write argument and validation tests**
 
 Assert exact help text and conflicts. Reject duplicate or unsupported schemes.
 Reject HTTP/HTTPS without a host and host entries without HTTP/HTTPS. Reject
@@ -1488,7 +1488,7 @@ fragments in `--base-uri` and file bases outside `--resolution-root`. Reject
 relative filesystem access from stdin without a root/base. Malformed hosts and
 URIs also fail. Normalize scheme and host case once.
 
-- [ ] **Step 2: Write filesystem CLI behavior tests**
+- [x] **Step 2: Write filesystem CLI behavior tests**
 
 Use temp fixtures for automatic and explicit include/ref flags. Cover
 `--resolution-root`, per-file bases, and stdin with `--base-uri`. Cover
@@ -1496,19 +1496,19 @@ multiple roots, slurp, raw input, and null input. Exercise in-place output and
 both YAML and JSON output. Assert typed exit status 5. Default invocations must
 never retrieve.
 
-- [ ] **Step 3: Write local HTTP CLI tests**
+- [x] **Step 3: Write local HTTP CLI tests**
 
 Use an in-process server for HTTP success and nested relative URL refs. Test
 host denial, redirect refusal, and non-success status. Test timeout, body
 limit, invalid YAML, and invalid UTF-8. Do not make an internet request.
 
-- [ ] **Step 4: Verify RED**
+- [x] **Step 4: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam --test yg -E 'test(resolve) | test(include) | test(ref)'
 ```
 
-- [ ] **Step 5: Implement thin CLI wiring**
+- [x] **Step 5: Implement thin CLI wiring**
 
 Replace `const fn loader_config` with a fallible policy builder. Build one
 shared retriever router per root input. Add memory only for library callers.
@@ -1523,14 +1523,14 @@ contained. Standard input needs `--base-uri` for relative refs and
 `--resolution-root` for includes. Top-level URL-shaped FILE arguments remain
 ordinary paths and fail as input reads.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam --test yg
 cargo nextest run -p yamalgam --test cli
 ```
 
-- [ ] **Step 7: Commit CLI behavior**
+- [x] **Step 7: Commit CLI behavior**
 
 ```bash
 git add crates/yamalgam crates/yamalgam-query
@@ -1550,7 +1550,7 @@ git commit -m "feat(yg): expose controlled resource resolution"
 - Modify `docs/yg/README.md` if navigation changes.
 - Modify `docs/spec/yg-query-language-spec-draft-01.md` section 7.
 - Modify `docs/spec/yg-spec-draft-01-implementation-notes.md`.
-- [ ] **Step 1: Add executable guide examples**
+- [x] **Step 1: Add executable guide examples**
 
 Document and exercise:
 
@@ -1567,28 +1567,28 @@ network access. Add examples for whole-document `$ref` and RFC 6901 fragments.
 Cover mapping merge, sequence splice, glob/list/named/merge, and raw text. Show
 base and root selection.
 
-- [ ] **Step 2: Document security and non-goals plainly**
+- [x] **Step 2: Document security and non-goals plainly**
 
 State that network access is opt-in by scheme and host. Redirects, cookies,
 auth, persistent cache, and HTTP includes are unavailable. Symlinks default to
 off. `$ref` siblings are errors. Retrieved YAML must be one document. Top-level
 URLs are not inputs. Reports and lockfiles have no CLI command in M11.
 
-- [ ] **Step 3: Update spec implementation markers**
+- [x] **Step 3: Update spec implementation markers**
 
 Replace only now-implemented resolution notes. Keep deferred lockfiles,
 redirect-hop validation, HTTP includes, auth, parameters, and dependency CLI
 work explicitly deferred. Add requirement-to-test traceability markers for the
 new flags, filters, resolution semantics, report, and security boundary.
 
-- [ ] **Step 4: Run all documentation gates**
+- [x] **Step 4: Run all documentation gates**
 
 ```bash
 just docs-check
 just mdlint docs/yg docs/spec/yg-query-language-spec-draft-01.md docs/spec/yg-spec-draft-01-implementation-notes.md
 ```
 
-- [ ] **Step 5: Commit end-user documentation**
+- [x] **Step 5: Commit end-user documentation**
 
 ```bash
 git add docs

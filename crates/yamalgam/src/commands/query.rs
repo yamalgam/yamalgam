@@ -782,6 +782,14 @@ fn append_input(
 // r[impl datamodel.schema.failsafe]
 // r[impl datamodel.schema.json]
 // r[impl datamodel.schema.yaml11]
+// r[impl resolution.modes]
+// r[impl cli.allow-includes]
+// r[impl cli.resolve-includes]
+// r[impl cli.allow-refs]
+// r[impl cli.resolve-refs]
+// r[impl cli.allow-ref-host]
+// r[impl cli.resolution-root]
+// r[impl cli.base-uri]
 fn loader_config(args: &QueryArgs) -> Result<LoaderConfig, YgError> {
     let mut config = if args.strict {
         LoaderConfig::strict()

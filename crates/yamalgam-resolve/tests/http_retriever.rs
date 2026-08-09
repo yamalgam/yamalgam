@@ -189,6 +189,7 @@ fn retrieves_bytes_and_opaque_validators_across_repeated_requests() {
     assert!(!rendered.contains("answer: 42"));
 }
 
+// r[verify resolution.ref.schemes]
 #[test]
 fn policy_rejections_happen_before_any_connection() {
     let server = SpyServer::spawn(Vec::new());
@@ -216,6 +217,7 @@ fn policy_rejections_happen_before_any_connection() {
     assert_eq!(server.accepted(), 0);
 }
 
+// r[verify resolution.ref.network]
 #[test]
 fn redirects_are_returned_without_following_location() {
     let destination = SpyServer::spawn(vec![Reply::ok("followed")]);
@@ -263,6 +265,7 @@ fn non_success_statuses_remain_typed() {
     assert_eq!(server.accepted(), 2, "HTTP retries must remain disabled");
 }
 
+// r[verify resolution.ref.network]
 #[test]
 fn whole_operation_timeout_and_decoded_body_limits_are_typed() {
     let slow = SpyServer::spawn(vec![Reply {

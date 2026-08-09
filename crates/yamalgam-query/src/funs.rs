@@ -199,6 +199,7 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
         ("orphan_anchors", v(0), |context_value| {
             bome(Ok(context_value.1.orphan_anchors()))
         }),
+        // r[impl resolution.include.filter]
         ("yginc__", v(0), |context_value| {
             let context = context_value.0.data().context;
             bome(
@@ -207,6 +208,7 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
                     .map_err(crate::runtime_resolution::jaq_error),
             )
         }),
+        // r[impl resolution.ref]
         ("ref", v(0), |context_value| {
             let context = context_value.0.data().context;
             bome(

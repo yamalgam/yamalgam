@@ -1,5 +1,8 @@
 //! Canonical resource identities and URI-reference resolution.
 
+// r[impl resolution.ref.base]
+// r[impl resolution.report.safe]
+
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 

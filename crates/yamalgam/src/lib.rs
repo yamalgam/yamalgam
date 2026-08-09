@@ -101,14 +101,17 @@ pub struct QueryArgs {
     pub no_env: bool,
 
     /// Permit explicit `include` filter access to local files.
+    // r[impl cli.allow-includes]
     #[arg(long, conflicts_with = "resolve_includes")]
     pub allow_includes: bool,
 
     /// Resolve `!include` directives automatically while loading.
+    // r[impl cli.resolve-includes]
     #[arg(long, conflicts_with = "allow_includes")]
     pub resolve_includes: bool,
 
     /// Permit explicit `ref` filter access through SCHEME.
+    // r[impl cli.allow-refs]
     #[arg(
         long,
         value_delimiter = ',',
@@ -119,6 +122,7 @@ pub struct QueryArgs {
     pub allow_refs: Vec<RefSchemeArg>,
 
     /// Resolve `$ref` directives automatically through SCHEME.
+    // r[impl cli.resolve-refs]
     #[arg(
         long,
         value_delimiter = ',',
@@ -129,14 +133,17 @@ pub struct QueryArgs {
     pub resolve_refs: Vec<RefSchemeArg>,
 
     /// Permit HTTP references to exactly this host (repeatable).
+    // r[impl cli.allow-ref-host]
     #[arg(long = "allow-ref-host")]
     pub allow_ref_hosts: Vec<String>,
 
     /// Confine file includes and references to this directory.
+    // r[impl cli.resolution-root]
     #[arg(long, value_name = "DIR")]
     pub resolution_root: Option<camino::Utf8PathBuf>,
 
     /// Base resource URI for standard input and anonymous values.
+    // r[impl cli.base-uri]
     #[arg(long, value_name = "URI")]
     pub base_uri: Option<String>,
 

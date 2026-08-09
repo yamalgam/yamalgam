@@ -22,18 +22,21 @@ yg MUST use jaq-syn and jaq-core as its expression parser and evaluator engine. 
 r[overview.compat-promise]
 yg does not promise jq compatibility. yg promises jq *familiarity*. Where YAML semantics demand different behavior from JSON semantics, yg follows YAML and documents the divergence. Users who need exact jq JSON semantics SHOULD pipe through `yg -j | jq`.
 
-### 1.1 Milestone 10 Implementation Status
+### 1.1 Milestone 11 Implementation Status
 
-This draft describes the target language. Milestone 10 implements it with
-three explicit deferrals:
+This draft describes the target language. Milestone 11 implements Phases 1, 2,
+and 4 with two language-level deferrals:
 
 - [`r[comparison.strict]`](#32-strict-comparison--) is deferred pending the
   draft-02 decision on extending jaq without forking its grammar.
 - [`r[ext.chomping]`](#61-node-metadata-filters) is deferred to the Phase 3
   CST milestone, where the required presentation metadata is available.
-- [`r[cli.allow-includes]`](#84-schema-and-security-flags) and
-  [`r[cli.allow-refs]`](#84-schema-and-security-flags) are deferred to M11 /
-  Phase 4 external resolution.
+
+External resolution now ships with local `!include`, local and HTTP `$ref`,
+explicit and automatic policy modes, filesystem sandboxing, cycle and resource
+budgets, and in-memory resolution reports. Redirect-hop validation, HTTP
+includes, authentication, parameters, dependency commands, and lockfiles
+remain deferred.
 
 The [draft-01 implementation notes](yg-spec-draft-01-implementation-notes.md)
 record the complete rationale and every other implementation-driven change.
@@ -455,38 +458,134 @@ r[ext.orphan-anchors]
 
 r[resolution]
 
-yg supports loading external content via `!include` tags and `$ref` references. These are governed by the `LoaderConfig` security policy (see ADR-0006).
+yg supports loading external content through `!include` tags and sole-key
+`$ref` mappings. Both capabilities are disabled by default and governed by the
+active `LoaderConfig` resolution policy.
+
+r[resolution.modes]
+Each capability has one mode: `Disabled`, `Explicit`, or `Automatic`.
+`Disabled` rejects the corresponding query filter. `Explicit` permits the
+filter but preserves directives during ordinary loading. `Automatic` resolves
+matching directives before query evaluation. An explicit filter MUST recurse
+through the selected capability. The other capability recurses only when its
+mode is `Automatic`.
 
 ### 7.1 `!include` Resolution
 
 r[resolution.include]
-`!include` tags are NOT resolved automatically during parsing. They are preserved as tagged scalar nodes. Users MUST explicitly resolve them via the `include` filter or the `--resolve-includes` CLI flag.
+An include directive MUST be a scalar or mapping tagged `!include`. Includes
+MUST address filesystem resources relative to the containing document and MUST
+NOT retrieve HTTP or HTTPS URLs.
 
 r[resolution.include.filter]
-`include` resolves `!include` tags on the current node. The scalar value is interpreted as a file path relative to the including document. Resolution is subject to `LoaderConfig.resolution.include` policy.
+`include` resolves the tagged current node under explicit include policy. A
+scalar directive substitutes the root node from exactly one YAML document.
 
-r[resolution.include.policy]
-When `IncludePolicy.enabled` is `false` (the default), the `include` filter produces an error. Users MUST opt in via CLI flags (`--allow-includes`) or configuration.
+r[resolution.include.structured]
+A structured include MUST contain exactly one selector: `path`, `glob`, or
+`dir`. `format` MAY be `yaml` or `text`. `mode` MAY be `node`, `list`,
+`named`, `merge`, or `splice`. Directory selection MAY set `recursive` and
+`match`. Named output MAY set `key`. Mapping merges MAY set `on_conflict`.
+Unknown options MUST produce an error. Duplicate, conflicting, or
+mode-incompatible options MUST also produce an error.
+
+r[resolution.include.aggregation]
+`node` MUST require one match. `list` MUST return one result per match. `named`
+MUST derive deterministic keys from filename stems or extensionless relative
+paths. `merge` MUST accept homogeneous roots. All roots MUST be mappings or all
+MUST be sequences. `splice` MUST appear as a sequence item. It MUST replace
+that item with the items of matched sequence roots. Mapping merge-key inclusion
+MUST preserve YAML precedence. Explicit containing entries win.
+
+r[resolution.include.text]
+Text format MUST decode valid UTF-8 without YAML parsing and MUST preserve the
+exact text as a string. Text format supports only `node`, `list`, and `named`.
+
+r[resolution.include.order]
+Glob and directory matches MUST use deterministic normalized root-relative
+ordering. Empty matches MUST produce an error. Duplicate names MUST produce an
+error. Mixed merge root kinds MUST produce an error. Invalid document counts
+and incompatible insertion contexts MUST produce errors.
 
 r[resolution.include.sandboxing]
-Included paths are sandboxed to `IncludePolicy.root`. Path traversal attempts (`../`) that escape the sandbox produce an error. Symlinks are not followed unless `follow_symlinks` is `true`.
+Included paths MUST remain within the canonical filesystem root. Path
+traversal MUST fail. Denied targets and non-regular files MUST fail. Symbolic
+links MUST fail unless policy permits them. A permitted symbolic link MUST
+still resolve inside the root.
 
 r[resolution.include.cycle]
-Circular includes are detected and produce an error. The visited-path set is tracked across all resolution (including `$ref`).
+Circular includes MUST produce an error. Include and ref traversal MUST share
+one active cycle stack.
 
 r[resolution.include.budget]
-Total bytes loaded across all includes are capped by `IncludePolicy.max_total_bytes`. Exceeding this limit produces an error.
+Every attempted include, including cache hits, MUST count toward the resolution
+edge budget. Every materialization MUST count toward the materialized-byte
+budget. Exceeding the depth limit MUST produce a structured error. The same is
+true for edge and byte limits.
 
 ### 7.2 `$ref` Resolution
 
 r[resolution.ref]
-`$ref` fields are NOT resolved automatically. They are preserved as regular string values. Users MUST explicitly resolve them via the `ref` filter or the `--resolve-refs` CLI flag.
+`ref` resolves the current mapping under explicit ref policy. A ref directive
+MUST be a mapping. Its only entry MUST be a string-valued `$ref`. Sibling
+entries MUST produce an error. Non-string values and duplicate `$ref` keys
+MUST also produce an error.
 
-r[resolution.ref.policy]
-When `RefPolicy.enabled` is `false` (the default), the `ref` filter produces an error. Users MUST opt in via CLI flags or configuration.
+r[resolution.ref.fragment]
+`$ref` MUST use a URI reference with an optional RFC 6901 JSON Pointer
+fragment. An absent fragment selects the document root. An empty fragment does
+the same. A pointer MAY select string mapping keys. It MAY also select sequence
+indices. Non-string YAML mapping keys are not addressable through RFC 6901.
+
+r[resolution.ref.document]
+The fragmentless target MUST decode as valid UTF-8 and parse as exactly one
+YAML document. Selection MUST retain native YAML types. A missing target MUST
+fail. A malformed pointer MUST fail. Invalid YAML, an empty stream, or multiple
+documents MUST fail. A fragment that depends on anchors outside the selected
+subtree MUST also fail.
+
+r[resolution.ref.base]
+Relative refs MUST resolve from the containing resource at every level. File
+resources resolve from their containing directory; HTTP resources resolve
+against their URL. A relative ref without a base MUST fail. A same-document ref
+MUST NOT require an external transport scheme.
 
 r[resolution.ref.schemes]
-Only schemes listed in `RefPolicy.allow_schemes` are permitted. By default, no schemes are allowed. `--allow-ref-schemes=file` enables local file refs. `--allow-ref-schemes=file,https` enables file and HTTPS refs.
+Every external ref scheme MUST appear in `RefPolicy.allow_schemes`. File refs
+MUST obey the include filesystem boundary. An HTTP or HTTPS ref MUST match an
+exact allowed host. It MUST reject user information before I/O.
+
+r[resolution.ref.network]
+HTTP retrieval MUST disable redirects, retries, cookies, authentication, and
+persistent cache state. A non-success status MUST be a hard error. A timeout or
+body-limit failure MUST be a hard error. Invalid UTF-8 and YAML failures MUST
+also be hard errors. Yamalgam MUST parse response bytes with its own scanner
+and parser.
+
+### 7.3 Sessions, reports, and integrity
+
+r[resolution.session]
+One top-level YAML document MUST own one resolution session. Its canonical
+resource cache MUST be shared across nested includes and refs. The same session
+MUST share cycle state and depth. It MUST share the edge and materialized-byte
+counts. It MUST also share one report. Separate top-level documents MUST
+receive independent sessions.
+
+r[resolution.report]
+Every session MUST retain a deterministic `ResolutionReport` on success and
+failure. The report MUST record canonical resources and parent-child edges. It
+MUST record directive spans, requested references, and fragments. It MUST
+record discovery matches, byte counts, and cache hits. It MAY record provenance
+and integrity metadata. Each failed edge MUST retain its terminal outcome.
+
+r[resolution.report.safe]
+Public report and error rendering MUST redact URI credentials and query values
+and MUST NOT contain response bodies. It MUST NOT contain cookies or
+authorization data.
+
+r[resolution.integrity]
+Retrieved resources and reports MAY carry validators, provenance, and strong
+content digests. M11 MUST NOT enforce pins or perform dependency-lockfile I/O.
 
 ---
 
@@ -545,10 +644,15 @@ r[cli.schema-flag]
 `--schema=<name>` — set the schema for scalar resolution. Values: `core` (default), `failsafe`, `json`, `1.1`.
 
 r[cli.trusted]
-`--trusted` — use `LoaderConfig::trusted()`. Generous resource limits, no external resolution.
+`--trusted` — start with `LoaderConfig::trusted()` and its generous resource
+limits. Resolution remains disabled unless an `--allow-*` or `--resolve-*`
+flag enables it.
 
 r[cli.strict]
-`--strict` — use `LoaderConfig::strict()`. Tight resource limits, no external resolution. For CI pipelines processing untrusted input.
+`--strict` — start with `LoaderConfig::strict()` and its tight resource limits.
+Resolution remains disabled unless an `--allow-*` or `--resolve-*` flag
+enables it. This preset is intended for CI pipelines that process untrusted
+input.
 
 r[cli.no-env]
 `--no-env` — compile filters without the jq-compatible `env` capability. This
@@ -556,10 +660,33 @@ flag MUST select sandboxed filter compilation independently of `--strict`,
 which controls resource limits for input processing.
 
 r[cli.allow-includes]
-`--allow-includes[=root]` — enable `!include` resolution. Optionally set the sandbox root directory. Default root is the directory of the input file.
+`--allow-includes` — permit the explicit `include` filter for local files.
+
+r[cli.resolve-includes]
+`--resolve-includes` — resolve `!include` directives automatically. It MUST
+conflict with `--allow-includes`.
 
 r[cli.allow-refs]
-`--allow-refs[=schemes]` — enable `$ref` resolution. Optionally specify allowed schemes (comma-separated).
+`--allow-refs=<schemes>` — permit the explicit `ref` filter for the
+comma-separated `file`, `http`, or `https` schemes.
+
+r[cli.resolve-refs]
+`--resolve-refs=<schemes>` — resolve `$ref` directives automatically through
+the listed schemes. It MUST conflict with `--allow-refs`.
+
+r[cli.allow-ref-host]
+`--allow-ref-host=<host>` — permit one exact HTTP or HTTPS hostname. The flag
+MAY repeat. Network schemes MUST require at least one host. A host entry without
+a network scheme MUST be rejected.
+
+r[cli.resolution-root]
+`--resolution-root=<dir>` — set the canonical filesystem sandbox root. The
+root MUST contain every initial file and file base.
+
+r[cli.base-uri]
+`--base-uri=<uri>` — set the fragmentless absolute base resource for standard
+input and constructed values. Standard input MUST require a base for relative
+refs. It MUST require a filesystem root for includes.
 
 ### 8.5 Exit Codes
 
@@ -658,7 +785,11 @@ Integrate yamalgam CST layer. Implement comment filters (Section 6.5). Upgrade `
 ### Phase 4: External Resolution
 
 r[phases.resolution]
-Implement `!include` and `$ref` resolution filters. Integrate `LoaderConfig` with CLI flags. Implement cycle detection, sandboxing, and resource budgets per ADR-0006.
+Milestone 11 implements `!include` and `$ref` filters, explicit and automatic
+CLI policy, file and HTTP retrieval, cycle detection, sandboxing, resource
+budgets, origin tracking, and in-memory reports. Dependency commands,
+lockfiles, redirect-hop validation, authenticated retrieval, HTTP includes,
+and parameterized includes remain future work.
 
 ### Phase 5: Schema Validation
 

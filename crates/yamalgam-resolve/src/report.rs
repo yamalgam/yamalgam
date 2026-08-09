@@ -8,6 +8,8 @@ pub use yamalgam_parser::ResolutionErrorCategory;
 use crate::{Fragment, ResourceId, ResourceProvenance};
 
 /// Structured resource and edge records for one resolution session.
+// r[impl resolution.report]
+// r[impl resolution.integrity]
 #[derive(Default)]
 pub struct ResolutionReport {
     resources: Vec<ResourceRecord>,
@@ -55,6 +57,7 @@ impl ResolutionReport {
 }
 
 impl fmt::Display for ResolutionReport {
+    // r[impl resolution.report.safe]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(formatter, "resolution report:")?;
         for resource in &self.resources {

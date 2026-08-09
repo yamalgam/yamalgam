@@ -28,6 +28,8 @@ struct HttpWork {
 
 /// HTTP and HTTPS backend using Librebar without redirects, retries, cookies,
 /// cache state, or ambient credentials.
+// r[impl resolution.ref.schemes]
+// r[impl resolution.ref.network]
 pub struct LibrebarRetriever {
     allowed_schemes: BTreeSet<String>,
     allowed_hosts: BTreeSet<String>,

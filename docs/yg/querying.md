@@ -108,6 +108,68 @@ ghcr.io/acme/api:1.4.0
 The `.ygq` suffix tells people and editors that the file is a `yg` query. The
 `-f` flag does not require that suffix.
 
+## Resolve external YAML
+
+Create a shared document:
+
+```yaml file=examples/resolution/shared.yaml
+defaults:
+  replicas: 3
+  image: ghcr.io/acme/api:1.4.0
+```
+
+Reference part of it from another document:
+
+```yaml file=examples/resolution/app.yaml
+service:
+  $ref: ./shared.yaml#/defaults
+```
+
+Resolve file references while loading:
+
+```console
+$ yg --resolve-refs=file '.' examples/resolution/app.yaml
+service:
+  replicas: 3
+  image: ghcr.io/acme/api:1.4.0
+```
+
+External access is off by default. `--resolve-refs` turns on automatic
+resolution for the listed schemes. The fragment is an RFC 6901 JSON Pointer;
+omit it to substitute the complete YAML document.
+
+Use `--allow-refs` when the query should choose which value to resolve:
+
+```console
+$ yg --allow-refs=file '.service | ref | .replicas' examples/resolution/app.yaml
+3
+```
+
+Includes use the same explicit-versus-automatic split:
+
+```yaml file=examples/resolution/included.yaml
+service: !include shared.yaml
+```
+
+```console
+$ yg --allow-includes '.service | include | .defaults.image' examples/resolution/included.yaml
+ghcr.io/acme/api:1.4.0
+```
+
+For HTTP references, allow both the scheme and each exact host:
+
+```sh
+yg --resolve-refs=file,https \
+  --allow-ref-host=example.test \
+  --resolution-root=. \
+  '.' app.yaml
+```
+
+`yg` never treats a top-level URL as an input file. HTTP enters through
+`$ref`, and redirects stay disabled in M11. See
+[external YAML](yaml-features.md#load-external-yaml) for include aggregation,
+text mode, filesystem roots, and the security boundary.
+
 ## Choose a YAML schema
 
 ```console
@@ -186,5 +248,14 @@ test "$actual" = "$expected"
 
 actual="$(printf 'value: yes\n' | "$YG_BIN" -q --schema 1.1 -r '.value | type')"
 test "$actual" = 'boolean'
+
+actual="$("$YG_BIN" --resolve-refs=file -j -c '.' examples/resolution/app.yaml)"
+test "$actual" = '{"service":{"replicas":3,"image":"ghcr.io/acme/api:1.4.0"}}'
+
+actual="$("$YG_BIN" --allow-refs=file -r '.service | ref | .replicas' examples/resolution/app.yaml)"
+test "$actual" = '3'
+
+actual="$("$YG_BIN" --allow-includes -r '.service | include | .defaults.image' examples/resolution/included.yaml)"
+test "$actual" = 'ghcr.io/acme/api:1.4.0'
 ```
 </script>-->

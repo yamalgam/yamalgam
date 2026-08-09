@@ -767,6 +767,10 @@ fn resolution_flags_are_documented() {
         .stdout(predicate::str::contains("--base-uri <URI>"));
 }
 
+// r[verify cli.allow-includes]
+// r[verify cli.resolve-includes]
+// r[verify cli.allow-refs]
+// r[verify cli.resolve-refs]
 #[test]
 fn resolution_modes_conflict_and_ref_schemes_are_validated() {
     yg().args(["--allow-includes", "--resolve-includes", "."])
@@ -785,6 +789,7 @@ fn resolution_modes_conflict_and_ref_schemes_are_validated() {
         .stderr(predicate::str::contains("invalid value 'ftp'"));
 }
 
+// r[verify cli.allow-ref-host]
 #[test]
 fn network_resolution_requires_matching_schemes_and_hosts() {
     yg().args(["--allow-refs=http", "."])
@@ -808,6 +813,8 @@ fn network_resolution_requires_matching_schemes_and_hosts() {
     }
 }
 
+// r[verify cli.base-uri]
+// r[verify cli.resolution-root]
 #[test]
 fn base_uri_and_resolution_root_are_validated_before_input() {
     let root = tempfile::tempdir().unwrap();

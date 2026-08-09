@@ -417,6 +417,7 @@ const fn check_limit(
 // ---------------------------------------------------------------------------
 
 /// Controls whether a resolution capability is available and automatic.
+// r[impl resolution.modes]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ResolutionMode {
     /// Reject explicit and automatic use of the capability.
@@ -452,6 +453,7 @@ pub enum ResolutionCapability {
 }
 
 /// Shared limits for one external-resolution session.
+// r[impl resolution.include.budget]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolutionLimits {
     /// Maximum external-resolution recursion depth.

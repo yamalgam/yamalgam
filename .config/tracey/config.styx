@@ -52,6 +52,11 @@ specs (
                 test_include (crates/yamalgam-query/tests/**/*.rs)
             }
             {
+                name resolve
+                include (crates/yamalgam-resolve/src/**/*.rs)
+                test_include (crates/yamalgam-resolve/tests/**/*.rs)
+            }
+            {
                 name parser
                 include (crates/yamalgam-parser/src/**/*.rs)
                 test_include (crates/yamalgam-parser/tests/**/*.rs)

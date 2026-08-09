@@ -167,6 +167,7 @@ fn resolution_adapter_preserves_yaml_types_presentation_aliases_and_origins() {
     assert_origin(value.get_str("literal").unwrap(), &root);
 }
 
+// r[verify resolution.modes]
 #[test]
 fn automatic_resolution_precedes_query_and_keeps_imported_resource_origins() {
     let root = id("memory://fixtures/root.yaml");
@@ -227,6 +228,7 @@ fn automatic_resolution_failures_remain_typed_input_errors() {
     ));
 }
 
+// r[verify resolution.session]
 #[test]
 fn document_streams_receive_independent_sessions_over_one_retriever() {
     let root = id("memory://fixtures/root.yaml");
@@ -263,6 +265,8 @@ fn document_streams_receive_independent_sessions_over_one_retriever() {
     ));
 }
 
+// r[verify resolution.include.filter]
+// r[verify resolution.ref]
 #[test]
 fn explicit_include_and_ref_filters_recurse_with_policy_modes() {
     let root = id("memory://fixtures/root.yaml");

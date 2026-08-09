@@ -18,6 +18,8 @@ use super::{
 use crate::{ResourceId, RetrieveError};
 
 /// Filesystem backend confined to one directory capability.
+// r[impl resolution.include.sandboxing]
+// r[impl resolution.include.order]
 pub struct FileRetriever {
     root_path: PathBuf,
     root: Dir,

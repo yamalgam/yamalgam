@@ -40,7 +40,11 @@ In-place mode cannot be used with `-n`, `-s`, `-j`, or `--format json`.
 ## Schema and resource options
 
 ```sh
-yg --schema core --strict '.' input.yaml
+yg --schema core --strict \
+  --resolve-refs=file,https \
+  --allow-ref-host=config.example.test \
+  --resolution-root=. \
+  '.' input.yaml
 ```
 
 | Option | Effect |
@@ -51,9 +55,26 @@ yg --schema core --strict '.' input.yaml
 | `--schema 1.1` | Use legacy YAML 1.1 rules. |
 | `--strict` | Use tight limits for input you do not trust. |
 | `--trusted` | Use higher limits for trusted local input. |
+| `--allow-includes` | Permit the explicit `include` filter for local files. |
+| `--resolve-includes` | Resolve local `!include` directives while loading. |
+| `--allow-refs=SCHEMES` | Permit the explicit `ref` filter for comma-separated schemes. |
+| `--resolve-refs=SCHEMES` | Resolve `$ref` directives while loading through the listed schemes. |
+| `--allow-ref-host=HOST` | Permit one exact HTTP or HTTPS host. Repeat for more hosts. |
+| `--resolution-root=DIR` | Set the filesystem sandbox root. |
+| `--base-uri=URI` | Set the base resource for standard input and constructed values. |
 
 `--strict` and `--trusted` conflict. The default uses the moderate limit
 profile.
+
+`--allow-*` selects explicit query filters. `--resolve-*` selects automatic
+loading, and the two modes conflict for the same capability. Valid ref schemes
+are `file`, `http`, and `https`. Network schemes require at least one
+`--allow-ref-host`; host entries without a network scheme are errors.
+
+An input file's directory is its default resolution root. An explicit root
+must contain every initial file and file base. Standard input needs
+`--base-uri` for relative refs and `--resolution-root` for includes. A
+top-level URL is still treated as a file path.
 
 ## Shared CLI options
 
@@ -100,6 +121,7 @@ mapping
 | Schema | `resolved_type`, `schema`, `resolve`, `resolve_as(schema)` |
 | Structure | `merge`, `explode_aliases`, `aliases`, `orphan_anchors` |
 | Input source | `filename`, `file_index`, `document_index` |
+| External YAML | `include`, `ref` |
 
 These filters extend the jq-compatible filters supplied by jaq. `keys` keeps
 YAML mapping insertion order. Use `keys_sorted` when you want sorted keys.
@@ -111,7 +133,8 @@ log_level = "debug"
 log_dir = "/path/to/logs"
 ```
 
-Those are the only M10 config fields. Unknown fields are errors. Config files
+Those are the only current config-file fields. Resolution policy is selected
+with CLI flags in M11. Unknown fields are errors. Config files
 may use TOML, YAML, or JSON.
 
 Project discovery checks these names:
@@ -154,14 +177,17 @@ Run `yg doctor` to see the platform user config directory. Run
 
 The jq `halt` filter may return other POSIX exit codes.
 
-## M10 compatibility limits
+## Current compatibility limits
 
 - `-i` loses comments and exact formatting until M13.
-- `===`, `!==`, `?//`, jq streaming filters, and `-L` do not ship in M10.
+- `===`, `!==`, `?//`, jq streaming filters, and `-L` do not currently ship.
 - Integers use `i64`; floats use IEEE 754 binary64.
 - Regex uses the `regex-bites` subset. It has no lookaround or backreferences.
 - A schema pragma in a YAML comment is not read. Use `--schema`.
-- External include and reference filters wait for M11.
+- External resolution reports are library data; M11 has no dependency-report
+  command or lockfile.
+- HTTP redirects, cookies, authentication, persistent caching, and HTTP
+  includes are not available.
 
 For the full test count and each known difference, see the
 [draft-01 implementation notes](../spec/yg-spec-draft-01-implementation-notes.md).
@@ -174,7 +200,9 @@ set -eu
 help="$("$YG_BIN" --help)"
 for flag in --config --null-input --slurp --raw-input --from-file --no-env \
   --arg --argjson --json-output --raw-output --compact-output --in-place \
-  --sort-keys --no-doc --schema --trusted --strict --exit-status; do
+  --sort-keys --no-doc --schema --trusted --strict --exit-status \
+  --allow-includes --resolve-includes --allow-refs --resolve-refs \
+  --allow-ref-host --resolution-root --base-uri; do
   printf '%s\n' "$help" | grep -F -- "$flag" >/dev/null
 done
 

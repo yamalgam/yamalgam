@@ -48,6 +48,8 @@ struct ReferenceContext<'a> {
 type LoadedBytes = (Arc<[u8]>, ResourceId, bool, usize);
 
 /// Cache, budgets, cycle state, and report for one top-level YAML document.
+// r[impl resolution.session]
+// r[impl resolution.include.cycle]
 pub struct ResolutionSession<R> {
     retriever: R,
     config: LoaderConfig,
@@ -1186,6 +1188,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         }
     }
 
+    // r[impl resolution.ref.schemes]
     fn enforce_policy(
         &self,
         capability: ResolutionCapability,
@@ -1235,6 +1238,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         Ok(())
     }
 
+    // r[impl resolution.include.budget]
     fn check_limit(
         &self,
         capability: ResolutionCapability,

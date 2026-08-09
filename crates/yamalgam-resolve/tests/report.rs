@@ -29,6 +29,7 @@ impl ResourceRetriever for FixtureRetriever {
     }
 }
 
+// r[verify resolution.integrity]
 #[test]
 fn custom_retrievers_return_bytes_validators_and_integrity() {
     let id = ResourceId::new("memory://fixtures/document.yaml").unwrap();
@@ -71,6 +72,7 @@ fn discovery_is_unsupported_by_default() {
     assert!(matches!(error, RetrieveError::DiscoveryUnsupported(id) if id == base));
 }
 
+// r[verify resolution.report]
 #[test]
 fn reports_preserve_insertion_order_and_complete_edge_state() {
     let parent = ResourceId::from_file("root.yaml");
@@ -140,6 +142,7 @@ fn reports_preserve_insertion_order_and_complete_edge_state() {
     ));
 }
 
+// r[verify resolution.report.safe]
 #[test]
 fn report_rendering_redacts_sensitive_resource_data() {
     let id = ResourceId::new("https://alice:secret@example.com/data.yaml?token=value").unwrap();

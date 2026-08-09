@@ -52,6 +52,7 @@ fn retrieves_regular_relative_and_absolute_files_without_extension_rules() {
     assert_eq!(absolute.bytes, b"terms");
 }
 
+// r[verify resolution.include.sandboxing]
 #[test]
 fn rejects_traversal_and_absolute_targets_outside_the_root() {
     let root = setup();
@@ -135,6 +136,7 @@ fn rejects_non_regular_unix_socket_targets() {
 }
 
 #[cfg(unix)]
+// r[verify resolution.include.sandboxing]
 #[test]
 fn rejects_final_and_intermediate_symlinks_by_default() {
     use std::os::unix::fs::symlink;
@@ -155,6 +157,7 @@ fn rejects_final_and_intermediate_symlinks_by_default() {
 }
 
 #[cfg(unix)]
+// r[verify resolution.include.sandboxing]
 #[test]
 fn enabled_symlinks_canonicalize_inside_and_reject_escape() {
     use std::os::unix::fs::symlink;
@@ -188,6 +191,8 @@ fn enabled_symlinks_canonicalize_inside_and_reject_escape() {
     ));
 }
 
+// r[verify resolution.include.order]
+// r[verify resolution.include.sandboxing]
 #[test]
 fn glob_and_directory_discovery_are_sorted_and_mode_aware() {
     let root = setup();

@@ -170,6 +170,7 @@ fn absent_and_empty_fragments_replace_with_the_whole_native_document() {
     assert_eq!(retriever.calls(), vec![shared]);
 }
 
+// r[verify resolution.ref.fragment]
 #[test]
 fn pointer_selects_escaped_percent_encoded_mapping_keys_and_sequence_indices() {
     let retriever = CountingRetriever::default();
@@ -206,6 +207,7 @@ fn sequence_indices_reject_out_of_range_leading_zero_dash_and_non_numeric_tokens
     }
 }
 
+// r[verify resolution.ref]
 #[test]
 fn block_and_flow_sole_key_refs_resolve_but_siblings_and_non_strings_fail() {
     let root = id("memory://root/document.yaml");
@@ -317,6 +319,7 @@ fn selection_happens_before_recursion() {
     assert_eq!(retriever.calls(), vec![shared]);
 }
 
+// r[verify resolution.ref.base]
 #[test]
 fn relative_targets_use_the_containing_resource_at_every_level() {
     let retriever = CountingRetriever::default();

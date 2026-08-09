@@ -229,6 +229,7 @@ fn cached_include_resources_do_not_bypass_ref_transport_policy() {
     assert_eq!(retriever.retrieve_calls(), vec![shared]);
 }
 
+// r[verify resolution.ref.document]
 #[test]
 fn invalid_utf8_yaml_and_document_count_remain_distinct() {
     let cases = [
@@ -305,6 +306,7 @@ fn distinct_fragments_share_a_document_but_repeated_target_is_a_cycle() {
     assert!(session.report().edges()[1].cache_hit);
 }
 
+// r[verify resolution.include.budget]
 #[test]
 fn edge_depth_and_materialized_limits_accept_exact_boundary_and_reject_plus_one() {
     let root_id = id("memory://root/document.yaml");
