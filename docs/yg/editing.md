@@ -39,7 +39,7 @@ Run the program with `-f`:
 yg -i -f examples/update-tag.ygq examples/deployment.yaml
 ```
 
-This keeps longer edits out of shell history and makes them easy to review.
+This keeps longer edits out of shell history and makes review clearer.
 
 ## Know what M10 preserves
 

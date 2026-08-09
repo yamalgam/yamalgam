@@ -71,7 +71,7 @@ Limits apply to parsing, query work, generated values, and output. Do not use
 
 ```console
 $ yg --no-env -n env
-yg: filter compilation error: undefined filter env/0
+yg: <filter>: undefined filter env
 ```
 
 `--no-env` removes the `env` filter. This setting is separate from strict,

@@ -1,7 +1,7 @@
 # `yg` M10 End-User Documentation
 
 **Date:** 2026-08-08
-**Status:** Accepted
+**Status:** Implemented
 
 ## Overview
 

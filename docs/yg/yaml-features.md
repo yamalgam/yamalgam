@@ -62,7 +62,7 @@ integer key. The string expression `."42"` would select a different key.
 
 ```console
 $ printf 'enabled: yes\n' | yg -q --schema 1.1 -r '.enabled | resolved_type'
-bool
+boolean
 ```
 
 `resolve` applies the active schema to a scalar. `resolve_as(schema)` uses a
