@@ -1603,13 +1603,13 @@ git commit -m "docs(yg): document external resource resolution"
 
 - Modify only files required by confirmed review findings.
 - Do not add release notes or increment versions unless separately requested.
-- [ ] **Step 1: Run focused resolution suites with all features**
+- [x] **Step 1: Run focused resolution suites with all features**
 
 ```bash
 cargo nextest run -p yamalgam-core -p yamalgam-parser -p yamalgam-resolve -p yamalgam-compose -p yamalgam-serde -p yamalgam-cst -p yamalgam-query -p yamalgam --all-features
 ```
 
-- [ ] **Step 2: Re-run YAML compliance with resolution disabled**
+- [x] **Step 2: Re-run YAML compliance with resolution disabled**
 
 ```bash
 just test-compliance
@@ -1618,7 +1618,7 @@ just test-compliance
 Expected: the existing compliance baseline is unchanged because external
 resolution remains disabled by default.
 
-- [ ] **Step 3: Run dependency, unsafe, and documentation gates**
+- [x] **Step 3: Run dependency, unsafe, and documentation gates**
 
 ```bash
 just deny
@@ -1629,14 +1629,14 @@ just docs-check
 Inspect the unsafe census delta from Librebar HTTP/TLS dependencies. No new
 unsafe code may appear in Yamalgam crates.
 
-- [ ] **Step 4: Run the complete repository gate**
+- [x] **Step 4: Run the complete repository gate**
 
 ```bash
 just check
 git --no-pager diff --check
 ```
 
-- [ ] **Step 5: Request independent architecture/security and Rust reviews**
+- [x] **Step 5: Request independent architecture/security and Rust reviews**
 
 Review explicitly for:
 
@@ -1651,7 +1651,7 @@ Review explicitly for:
 Classify every review item as confirmed, false positive, or deferred-by-design.
 Fix every confirmed issue with a failing regression first.
 
-- [ ] **Step 6: Re-run affected focused tests and `just check` after review**
+- [x] **Step 6: Re-run affected focused tests and `just check` after review**
 
 ```bash
 just check
@@ -1659,7 +1659,7 @@ git --no-pager diff --check
 git status --short
 ```
 
-- [ ] **Step 7: Commit confirmed review fixes**
+- [x] **Step 7: Commit confirmed review fixes**
 
 ```bash
 git add crates docs record Cargo.toml Cargo.lock
@@ -1671,25 +1671,32 @@ verified HEAD, commands, and results in the handoff instead.
 
 ## Final acceptance checklist
 
-- [ ] File, memory, HTTP, and custom retrievers share one synchronous trait.
-- [ ] Librebar is exactly 0.6.0 and HTTP redirects/cookies/cache/auth are off.
-- [ ] Disabled, explicit, and automatic modes match ADR-0016 at every entry
+- [x] File, memory, HTTP, and custom retrievers share one synchronous trait.
+- [x] Librebar is exactly 0.6.0 and HTTP redirects/cookies/cache/auth are off.
+- [x] Disabled, explicit, and automatic modes match ADR-0016 at every entry
   point.
-- [ ] `$ref` implements sole-key replacement, whole-document roots, and RFC
+- [x] `$ref` implements sole-key replacement, whole-document roots, and RFC
   6901 fragments for file and URL resources.
-- [ ] `!include` implements node, mapping merge, sequence splice, glob,
+- [x] `!include` implements node, mapping merge, sequence splice, glob,
   directory, list, named, merge, and UTF-8 text contracts.
-- [ ] Filesystem operations remain capability-relative; traversal and symlink
+- [x] Filesystem operations remain capability-relative; traversal and symlink
   escape tests pass on macOS and CI platforms.
-- [ ] Every session shares raw parse cache, cycle stack, budgets, and report;
+- [x] Every session shares raw parse cache, cycle stack, budgets, and report;
   cache hits remain chargeable.
-- [ ] Anchor/alias behavior is deterministic and fragment self-containment is
+- [x] Anchor/alias behavior is deterministic and fragment self-containment is
   enforced.
-- [ ] Composer, serde, CST, query, and CLI integration tests pass.
-- [ ] Query values retain resource origin and explicit filters reuse the
+- [x] Composer, serde, CST, query, and CLI integration tests pass.
+- [x] Query values retain resource origin and explicit filters reuse the
   correct session after slurp/multiple inputs.
-- [ ] Reports exist on success and failure, preserve integrity/provenance seams,
+- [x] Reports exist on success and failure, preserve integrity/provenance seams,
   and render no sensitive URL/validator/body data.
-- [ ] End-user docs state the exact M11 security boundary and deferred work.
-- [ ] `just test-compliance`, `just docs-check`, `just unsafe-census`, and
+- [x] End-user docs state the exact M11 security boundary and deferred work.
+- [x] `just test-compliance`, `just docs-check`, `just unsafe-census`, and
   `just check` pass at the final HEAD.
+
+Completion evidence (2026-08-09): the final Cased audit ledger records 20 fixed
+findings and zero open findings. At code-and-ledger commit
+`8bae684994bd58e568abef68cb927fd821070454`, `just test-compliance` passed all
+351 cases; `just deny`, `just unsafe-census`, and `just docs-check` passed; and
+`just check` passed clippy, dependency policy, all 2,103 workspace tests, and
+all doctests.
