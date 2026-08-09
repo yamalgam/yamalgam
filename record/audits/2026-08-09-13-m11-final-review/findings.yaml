@@ -1,0 +1,938 @@
+---
+audit_date: 2026-08-09
+scope: "M11 external-resolution changes from c85f7e0 through 56b8b3e"
+commit: 56b8b3ec9358dd3cac11a6cd22748d94c981ae59
+assessment: |
+  M11 establishes the right architecture: Yamalgam owns parsing and resolution,
+  retrievers are pluggable, filesystem access is capability-rooted, and reports
+  are structured. The final review nevertheless found contract gaps at the seams
+  between URI and path interpretation, filesystem discovery, YAML anchor binding,
+  report safety, and jaq runtime control flow. Ten significant findings can cause
+  policy bypass, incorrect resolution, lost diagnostics, or unbounded work. Nine
+  moderate findings affect determinism, public invariants, and runtime behavior. One
+  advisory dependency is unused. The problems are concentrated and remediable;
+  they do not require replacing the M11 design.
+
+narratives:
+  - slug: resource-identity-and-policy
+    title: "Resource Identity and Policy Dispatch"
+    thesis: "Canonical identities are the security hinge between URI resolution and capability-rooted files, but two dispatch paths cross that boundary incorrectly and the public representation does not enforce its own invariant."
+    verdict: "The policy model is sound after an identity is classified. Classification itself needs to be closed: URI bases must use URI-reference rules before path rules, includes must reject every absolute URI form, and callers must not be able to construct noncanonical identities."
+    flow:
+      - id: directive
+        label: "Read directive reference"
+        type: start
+      - id: classify
+        label: "Classify URI or path"
+        type: decision
+        findings:
+          - slug: scheme-relative-ref-becomes-local-file
+            label: "Network path becomes file"
+          - slug: include-uri-bypasses-relative-selector-contract
+            label: "Absolute URI include"
+      - id: identity
+        label: "Construct canonical ResourceId"
+        type: process
+        findings:
+          - slug: resource-id-public-variants-bypass-canonical-invariants
+            label: "Invariant bypass"
+      - id: policy
+        label: "Apply capability policy"
+        type: end
+    findings:
+      - slug: scheme-relative-ref-becomes-local-file
+        title: "Scheme-relative URI references are misclassified as absolute file paths"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/resource.rs
+            start_line: 275
+            end_line: 282
+        evidence: |2
+              if let Ok(url) = Url::parse(reference) {
+                  return ResourceId::from_url(url);
+              }
+
+              let path = Path::new(reference);
+              if path.is_absolute() {
+                  return Ok(ResourceId::from_file(path));
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-7"
+            type: mark
+            label: "//host/path falls through URL parsing into the file branch"
+        mechanism: |
+          RFC 3986 network-path references such as //other.example/data.yaml are
+          relative references that inherit the containing URL's scheme. Url::parse
+          without a base rejects that form, then Path::is_absolute accepts it on
+          Unix. Remotely supplied YAML can therefore move an HTTP ref onto the file
+          capability instead of the host allowlist path.
+        remediation: |
+          Resolve all non-absolute references against a URI base with Url::join
+          before applying platform path semantics. Interpret absolute paths only
+          for file bases and cover network-path references under mixed policies.
+        effort: small
+
+      - slug: include-uri-bypasses-relative-selector-contract
+        title: "URI-form include selectors bypass the relative-path restriction"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/include.rs
+            start_line: 252
+            end_line: 259
+        evidence: |2
+              if Path::new(value)
+                  .components()
+                  .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+              {
+                  return Err(SessionError::MalformedInclude(
+                      "include selector must be relative",
+                  ));
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-8"
+            type: mark
+            label: "Platform roots are rejected, URI schemes are not"
+        mechanism: |
+          Values such as file:///root/data.yaml and memory://fixture/data.yaml
+          have no leading platform root component and pass directive validation.
+          Resource resolution subsequently recognizes them as absolute identities,
+          violating the accepted relative-only include contract.
+        remediation: |
+          Reject every absolute URI reference in path, glob, and directory include
+          selectors before resource resolution. Retain normal platform-relative
+          path syntax and add file, memory, and custom-scheme regressions.
+        effort: small
+
+      - slug: resource-id-public-variants-bypass-canonical-invariants
+        title: "Public ResourceId variants bypass canonical identity invariants"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/resource.rs
+            start_line: 16
+            end_line: 24
+        evidence: |2
+          #[non_exhaustive]
+          pub enum ResourceId {
+              /// A non-retrievable root with no relative external-resource base.
+              Anonymous,
+              /// A filesystem resource. Paths retain their platform-native encoding.
+              File(PathBuf),
+              /// A URL resource, including memory, HTTP, and application-defined schemes.
+              Uri(Url),
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2-6"
+            type: mark
+            label: "Public payload variants bypass checked constructors"
+        mechanism: |
+          The type promises a normalized, fragmentless identity, but callers can
+          construct ResourceId::File with dot segments or ResourceId::Uri with a
+          fragment. Cache keys, cycle keys, and policy checks can then observe two
+          representations for one resource or accept a fragmented fetch identity.
+        remediation: |
+          Make the representation private and expose only checked constructors and
+          accessors. Preserve redacted Display and Debug behavior and add compile-time
+          and runtime invariant coverage.
+        effort: medium
+
+  - slug: filesystem-retrieval-and-discovery
+    title: "Filesystem Retrieval and Discovery"
+    thesis: "Capability rooting prevents ambient escape, but pathname reopens, alias policy checks, recursive traversal, and backend ordering still leave correctness and resource-safety gaps."
+    verdict: "The filesystem backend needs to become descriptor-centered and iterative. Requested and canonical paths must both pass policy, traversal order must be fixed before descent, alias-specific paths must not be collapsed, and shared-session discovery must normalize custom retrievers."
+    flow:
+      - id: request
+        label: "Receive file or discovery request"
+        type: start
+      - id: policy
+        label: "Check requested and canonical paths"
+        type: process
+        findings:
+          - slug: symlink-discovery-skips-alias-policy
+            label: "Alias path unchecked"
+      - id: traverse
+        label: "Traverse directories"
+        type: process
+        findings:
+          - slug: recursive-file-discovery-has-no-depth-bound
+            label: "Recursive stack"
+          - slug: symlink-aliases-make-glob-results-enumeration-dependent
+            label: "Alias-order dependence"
+      - id: normalize
+        label: "Normalize matches"
+        type: process
+        findings:
+          - slug: discovery-results-do-not-enforce-deterministic-order
+            label: "Custom order leaks"
+      - id: open
+        label: "Open and read target"
+        type: end
+        findings:
+          - slug: file-policy-checks-race-path-reopen
+            label: "Path reopened"
+    findings:
+      - slug: file-policy-checks-race-path-reopen
+        title: "File policy and size checks race a second pathname open"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 219
+            end_line: 247
+        evidence: |2
+                  let metadata = self
+                      .root
+                      .metadata(&canonical)
+                      .map_err(|source| map_io(id.clone(), source))?;
+                  if !metadata.is_file() {
+                      return Err(RetrieveError::NotRegularFile(id));
+                  }
+                  if let Some(maximum) = request.max_bytes
+                      && metadata.len() > maximum as u64
+                  {
+                      return Err(RetrieveError::TooLarge {
+                          id,
+                          observed: usize::try_from(metadata.len()).unwrap_or(usize::MAX),
+                          maximum,
+                      });
+                  }
+                  let bytes = self
+                      .root
+                      .read(&canonical)
+                      .map_err(|source| map_io(id.clone(), source))?;
+                  if let Some(maximum) = request.max_bytes
+                      && bytes.len() > maximum
+                  {
+                      return Err(RetrieveError::TooLarge {
+                          id,
+                          observed: bytes.len(),
+                          maximum,
+                      });
+                  }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-7"
+            type: mark
+            label: "Validation and content use separate pathname operations"
+        mechanism: |
+          Policy, symlink, type, and size checks occur before root.read reopens the
+          path. Concurrent replacement can change the checked entry or target; file
+          growth can also force allocation of the complete oversized body before
+          TooLarge is returned. Root confinement remains intact, but in-root deny
+          policy and bounded-memory guarantees are not stable across the reopen.
+        remediation: |
+          Open one stable handle with the configured symlink behavior, validate the
+          opened file, and read through a maximum-plus-one bounded reader. Avoid a
+          second pathname open after validation.
+        effort: medium
+
+      - slug: symlink-discovery-skips-alias-policy
+        title: "Symlink discovery applies file policy only to the canonical target"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 181
+            end_line: 191
+        evidence: |2
+                          let canonical = self.canonical_existing(&scan_path)?;
+                          let metadata = self
+                              .root
+                              .metadata(&canonical)
+                              .map_err(|source| map_io(self.id_for(&canonical), source))?;
+                          if metadata.is_dir() {
+                              if state.recursive {
+                                  self.walk(&canonical, &match_path, state)?;
+                              }
+                          } else if metadata.is_file() && (state.matcher)(&match_path, &name) {
+                              self.record_match(canonical, state.maximum, state.matches)?;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-5"
+            type: mark
+            label: "Only the canonical target reaches record_match policy"
+        mechanism: |
+          With symlink following enabled, a denied alias path can canonicalize into
+          an allowed target. Direct retrieval checks both forms, but discovery checks
+          only the canonical result, so deny rules such as alias/** can be bypassed.
+        remediation: |
+          Apply deny-before-allow policy to both requested alias paths and canonical
+          targets for symlinked files and directories.
+        effort: small
+
+      - slug: recursive-file-discovery-has-no-depth-bound
+        title: "Recursive directory discovery can exhaust the thread stack"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 181
+            end_line: 200
+        evidence: |2
+                          let canonical = self.canonical_existing(&scan_path)?;
+                          let metadata = self
+                              .root
+                              .metadata(&canonical)
+                              .map_err(|source| map_io(self.id_for(&canonical), source))?;
+                          if metadata.is_dir() {
+                              if state.recursive {
+                                  self.walk(&canonical, &match_path, state)?;
+                              }
+                          } else if metadata.is_file() && (state.matcher)(&match_path, &name) {
+                              self.record_match(canonical, state.maximum, state.matches)?;
+                          } else if (state.matcher)(&match_path, &name) {
+                              return Err(RetrieveError::NotRegularFile(self.id_for(&canonical)));
+                          }
+                          continue;
+                      }
+
+                      if file_type.is_dir() {
+                          if state.recursive {
+                              self.walk(&scan_path, &match_path, state)?;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-10"
+            type: mark
+            label: "Filesystem depth drives Rust call-stack depth"
+        mechanism: |
+          Glob discovery always recurses and directory mode may recurse once per
+          filesystem level. The edge ceiling counts matched files rather than visited
+          directories, so a deeply nested tree with no matches can bypass that budget
+          and overflow the process stack.
+        remediation: |
+          Replace recursive descent with an explicit work stack while preserving
+          deterministic match paths and symlink cycle detection.
+        effort: medium
+
+      - slug: symlink-aliases-make-glob-results-enumeration-dependent
+        title: "Canonical symlink visitation makes glob results depend on read_dir order"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 158
+            end_line: 188
+        evidence: |2
+                  if !state.visited.insert(scan_dir.to_path_buf()) {
+                      return Ok(());
+                  }
+                  let entries = self
+                      .root
+                      .read_dir(capability_path(scan_dir))
+                      .map_err(|source| map_io(self.id_for(scan_dir), source))?;
+                  for entry in entries {
+                      let entry = entry.map_err(|source| map_io(self.id_for(scan_dir), source))?;
+                      let name = entry.file_name();
+                      let scan_path = scan_dir.join(&name);
+                      let match_path = match_dir.join(&name);
+                      let file_type = entry
+                          .file_type()
+                          .map_err(|source| map_io(self.id_for(&scan_path), source))?;
+
+                      if file_type.is_symlink() {
+                          if !self.follow_symlinks {
+                              if (state.matcher)(&match_path, &name) {
+                                  return Err(RetrieveError::SymlinkDenied(self.id_for(&scan_path)));
+                              }
+                              continue;
+                          }
+                          let canonical = self.canonical_existing(&scan_path)?;
+                          let metadata = self
+                              .root
+                              .metadata(&canonical)
+                              .map_err(|source| map_io(self.id_for(&canonical), source))?;
+                          if metadata.is_dir() {
+                              if state.recursive {
+                                  self.walk(&canonical, &match_path, state)?;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-6"
+            type: mark
+            label: "First unsorted alias wins the canonical visited key"
+        mechanism: |
+          Two aliases may point to one canonical directory while only one alias path
+          matches the glob. The first read_dir entry marks the canonical path visited;
+          the other alias is skipped. Final-result sorting cannot restore omitted
+          traversal, so results vary with filesystem enumeration order.
+        remediation: |
+          Sort entries before traversal and separate active-cycle detection from
+          alias-specific match traversal so each distinct match path is evaluated.
+        effort: medium
+
+      - slug: discovery-results-do-not-enforce-deterministic-order
+        title: "Shared sessions trust custom retriever discovery order"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 575
+            end_line: 590
+        evidence: |2
+                  self.retriever
+                      .discover(&DiscoveryRequest {
+                          base: directive.origin.clone(),
+                          selector,
+                          max_matches,
+                      })
+                      .map_err(|source| {
+                          self.error(
+                              retrieve_category(&source),
+                              ResolutionCapability::Include,
+                              directive.span,
+                              directive.origin.to_string(),
+                              Some(Box::new(source)),
+                          )
+                      })
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-7"
+            type: mark
+            label: "Backend order and duplicates pass straight into aggregation"
+        mechanism: |
+          FileRetriever sorts and deduplicates, but ResourceRetriever is pluggable and
+          the shared session accepts any returned Vec. A custom backend can therefore
+          make list, named, merge, and report order nondeterministic or repeat one
+          identity, contradicting the resolver-wide deterministic contract.
+        remediation: |
+          Normalize discovery results at the shared session boundary with a stable
+          ResourceId ordering and deduplication, while keeping backend-specific path
+          ordering equivalent to normalized root-relative bytes.
+        effort: small
+
+  - slug: yaml-graph-integrity
+    title: "YAML Anchor and Alias Integrity"
+    thesis: "Imported fragments are renamed, but validation ignores YAML event order and prefix allocation ignores anchors already present in the output document."
+    verdict: "Anchor isolation needs document-wide state. Validate aliases in event order, reserve every existing output anchor, and choose deterministic collision-free import prefixes before rewriting a selected subtree."
+    flow:
+      - id: select
+        label: "Select referenced subtree"
+        type: start
+      - id: validate
+        label: "Validate internal alias bindings"
+        type: process
+        findings:
+          - slug: fragment-self-containment-ignores-anchor-binding-order
+            label: "Order ignored"
+      - id: allocate
+        label: "Allocate import namespace"
+        type: process
+        findings:
+          - slug: imported-anchor-prefix-can-collide-with-root
+            label: "Prefix collision"
+      - id: rewrite
+        label: "Rewrite anchors and aliases"
+        type: end
+    findings:
+      - slug: imported-anchor-prefix-can-collide-with-root
+        title: "Predictable imported anchor prefixes can collide with existing root anchors"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 1055
+            end_line: 1056
+        evidence: |2
+                  let prefix = format!("yg_r{resource_ordinal}_e{edge_ordinal}_");
+                  anchors::namespace(&mut selected, &prefix).map_err(|source| {
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-2"
+            type: mark
+            label: "Prefix is predictable and unreserved"
+        mechanism: |
+          A root anchor can already have the generated name for an imported anchor.
+          YAML aliases bind to the most recent preceding definition, so an alias after
+          substitution may silently switch from the root anchor to the imported node.
+        remediation: |
+          Inventory every anchor in the complete output root and prior imports. Select
+          a deterministic prefix whose rewritten names do not intersect that set, then
+          reserve the imported names.
+        effort: medium
+
+      - slug: fragment-self-containment-ignores-anchor-binding-order
+        title: "Fragment self-containment checks names but not alias binding order"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/anchors.rs
+            start_line: 8
+            end_line: 33
+        evidence: |2
+          pub fn namespace(node: &mut OwnedNode, prefix: &str) -> Result<(), SessionError> {
+              let mut defined = HashSet::new();
+              let mut used = HashSet::new();
+              let mut pending = vec![&*node];
+              while let Some(node) = pending.pop() {
+                  if let Some(anchor) = &node.anchor {
+                      defined.insert(anchor.clone());
+                  }
+                  match &node.kind {
+                      OwnedKind::Alias { name } => {
+                          used.insert(name.clone());
+                      }
+                      OwnedKind::Sequence { items, .. } => pending.extend(items),
+                      OwnedKind::Mapping { entries, .. } => {
+                          for (key, value) in entries {
+                              pending.push(key);
+                              pending.push(value);
+                          }
+                      }
+                      OwnedKind::Scalar(_) => {}
+                  }
+              }
+
+              if let Some(external) = used.iter().filter(|name| !defined.contains(*name)).min() {
+                  return Err(SessionError::NonSelfContainedAlias(external.clone()));
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-6"
+            type: mark
+            label: "Any later same-named anchor satisfies an earlier alias"
+        mechanism: |
+          YAML aliases bind to a preceding anchor, not any same-named anchor anywhere
+          in the subtree. A fragment beginning with *a and defining &a later is accepted
+          even though the selected alias depended on an external definition.
+        remediation: |
+          Traverse in emitted YAML event order, tracking anchors visible at each alias.
+          Reject a use without an earlier in-subtree definition while preserving legal
+          redefinition behavior.
+        effort: small
+
+  - slug: session-and-query-runtime
+    title: "Session Identity and Query Runtime"
+    thesis: "The query bridge carries typed resolver state through jaq, but run-local keys, slurp construction, caught errors, and recursive conversion do not preserve the promised session and control-flow semantics."
+    verdict: "Session identity must be globally unambiguous, constructed slurp values need an explicit retained session, typed error payloads must follow jaq propagation rather than a run-wide flag, and query-to-owned conversion must enforce real depth safety."
+    flow:
+      - id: input
+        label: "Load or construct query value"
+        type: start
+        findings:
+          - slug: slurp-drops-resolution-base
+            label: "Slurp loses session"
+      - id: key
+        label: "Select retained session"
+        type: process
+        findings:
+          - slug: run-local-resolution-keys-collide-across-contexts
+            label: "Cross-context collision"
+      - id: convert
+        label: "Convert value to resolver tree"
+        type: process
+        findings:
+          - slug: query-resolution-conversion-recurses-without-configured-bound
+            label: "Unbounded recursion"
+      - id: jaq
+        label: "Propagate through jaq try/catch"
+        type: end
+        findings:
+          - slug: caught-resolution-error-remains-terminal
+            label: "Caught error remains pending"
+    findings:
+      - slug: run-local-resolution-keys-collide-across-contexts
+        title: "Resolution session keys collide across RunCtx instances"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 142
+            end_line: 153
+        evidence: |2
+              pub fn register_resolved_input(
+                  &self,
+                  mut input: ResolvedInput,
+              ) -> Result<(YamlVal, ResolutionSessionKey), YgError> {
+                  let raw = self.next_resolution_key.get();
+                  let next = raw.checked_add(1).ok_or_else(|| {
+                      YgError::resource_overflow("resolution session key", "resolution session key overflow")
+                  })?;
+                  let key = ResolutionSessionKey(raw);
+                  crate::resolution::assign_session(&mut input.value, key);
+                  self.resolutions.borrow_mut().insert(key, input.resolution);
+                  self.next_resolution_key.set(next);
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-5"
+            type: mark
+            label: "Every context allocates the same key sequence"
+        mechanism: |
+          ResourceOrigin contains only the numeric key, not context identity. A YamlVal
+          retained from context A can therefore select an unrelated resolver registered
+          under the same key in context B, resolving against the wrong base and policy.
+        remediation: |
+          Allocate nonreused process-wide session keys with checked overflow, or include
+          a generative context identity in the opaque key. Add a cross-context value
+          transfer regression.
+        effort: small
+
+      - slug: slurp-drops-resolution-base
+        title: "Slurp drops the resolution base for newly constructed directives"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam/src/commands/query.rs
+            start_line: 605
+            end_line: 625
+        evidence: |2
+              if args.slurp {
+                  let values = records
+                      .into_iter()
+                      .map(|record| record.value)
+                      .collect::<Result<Vec<_>, _>>()?;
+                  let value = if args.raw_input {
+                      YamlVal::str(
+                          values
+                              .iter()
+                              .filter_map(YamlVal::as_str_content)
+                              .collect::<String>(),
+                      )
+                  } else {
+                      YamlVal::seq(values)
+                  };
+                  return Ok(vec![InputRecord {
+                      metadata: InputMeta::default(),
+                      value: Ok(value),
+                      resolution: None,
+                  }]);
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "19"
+            type: mark
+            label: "Constructed slurp root has no active resolution session"
+        mechanism: |
+          Source nodes retain their origins, but a filter that constructs a new $ref or
+          !include from a slurped input must fall back to the active input session. The
+          aggregate record clears that session even when --base-uri supplies the intended
+          base, producing MissingBase.
+        remediation: |
+          Register the slurped aggregate with one constructed-value resolution session
+          derived from the explicit base and active policy. Preserve per-node source
+          origins inside the sequence.
+        effort: small
+
+      - slug: caught-resolution-error-remains-terminal
+        title: "The typed-error side channel makes caught resolution errors fatal"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/runtime_resolution.rs
+            start_line: 140
+            end_line: 149
+        evidence: |2
+          pub fn jaq_error(error: ResolveError) -> jaq_core::Error<YamlVal> {
+              let message = error.to_string();
+              PENDING_ERROR.with(|pending| {
+                  let mut pending = pending.borrow_mut();
+                  if pending.is_none() {
+                      *pending = Some(error);
+                  }
+              });
+              jaq_core::Error::str(format_args!("external resolution failed: {message}"))
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-6"
+            type: mark
+            label: "Typed payload is detached from jaq control flow"
+        mechanism: |
+          try ref catch "fallback" lets jaq consume the native error and produce a
+          fallback, but jaq_error has already stored ResolveError in thread-local state.
+          The engine observes the successful output, drains the slot, and returns
+          RuntimeResolution anyway, diverging from specified jq try/catch behavior.
+        remediation: |
+          Attach a typed token to the jaq error value and recover the ResolveError only
+          when that error propagates out of jaq. Clear tokens for errors consumed by catch.
+        effort: medium
+
+      - slug: query-resolution-conversion-recurses-without-configured-bound
+        title: "Explicit resolution recursively converts query values without a real bound"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/resolution.rs
+            start_line: 388
+            end_line: 411
+        evidence: |2
+                  Data::Seq(values) => {
+                      let child_depth = checked_resolution_depth(depth, capability)?;
+                      let items = values
+                          .iter()
+                          .cloned()
+                          .map(|value| value_to_owned(value, fallback, capability, child_depth))
+                          .collect::<Result<Vec<_>, _>>()?;
+                      OwnedKind::Sequence {
+                          style: collection_style(metadata.style),
+                          items,
+                      }
+                  }
+                  Data::Map(mapping) => {
+                      let child_depth = checked_resolution_depth(depth, capability)?;
+                      let entries = mapping
+                          .0
+                          .iter()
+                          .map(|(key, value)| {
+                              Ok((
+                                  value_to_owned(key.clone(), fallback, capability, child_depth)?,
+                                  value_to_owned(value.clone(), fallback, capability, child_depth)?,
+                              ))
+                          })
+                          .collect::<Result<Vec<_>, ResolveError>>()?;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-7"
+            type: mark
+            label: "Only usize overflow guards recursive call-stack depth"
+        mechanism: |
+          User-constructed YamlVal depth drives Rust recursion before the session's
+          iterative traversal. LoaderConfig depth limits are not consulted, and unchecked
+          mode has no implementation safety ceiling, so sufficiently deep values can
+          overflow the process stack instead of returning a typed limit error.
+        remediation: |
+          Convert query values iteratively, or enforce the active configured depth before
+          every recursive descent plus a nonconfigurable implementation safety ceiling.
+          Preserve structured limit and overflow categories.
+        effort: medium
+
+  - slug: resolution-reporting
+    title: "Resolution Reporting"
+    thesis: "The report model contains the right fields, but convenience APIs discard failure reports, raw request text can expose secrets, and collection match sets are never populated."
+    verdict: "Reports need to be treated as first-class outputs on every path. Failure errors should carry accumulated reports, public requested references must be sanitized before storage, and collection directives need their own match-bearing edge."
+    flow:
+      - id: attempt
+        label: "Start resolution edge"
+        type: start
+      - id: request
+        label: "Record requested reference"
+        type: process
+        findings:
+          - slug: resolution-report-retains-raw-secret-reference
+            label: "Raw secret retained"
+      - id: discover
+        label: "Record collection matches"
+        type: process
+        findings:
+          - slug: collection-report-never-records-matches
+            label: "Matches omitted"
+      - id: result
+        label: "Return value or error"
+        type: end
+        findings:
+          - slug: automatic-resolution-failure-discards-report
+            label: "Failure report dropped"
+    findings:
+      - slug: automatic-resolution-failure-discards-report
+        title: "Automatic resolution failures discard the accumulated report"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/resolution.rs
+            start_line: 111
+            end_line: 115
+        evidence: |2
+              let mut resolver = SessionQueryResolver::new(retriever, config.clone(), Some(root));
+              let document = resolver.resolve_input(document).map_err(|error| {
+                  let message = error.to_string();
+                  YgError::input_resolution(error, message)
+              })?;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-5"
+            type: mark
+            label: "The report-bearing resolver is dropped by map_err"
+        mechanism: |
+          ResolutionSession retains failure edges internally, but resolve_document and
+          resolve_documents return only YgError. The local resolver is dropped on failure;
+          a later document failure also drops reports from already completed top-level
+          documents, so callers cannot satisfy the public success-and-failure contract.
+        remediation: |
+          Carry the failed session report, and prior completed-document reports for stream
+          loading, in the structured InputResolution error without changing Display text.
+        effort: medium
+
+      - slug: resolution-report-retains-raw-secret-reference
+        title: "Public resolution diagnostics retain raw credential-bearing references"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/report.rs
+            start_line: 118
+            end_line: 134
+        evidence: |2
+          /// One attempted parent-to-child resolution edge.
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ResolutionEdge {
+              /// Containing resource.
+              pub parent: ResourceId,
+              /// Resolved child identity, absent for failures before identity creation.
+              pub child: Option<ResourceId>,
+              /// Include or reference capability.
+              pub capability: ResolutionCapability,
+              /// Directive location in the containing resource.
+              pub source_span: Span,
+              /// Original directive reference retained as structured data.
+              pub requested: String,
+              /// Selected document fragment.
+              pub fragment: Fragment,
+              /// Deterministically ordered collection matches.
+              pub matches: Vec<ResourceId>,
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "12-13"
+            type: mark
+            label: "Unredacted directive text is stored in a public field"
+        mechanism: |
+          ResourceId Display and Debug redact userinfo and query values, but
+          ResolutionEdge.requested exposes the original directive verbatim. Limit and
+          overflow errors also copy the raw request into ResolveError.target. Allowed query
+          tokens and denied userinfo therefore survive in public structured diagnostics.
+        remediation: |
+          Store a sanitized public reference that removes userinfo and query values before
+          recording and before using it as an error target. Keep raw text private only if
+          internal diagnostics require it and make every public Debug path redaction-safe.
+        effort: small
+
+      - slug: collection-report-never-records-matches
+        title: "Glob and directory resolution reports discard their match sets"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 599
+            end_line: 611
+        evidence: |2
+                  let edge_index = self.report.record_edge(ResolutionEdge {
+                      parent: directive.origin.clone(),
+                      child: Some(resource.clone()),
+                      capability: ResolutionCapability::Include,
+                      source_span: directive.span,
+                      requested: requested.clone(),
+                      fragment: Fragment::Root,
+                      matches: Vec::new(),
+                      cache_hit: false,
+                      fetched_bytes: 0,
+                      materialized_bytes: 0,
+                      outcome: ResolutionOutcome::Resolved,
+                  });
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "8"
+            type: mark
+            label: "Discovery results are never attached to a collection edge"
+        mechanism: |
+          The model promises ordered collection matches, but the session creates only
+          per-resource fetch edges and initializes every matches field empty. Callers cannot
+          reconstruct which files belonged to one directive or attribute aggregate failures.
+        remediation: |
+          Record one directive-level collection edge containing the normalized match set and
+          terminal outcome, then retain per-resource fetch/materialization edges beneath it.
+        effort: medium
+
+  - slug: resolution-efficiency
+    title: "Resolution Efficiency"
+    thesis: "Two implementation choices amplify memory or CPU with document size: source identities clone owned buffers per node and mapping merges scan all prior keys."
+    verdict: "These are not architectural defects. A private shared ResourceId representation and an equality-safe semantic-key index remove the scaling costs without changing behavior."
+    flow:
+      - id: own
+        label: "Build owned document"
+        type: start
+        findings:
+          - slug: owned-nodes-clone-resource-identities-per-node
+            label: "Identity cloned per node"
+      - id: merge
+        label: "Merge mapping keys"
+        type: end
+        findings:
+          - slug: include-mapping-merge-is-quadratic
+            label: "Quadratic scans"
+    findings:
+      - slug: owned-nodes-clone-resource-identities-per-node
+        title: "Owned nodes clone resource identity buffers for every node"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/document.rs
+            start_line: 204
+            end_line: 208
+        evidence: |2
+                              attach_node(
+                                  OwnedNode {
+                                      origin: origin.clone(),
+                                      span,
+                                      anchor: cow_option(anchor),
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-4"
+            type: mark
+            label: "PathBuf or Url ownership is repeated throughout the tree"
+        mechanism: |
+          ResourceId owns PathBuf or Url directly. Parsing clones it into every OwnedNode,
+          document construction clones it into every node and subtree selection clones it
+          again. Query-to-owned conversion also clones metadata origins. Large documents
+          therefore allocate and copy the same identity proportional to node count before
+          payload work begins; owned-to-query conversion moves those identities.
+        remediation: |
+          Give ResourceId a private shared immutable representation so ordinary Clone is
+          constant-time while preserving equality, ordering, hashing, and redaction.
+        effort: medium
+
+      - slug: include-mapping-merge-is-quadratic
+        title: "Mapping include merges scan all prior keys for every entry"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/include.rs
+            start_line: 498
+            end_line: 511
+        evidence: |2
+                          if let Some(position) = merged
+                              .iter()
+                              .position(|(key, _)| semantic_key_eq(key, &entry.0, tag_resolution))
+                          {
+                              match spec.on_conflict {
+                                  ConflictPolicy::Error => return Err(SessionError::IncludeConflict),
+                                  ConflictPolicy::First => {}
+                                  ConflictPolicy::Last => merged[position] = entry,
+                              }
+                          } else {
+                              merged.push(entry);
+                          }
+                      }
+                  }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-5"
+            type: mark
+            label: "Every new key linearly scans the accumulated mapping"
+        mechanism: |
+          Merging N distinct keys performs O(N squared) semantic comparisons. Scalar
+          comparisons also allocate resolved Value strings, and explicit keys repeat the
+          same full-vector scan through retain. Large generated mappings can consume
+          disproportionate CPU within otherwise valid byte and edge budgets.
+        remediation: |
+          Add an equality-safe semantic-key fingerprint index that maps hashes to candidate
+          positions, verifies collisions with semantic_key_eq, and preserves insertion and
+          conflict-policy order.
+        effort: medium
+
+  - slug: dependency-hygiene
+    title: "Dependency Hygiene"
+    thesis: "The new resolver crate has one direct workspace dependency that is not used."
+    verdict: "The scanner is correctly reached through the parser and query layers; yamalgam-resolve should not declare it directly."
+    findings:
+      - slug: resolver-directly-depends-on-unused-scanner
+        title: "yamalgam-resolve directly depends on the unused scanner crate"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-resolve/Cargo.toml
+            start_line: 21
+            end_line: 21
+        evidence: |2
+          yamalgam-scanner = { path = "../yamalgam-scanner" }
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "1"
+            type: del
+            label: "cargo machete reports this dependency unused"
+        mechanism: |
+          yamalgam-resolve imports parser types but no scanner symbols. The extra direct
+          edge overstates coupling and expands feature and dependency maintenance work.
+        remediation: |
+          Remove the direct dependency and verify the resolver crate plus workspace feature
+          matrix still build through the parser's legitimate scanner edge.
+        effort: trivial
+
+summary:
+  counts:
+    critical: 0
+    significant: 10
+    moderate: 9
+    advisory: 1
+    note: 0
