@@ -2,12 +2,12 @@
 audit: 2026-08-09-13-m11-final-review
 last_updated: 2026-08-09
 status:
-  fixed: 19
+  fixed: 20
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 1
+  open: 0
 ---
 
 # Actions Taken: M11 External Resource Resolution
@@ -176,3 +176,21 @@ policy, insertion order, duplicate-explicit-key behavior, tag resolution, and
 signed-zero equality. Fingerprint traversal is iterative, and regression
 coverage exercises 10,000 keys, forced collisions, every special semantic
 equality case, and explicit override ordering.
+
+---
+
+## 2026-08-09 — remove the resolver's unused scanner edge
+
+**Disposition:** fixed
+
+**Addresses:**
+[resolver-directly-depends-on-unused-scanner](README.md#resolver-directly-depends-on-unused-scanner)
+
+**Commit:** `cd5a64d5f7c1d4f23308f75ca2cc68f9a73081b3`
+
+**Author:** Codex
+
+The resolver no longer declares a direct dependency on `yamalgam-scanner`;
+scanner types continue to arrive through the parser's legitimate dependency
+edge. The resolver all-targets/all-features check, cargo-machete analysis, and
+the workspace each-feature matrix all pass after regenerating the lockfile.
