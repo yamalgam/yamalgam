@@ -2,12 +2,12 @@
 audit: 2026-08-09-13-m11-final-review
 last_updated: 2026-08-09
 status:
-  fixed: 2
+  fixed: 4
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 18
+  open: 16
 ---
 
 # Actions Taken: M11 External Resource Resolution
@@ -34,3 +34,23 @@ platform path dispatch, while retaining the existing absolute-file behavior.
 `!include` validation rejects all absolute URI selectors before retrieval or
 discovery. Regression coverage exercises scheme inheritance and file, memory,
 custom, and HTTP include schemes.
+
+---
+
+## 2026-08-09 — seal and share resource identities
+
+**Disposition:** fixed
+
+**Addresses:**
+[resource-id-public-variants-bypass-canonical-invariants](README.md#resource-id-public-variants-bypass-canonical-invariants),
+[owned-nodes-clone-resource-identities-per-node](README.md#owned-nodes-clone-resource-identities-per-node)
+
+**Commit:** `cf58f50f7b3500d847c015d684f5a8a35572fb44`
+
+**Author:** Codex
+
+`ResourceId` is now a private checked wrapper. File paths and URLs are created
+only through normalizing constructors and stored behind immutable `Arc`
+ownership, making every ordinary identity clone constant-time. A compile-fail
+doctest guards the public construction boundary, and unit coverage verifies
+that file and URI clones share their owned storage.
