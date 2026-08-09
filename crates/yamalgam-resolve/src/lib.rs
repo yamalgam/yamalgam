@@ -5,6 +5,7 @@
 //! event middleware without coupling filesystem or network I/O to the parser.
 #![deny(unsafe_code)]
 
+mod anchors;
 pub mod document;
 pub mod error;
 mod include;

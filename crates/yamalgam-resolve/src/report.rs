@@ -45,6 +45,13 @@ impl ResolutionReport {
     pub(crate) fn resource_mut(&mut self, id: &ResourceId) -> Option<&mut ResourceRecord> {
         self.resources.iter_mut().find(|record| &record.id == id)
     }
+
+    pub(crate) fn resource_ordinal(&self, id: &ResourceId) -> Option<usize> {
+        self.resources
+            .iter()
+            .position(|record| &record.id == id)
+            .and_then(|position| position.checked_add(1))
+    }
 }
 
 impl fmt::Display for ResolutionReport {

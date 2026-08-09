@@ -9,6 +9,7 @@ use yamalgam_parser::{
     AtomFlags, Chomp, Parser, ResolutionErrorCategory, ResolveError, ScalarStyle,
 };
 
+use crate::anchors;
 use crate::document::{DocumentError, OwnedDocument, OwnedKind, OwnedNode};
 use crate::error::{RetrieveError, SessionError};
 use crate::include::{
@@ -998,7 +999,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             });
         }
 
-        let selected =
+        let mut selected =
             ref_resolver::select(&document.root, &target.fragment, self.config.tag_resolution)
                 .map_err(|source| {
                     self.error(
@@ -1009,6 +1010,35 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                         Some(Box::new(source)),
                     )
                 })?;
+        let resource_ordinal = self
+            .report
+            .resource_ordinal(&target.resource)
+            .ok_or_else(|| {
+                self.overflow_error(
+                    capability,
+                    span,
+                    target_label(&target),
+                    "resolution resource ordinal",
+                )
+            })?;
+        let edge_ordinal = edge_index.checked_add(1).ok_or_else(|| {
+            self.overflow_error(
+                capability,
+                span,
+                target_label(&target),
+                "resolution edge ordinal",
+            )
+        })?;
+        let prefix = format!("yg_r{resource_ordinal}_e{edge_ordinal}_");
+        anchors::namespace(&mut selected, &prefix).map_err(|source| {
+            self.error(
+                ResolutionErrorCategory::NonSelfContainedFragment,
+                capability,
+                span,
+                target_label(&target),
+                Some(Box::new(source)),
+            )
+        })?;
 
         self.active.push(target);
         let resolved = self.resolve_tree(selected, trigger);

@@ -47,6 +47,9 @@ pub enum SessionError {
     /// A filename-derived include key was not valid portable UTF-8.
     #[error("include resource cannot produce a portable UTF-8 mapping key")]
     IncludeName,
+    /// A selected subtree uses an anchor defined outside that subtree.
+    #[error("selected subtree depends on external anchor {0}")]
+    NonSelfContainedAlias(String),
     /// Checked session accounting exceeded `usize`.
     #[error("resource accounting overflow for {0}")]
     ResourceOverflow(&'static str),
