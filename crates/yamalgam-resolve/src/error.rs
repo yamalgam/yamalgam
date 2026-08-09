@@ -6,6 +6,9 @@ use crate::ResourceId;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RetrieveError {
+    /// A router already has a backend for the scheme.
+    #[error("a retriever is already registered for scheme {0}")]
+    DuplicateScheme(String),
     /// No backend handles the requested scheme.
     #[error("no retriever is registered for scheme {0}")]
     UnsupportedScheme(String),

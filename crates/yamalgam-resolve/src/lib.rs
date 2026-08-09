@@ -19,6 +19,6 @@ pub use report::{
 };
 pub use resource::{Fragment, ResolvedReference, ResourceError, ResourceId, resolve_reference};
 pub use retriever::{
-    ContentIntegrity, DiscoveryRequest, DiscoverySelector, ResourceProvenance, ResourceRequest,
-    ResourceRetriever, ResourceValidator, RetrievedResource,
+    ContentIntegrity, DiscoveryRequest, DiscoverySelector, MemoryRetriever, ResourceProvenance,
+    ResourceRequest, ResourceRetriever, ResourceValidator, RetrievedResource, RetrieverRouter,
 };

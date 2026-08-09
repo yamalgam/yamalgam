@@ -9,7 +9,7 @@ use url::Url;
 use crate::pointer::{JsonPointer, PointerError};
 
 /// Canonical identity of one fragmentless external resource.
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum ResourceId {
     /// A filesystem resource. Paths retain their platform-native encoding.

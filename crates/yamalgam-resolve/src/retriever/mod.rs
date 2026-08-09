@@ -1,8 +1,15 @@
 //! Pluggable synchronous resource retrieval.
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::{ResourceId, RetrieveError};
+
+mod memory;
+mod router;
+
+pub use memory::MemoryRetriever;
+pub use router::RetrieverRouter;
 
 /// Synchronous transport boundary for external resources.
 pub trait ResourceRetriever: Send + Sync {
@@ -12,6 +19,26 @@ pub trait ResourceRetriever: Send + Sync {
     /// Discover resources below a capability-specific base.
     fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
         Err(RetrieveError::DiscoveryUnsupported(request.base.clone()))
+    }
+}
+
+impl<T: ResourceRetriever + ?Sized> ResourceRetriever for Box<T> {
+    fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError> {
+        (**self).retrieve(request)
+    }
+
+    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+        (**self).discover(request)
+    }
+}
+
+impl<T: ResourceRetriever + ?Sized> ResourceRetriever for Arc<T> {
+    fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError> {
+        (**self).retrieve(request)
+    }
+
+    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+        (**self).discover(request)
     }
 }
 
@@ -55,6 +82,7 @@ pub enum DiscoverySelector {
 }
 
 /// Bytes and source metadata returned by a retriever.
+#[derive(Clone)]
 pub struct RetrievedResource {
     /// Canonical identity returned by the backend.
     pub id: ResourceId,
