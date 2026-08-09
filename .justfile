@@ -41,6 +41,21 @@ test-ci:
 doc-test:
   cargo test --doc --all-features
 
+# Run executable examples embedded in the yg user guides.
+docs-examples:
+  scripts/check-yg-doc-examples
+
+# Run executable, prose, Markdown, and offline-link checks for yg docs.
+docs-check: docs-examples
+  #!/usr/bin/env bash
+  set -euo pipefail
+  docs=(README.md docs/README.md docs/yg/*.md)
+  rumdl check "${docs[@]}"
+  lychee --offline "${docs[@]}"
+  for doc in docs/README.md docs/yg/*.md; do
+    bito readability "$doc" --max-grade 8
+  done
+
 cov:
   @cargo llvm-cov clean --workspace
 

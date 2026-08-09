@@ -15,6 +15,37 @@ permissions:
   contents: read
 
 jobs:
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          cache-key-suffix: docs
+          toolchain: stable
+
+      - name: Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.21"
+          cache: false
+
+      - name: Install mdcode
+        run: go install github.com/szkiba/mdcode@v0.2.0
+
+      - name: Check executable documentation
+        run: scripts/check-yg-doc-examples
+
   lint:
     name: lint
     runs-on: ubuntu-latest
