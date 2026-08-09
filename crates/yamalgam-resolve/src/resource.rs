@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use percent_encoding::percent_decode_str;
 use url::Url;
@@ -12,22 +13,31 @@ use url::Url;
 use crate::pointer::{JsonPointer, PointerError};
 
 /// Canonical identity of one fragmentless external resource.
+///
+/// Identities are constructed through checked APIs; their representation is
+/// intentionally private.
+///
+/// ```compile_fail
+/// use std::path::PathBuf;
+/// use yamalgam_resolve::ResourceId;
+///
+/// let _ = ResourceId::File(PathBuf::from("unvalidated/../identity.yaml"));
+/// ```
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[non_exhaustive]
-pub enum ResourceId {
-    /// A non-retrievable root with no relative external-resource base.
+pub struct ResourceId(ResourceKind);
+
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum ResourceKind {
     Anonymous,
-    /// A filesystem resource. Paths retain their platform-native encoding.
-    File(PathBuf),
-    /// A URL resource, including memory, HTTP, and application-defined schemes.
-    Uri(Url),
+    File(Arc<PathBuf>),
+    Uri(Arc<Url>),
 }
 
 impl ResourceId {
     /// Construct an identity for standard input or another anonymous root.
     #[must_use]
     pub const fn anonymous() -> Self {
-        Self::Anonymous
+        Self(ResourceKind::Anonymous)
     }
 
     /// Parse a fragmentless URL or UTF-8 file identity.
@@ -57,12 +67,12 @@ impl ResourceId {
     /// Construct a file identity without changing its native path encoding.
     #[must_use]
     pub fn from_file(path: impl Into<PathBuf>) -> Self {
-        Self::File(normalize_path(&path.into()))
+        Self(ResourceKind::File(Arc::new(normalize_path(&path.into()))))
     }
 
     /// Construct an identity from a parsed, fragmentless URL.
     ///
-    /// `file:` URLs are converted to [`ResourceId::File`].
+    /// `file:` URLs are converted to native file identities.
     ///
     /// # Errors
     ///
@@ -79,7 +89,7 @@ impl ResourceId {
                 .map(Self::from_file)
                 .map_err(|()| ResourceError::InvalidFileUri);
         }
-        Ok(Self::Uri(url))
+        Ok(Self(ResourceKind::Uri(Arc::new(url))))
     }
 
     /// Resolve a URI reference against this containing resource.
@@ -95,9 +105,9 @@ impl ResourceId {
     /// Return the native path for a file identity.
     #[must_use]
     pub fn as_path(&self) -> Option<&Path> {
-        match self {
-            Self::File(path) => Some(path),
-            Self::Anonymous | Self::Uri(_) => None,
+        match &self.0 {
+            ResourceKind::File(path) => Some(path.as_path()),
+            ResourceKind::Anonymous | ResourceKind::Uri(_) => None,
         }
     }
 
@@ -107,20 +117,20 @@ impl ResourceId {
     /// render it in diagnostics; [`Display`](fmt::Display) and [`Debug`](fmt::Debug)
     /// are redacted for that purpose.
     #[must_use]
-    pub const fn as_url(&self) -> Option<&Url> {
-        match self {
-            Self::Anonymous | Self::File(_) => None,
-            Self::Uri(url) => Some(url),
+    pub fn as_url(&self) -> Option<&Url> {
+        match &self.0 {
+            ResourceKind::Anonymous | ResourceKind::File(_) => None,
+            ResourceKind::Uri(url) => Some(url),
         }
     }
 
     /// Return the resource scheme. File identities report `file`.
     #[must_use]
     pub fn scheme(&self) -> &str {
-        match self {
-            Self::Anonymous => "anonymous",
-            Self::File(_) => "file",
-            Self::Uri(url) => url.scheme(),
+        match &self.0 {
+            ResourceKind::Anonymous => "anonymous",
+            ResourceKind::File(_) => "file",
+            ResourceKind::Uri(url) => url.scheme(),
         }
     }
 
@@ -138,18 +148,20 @@ impl ResourceId {
     }
 
     fn validate(&self) -> Result<(), ResourceError> {
-        match self {
-            Self::Uri(url) if url.fragment().is_some() => Err(ResourceError::FragmentNotAllowed),
+        match &self.0 {
+            ResourceKind::Uri(url) if url.fragment().is_some() => {
+                Err(ResourceError::FragmentNotAllowed)
+            }
             _ => Ok(()),
         }
     }
 
     fn redacted(&self) -> String {
-        match self {
-            Self::Anonymous => "<anonymous>".to_owned(),
-            Self::File(path) => path.display().to_string(),
-            Self::Uri(url) => {
-                let mut redacted = url.clone();
+        match &self.0 {
+            ResourceKind::Anonymous => "<anonymous>".to_owned(),
+            ResourceKind::File(path) => path.display().to_string(),
+            ResourceKind::Uri(url) => {
+                let mut redacted = Url::clone(url);
                 redacted.set_fragment(None);
                 redacted.set_query(None);
                 let _ = redacted.set_password(None);
@@ -168,13 +180,13 @@ impl fmt::Display for ResourceId {
 
 impl fmt::Debug for ResourceId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Anonymous => formatter.write_str(&self.redacted()),
-            Self::File(_) => formatter
+        match &self.0 {
+            ResourceKind::Anonymous => formatter.write_str(&self.redacted()),
+            ResourceKind::File(_) => formatter
                 .debug_tuple("File")
                 .field(&self.redacted())
                 .finish(),
-            Self::Uri(_) => formatter
+            ResourceKind::Uri(_) => formatter
                 .debug_tuple("Uri")
                 .field(&self.redacted())
                 .finish(),
@@ -276,7 +288,7 @@ fn resolve_resource(
         return ResourceId::from_url(url);
     }
 
-    if let Some(ResourceId::Uri(base_url)) = base
+    if let Some(ResourceId(ResourceKind::Uri(base_url))) = base
         && (!Path::new(reference).is_absolute() || reference.starts_with("//"))
     {
         return base_url
@@ -298,13 +310,13 @@ fn resolve_file_resource(
 
     let base = base.ok_or(ResourceError::MissingBase)?;
     base.validate()?;
-    match base {
-        ResourceId::Anonymous => Err(ResourceError::MissingBase),
-        ResourceId::File(base_path) => {
+    match &base.0 {
+        ResourceKind::Anonymous => Err(ResourceError::MissingBase),
+        ResourceKind::File(base_path) => {
             let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
             Ok(ResourceId::from_file(parent.join(path)))
         }
-        ResourceId::Uri(_) => unreachable!("URI bases are resolved before file semantics"),
+        ResourceKind::Uri(_) => unreachable!("URI bases are resolved before file semantics"),
     }
 }
 
@@ -369,4 +381,27 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResourceId, ResourceKind};
+    use std::sync::Arc;
+
+    #[test]
+    fn clones_share_owned_identity_storage() {
+        let file = ResourceId::from_file("fixtures/document.yaml");
+        let file_clone = file.clone();
+        let (ResourceKind::File(left), ResourceKind::File(right)) = (&file.0, &file_clone.0) else {
+            panic!("expected file identities");
+        };
+        assert!(Arc::ptr_eq(left, right));
+
+        let uri = ResourceId::new("memory://fixtures/document.yaml").unwrap();
+        let uri_clone = uri.clone();
+        let (ResourceKind::Uri(left), ResourceKind::Uri(right)) = (&uri.0, &uri_clone.0) else {
+            panic!("expected URI identities");
+        };
+        assert!(Arc::ptr_eq(left, right));
+    }
 }

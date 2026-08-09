@@ -971,27 +971,32 @@ fn parse_base_uri(value: &str) -> Result<ResourceId, YgError> {
     }
     let base = ResourceId::new(value)
         .map_err(|error| YgError::Usage(format!("invalid --base-uri {value:?}: {error}")))?;
-    match &base {
-        ResourceId::File(path) if !path.is_absolute() => Err(YgError::Usage(
-            "--base-uri must be an absolute URI or absolute file path".into(),
-        )),
-        ResourceId::File(_) => Ok(base),
-        ResourceId::Uri(_) if !matches!(base.scheme(), "http" | "https") => {
-            Err(YgError::Usage(format!(
-                "unsupported --base-uri scheme {}; expected file, http, or https",
-                base.scheme()
-            )))
-        }
-        ResourceId::Uri(_) if base.has_userinfo() || base.host_str().is_none() => {
+    if let Some(path) = base.as_path() {
+        return if path.is_absolute() {
+            Ok(base)
+        } else {
             Err(YgError::Usage(
-                "http and https --base-uri values require a host and no userinfo".into(),
+                "--base-uri must be an absolute URI or absolute file path".into(),
             ))
-        }
-        ResourceId::Uri(_) => Ok(base),
-        _ => Err(YgError::Usage(
-            "unsupported --base-uri resource kind".into(),
-        )),
+        };
     }
+    if base.as_url().is_none() {
+        return Err(YgError::Usage(
+            "unsupported --base-uri resource kind".into(),
+        ));
+    }
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err(YgError::Usage(format!(
+            "unsupported --base-uri scheme {}; expected file, http, or https",
+            base.scheme()
+        )));
+    }
+    if base.has_userinfo() || base.host_str().is_none() {
+        return Err(YgError::Usage(
+            "http and https --base-uri values require a host and no userinfo".into(),
+        ));
+    }
+    Ok(base)
 }
 
 fn canonical_directory(path: &camino::Utf8Path) -> Result<PathBuf, YgError> {
@@ -1035,10 +1040,10 @@ fn canonical_file_base(path: &Path) -> Result<PathBuf, YgError> {
 }
 
 fn canonical_base(base: ResourceId) -> Result<ResourceId, YgError> {
-    match base {
-        ResourceId::File(path) => canonical_file_base(&path).map(ResourceId::from_file),
-        base => Ok(base),
-    }
+    base.as_path().map_or_else(
+        || Ok(base.clone()),
+        |path| canonical_file_base(path).map(ResourceId::from_file),
+    )
 }
 
 fn validate_base_in_root(base: &ResourceId, root: Option<&Path>) -> Result<(), YgError> {

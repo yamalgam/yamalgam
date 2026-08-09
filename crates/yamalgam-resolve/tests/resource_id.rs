@@ -10,8 +10,8 @@ fn relative_file_references_use_the_containing_directory() {
     let resolved = base.resolve("../shared.yaml#/a~1b/~0name").unwrap();
 
     assert_eq!(
-        resolved.resource,
-        ResourceId::File(PathBuf::from("workspace/shared.yaml"))
+        resolved.resource.as_path(),
+        Some(PathBuf::from("workspace/shared.yaml").as_path())
     );
     assert_eq!(resolved.fragment.pointer_tokens(), ["a/b", "~name"]);
 }
