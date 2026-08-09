@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use yamalgam_core::{LoaderConfig, ResolutionMode, ResourceLimit};
 use yamalgam_parser::{Parser, ResolutionErrorCategory, ResolveError};
 use yamalgam_resolve::{
-    DiscoveryRequest, DiscoverySelector, OwnedDocument, OwnedKind, OwnedNode, ResolutionSession,
-    ResourceId, ResourceProvenance, ResourceRequest, ResourceRetriever, RetrieveError,
-    RetrievedResource, RetrieverRouter,
+    DiscoveryRequest, DiscoveryResult, DiscoverySelector, OwnedDocument, OwnedKind, OwnedNode,
+    ResolutionSession, ResourceId, ResourceProvenance, ResourceRequest, ResourceRetriever,
+    RetrieveError, RetrievedResource, RetrieverRouter,
 };
 
 #[derive(Clone, Default)]
@@ -60,10 +60,13 @@ impl ResourceRetriever for IncludeRetriever {
             .ok_or_else(|| RetrieveError::NotFound(request.id.clone()))
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         let mut state = self.state.lock().unwrap();
         state.discovery_calls.push(request.clone());
-        Ok(state.discoveries.clone())
+        Ok(DiscoveryResult {
+            resources: state.discoveries.clone(),
+            visited: state.discoveries.len(),
+        })
     }
 }
 
@@ -689,6 +692,47 @@ fn synthesized_aggregate_storage_cannot_evade_the_materialized_budget() {
         session.report().edges()[0].outcome,
         yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::Limit)
     );
+}
+
+#[test]
+fn discoveries_share_one_session_visit_budget() {
+    let retriever = IncludeRetriever::default();
+    let a = file("/workspace/a.yaml");
+    let b = file("/workspace/b.yaml");
+    retriever.insert(a.clone(), "a\n");
+    retriever.insert(b.clone(), "b\n");
+    retriever.set_discoveries(vec![a, b]);
+    let mut limited = config();
+    limited.resolution.limits.max_discovery_visits = Some(3);
+    let origin = file("/workspace/root.yaml");
+    let mut session = ResolutionSession::new(retriever.clone(), limited);
+
+    let error = session
+        .resolve_root(document(
+            &origin,
+            "- !include {glob: '*.yaml', mode: list}\n- !include {glob: '*.yaml', mode: list}\n",
+        ))
+        .unwrap_err();
+    let ResolveError::Resolution {
+        category,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected discovery visit budget failure");
+    };
+    let exceeded = source
+        .downcast_ref::<yamalgam_core::LimitExceeded>()
+        .unwrap();
+
+    assert_eq!(category, ResolutionErrorCategory::Limit);
+    assert_eq!(exceeded.limit, ResourceLimit::DiscoveryVisits);
+    assert_eq!(exceeded.observed, 4);
+    assert_eq!(exceeded.maximum, 3);
+    let calls = retriever.discovery_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].max_visits, Some(3));
+    assert_eq!(calls[1].max_visits, Some(1));
 }
 
 #[cfg(unix)]

@@ -215,6 +215,7 @@ fn glob_and_directory_discovery_are_sorted_and_mode_aware() {
                 pattern: "data/*.y*ml".into(),
             },
             max_matches: None,
+            max_visits: None,
         })
         .unwrap();
     assert_eq!(
@@ -231,6 +232,7 @@ fn glob_and_directory_discovery_are_sorted_and_mode_aware() {
                 matches: Vec::new(),
             },
             max_matches: None,
+            max_visits: None,
         })
         .unwrap();
     assert_eq!(shallow, globbed);
@@ -244,6 +246,7 @@ fn glob_and_directory_discovery_are_sorted_and_mode_aware() {
                 matches: Vec::new(),
             },
             max_matches: None,
+            max_visits: None,
         })
         .unwrap();
     assert_eq!(
@@ -269,6 +272,7 @@ fn discovery_returns_empty_and_stops_at_the_match_ceiling() {
                 pattern: "*.json".into(),
             },
             max_matches: Some(1),
+            max_visits: None,
         })
         .unwrap();
     assert!(empty.is_empty());
@@ -279,12 +283,92 @@ fn discovery_returns_empty_and_stops_at_the_match_ceiling() {
                 pattern: "*.yaml".into(),
             },
             max_matches: Some(2),
+            max_visits: None,
         }),
         Err(RetrieveError::TooManyMatches {
             observed: 3,
             maximum: 2,
         })
     ));
+}
+
+#[test]
+fn glob_discovery_starts_at_the_static_prefix_and_bounds_every_visit() {
+    let root = setup();
+    fs::create_dir_all(root.path().join("target/deep")).unwrap();
+    fs::create_dir_all(root.path().join("unrelated/more")).unwrap();
+    fs::write(root.path().join("target/match.yaml"), b"match").unwrap();
+    fs::write(root.path().join("target/deep/ignored.yaml"), b"ignored").unwrap();
+    for index in 0..16 {
+        fs::write(
+            root.path().join(format!("unrelated/more/{index}.txt")),
+            b"noise",
+        )
+        .unwrap();
+    }
+    let retriever = FileRetriever::open(&policy(root.path())).unwrap();
+    let result = retriever
+        .discover(&DiscoveryRequest {
+            base: ResourceId::from_file(root.path().join("root.yaml")),
+            selector: DiscoverySelector::Glob {
+                pattern: "target/*.yaml".into(),
+            },
+            max_matches: None,
+            max_visits: Some(3),
+        })
+        .unwrap();
+
+    assert_eq!(result.visited, 3);
+    assert_eq!(
+        result.resources,
+        vec![ResourceId::from_file(root.path().join("target/match.yaml"))]
+    );
+
+    assert!(matches!(
+        retriever.discover(&DiscoveryRequest {
+            base: ResourceId::from_file(root.path().join("root.yaml")),
+            selector: DiscoverySelector::Glob {
+                pattern: "target/*.json".into(),
+            },
+            max_matches: None,
+            max_visits: Some(2),
+        }),
+        Err(RetrieveError::TooManyVisits {
+            observed: 3,
+            maximum: 2,
+        })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_aliases_count_once_toward_the_match_limit() {
+    use std::os::unix::fs::symlink;
+
+    let root = setup();
+    fs::create_dir(root.path().join("real")).unwrap();
+    fs::write(root.path().join("real/data.yaml"), b"value").unwrap();
+    symlink("real", root.path().join("alias-a")).unwrap();
+    symlink("real", root.path().join("alias-b")).unwrap();
+    let mut configured = policy(root.path());
+    configured.follow_symlinks = true;
+    let retriever = FileRetriever::open(&configured).unwrap();
+
+    let result = retriever
+        .discover(&DiscoveryRequest {
+            base: ResourceId::from_file(root.path().join("root.yaml")),
+            selector: DiscoverySelector::Glob {
+                pattern: "**/*.yaml".into(),
+            },
+            max_matches: Some(1),
+            max_visits: None,
+        })
+        .unwrap();
+
+    assert_eq!(
+        result.resources,
+        vec![ResourceId::from_file(root.path().join("real/data.yaml"))]
+    );
 }
 
 #[test]
@@ -305,6 +389,7 @@ fn discovery_allow_patterns_apply_to_matches_not_parent_directories() {
                 matches: Vec::new(),
             },
             max_matches: None,
+            max_visits: None,
         })
         .unwrap();
 
@@ -355,6 +440,7 @@ fn discovery_rejects_matching_symlinks_and_skips_symlink_directories() {
                 pattern: "*.yaml".into(),
             },
             max_matches: None,
+            max_visits: None,
         }),
         Err(RetrieveError::SymlinkDenied(_))
     ));
@@ -367,6 +453,7 @@ fn discovery_rejects_matching_symlinks_and_skips_symlink_directories() {
                 matches: Vec::new(),
             },
             max_matches: None,
+            max_visits: None,
         })
         .unwrap();
     assert_eq!(recursive.len(), 2);
@@ -398,6 +485,7 @@ fn followed_discovery_checks_alias_and_canonical_paths_against_policy() {
                 pattern: "alias/*.yaml".into(),
             },
             max_matches: None,
+            max_visits: None,
         }),
         Err(RetrieveError::PolicyDenied { .. })
     ));
@@ -424,6 +512,7 @@ fn followed_discovery_evaluates_each_alias_path_independently() {
                 pattern: "alias-b/*.yaml".into(),
             },
             max_matches: None,
+            max_visits: None,
         })
         .unwrap();
 
@@ -453,6 +542,7 @@ fn recursive_discovery_uses_an_explicit_work_stack() {
                 matches: Vec::new(),
             },
             max_matches: None,
+            max_visits: None,
         })
         .unwrap();
 

@@ -13,8 +13,8 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use yamalgam_core::FilePolicy;
 
 use super::{
-    DiscoveryRequest, DiscoverySelector, ResourceProvenance, ResourceRequest, ResourceRetriever,
-    RetrievedResource,
+    DiscoveryRequest, DiscoveryResult, DiscoverySelector, ResourceProvenance, ResourceRequest,
+    ResourceRetriever, RetrievedResource,
 };
 use crate::{ResourceId, RetrieveError};
 
@@ -180,17 +180,16 @@ impl FileRetriever {
         &self,
         requested: &Path,
         canonical: PathBuf,
-        maximum: Option<usize>,
-        matches: &mut Vec<PathBuf>,
+        state: &mut WalkState<'_>,
     ) -> Result<(), RetrieveError> {
         self.approved(requested)?;
         self.approved(&canonical)?;
-        matches.push(canonical);
-        if let Some(maximum) = maximum
-            && matches.len() > maximum
+        if state.matches.insert(canonical)
+            && let Some(maximum) = state.max_matches
+            && state.matches.len() > maximum
         {
             return Err(RetrieveError::TooManyMatches {
-                observed: maximum.saturating_add(1),
+                observed: state.matches.len(),
                 maximum,
             });
         }
@@ -208,6 +207,7 @@ impl FileRetriever {
             scan_dir: scan_dir.to_path_buf(),
             match_dir: match_dir.to_path_buf(),
             policy_dir: match_dir.to_path_buf(),
+            depth: 0,
         }];
 
         while let Some(frame) = work.pop() {
@@ -215,6 +215,7 @@ impl FileRetriever {
                 scan_dir,
                 match_dir,
                 policy_dir,
+                depth,
             } = frame
             else {
                 let WalkFrame::Exit(scan_dir) = frame else {
@@ -226,18 +227,21 @@ impl FileRetriever {
             if !active.insert(scan_dir.clone()) {
                 continue;
             }
+            state.visit()?;
 
             let directory = self.open_stable_directory(&scan_dir)?;
             let entries = directory
                 .entries()
                 .map_err(|source| map_io(self.id_for(&scan_dir), source))?;
-            let mut names = entries
-                .map(|entry| {
+            let mut names = Vec::new();
+            for entry in entries {
+                state.visit()?;
+                names.push(
                     entry
                         .map(|entry| entry.file_name())
-                        .map_err(|source| map_io(self.id_for(&scan_dir), source))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+                        .map_err(|source| map_io(self.id_for(&scan_dir), source))?,
+                );
+            }
             names.sort_by(|left, right| compare_paths(Path::new(left), Path::new(right)));
 
             let mut children = Vec::new();
@@ -263,17 +267,20 @@ impl FileRetriever {
                         .symlink_metadata(&canonical)
                         .map_err(|source| map_io(self.id_for(&canonical), source))?;
                     if metadata.is_dir() {
-                        if state.recursive {
+                        if state.descends_from(depth) {
                             self.traversal_approved(&policy_path)?;
                             self.traversal_approved(&canonical)?;
                             children.push(WalkFrame::Enter {
                                 scan_dir: canonical,
                                 match_dir: match_path,
                                 policy_dir: policy_path,
+                                depth: depth.checked_add(1).ok_or(
+                                    RetrieveError::ResourceOverflow("discovery traversal depth"),
+                                )?,
                             });
                         }
                     } else if metadata.is_file() && (state.matcher)(&match_path, &name) {
-                        self.record_match(&policy_path, canonical, state.maximum, state.matches)?;
+                        self.record_match(&policy_path, canonical, state)?;
                     } else if (state.matcher)(&match_path, &name) {
                         self.approved(&policy_path)?;
                         self.approved(&canonical)?;
@@ -283,22 +290,20 @@ impl FileRetriever {
                 }
 
                 if file_type.is_dir() {
-                    if state.recursive {
+                    if state.descends_from(depth) {
                         self.traversal_approved(&policy_path)?;
                         self.traversal_approved(&scan_path)?;
                         children.push(WalkFrame::Enter {
                             scan_dir: scan_path,
                             match_dir: match_path,
                             policy_dir: policy_path,
+                            depth: depth.checked_add(1).ok_or(RetrieveError::ResourceOverflow(
+                                "discovery traversal depth",
+                            ))?,
                         });
                     }
                 } else if file_type.is_file() && (state.matcher)(&match_path, &name) {
-                    self.record_match(
-                        &policy_path,
-                        scan_path.clone(),
-                        state.maximum,
-                        state.matches,
-                    )?;
+                    self.record_match(&policy_path, scan_path.clone(), state)?;
                 } else if (state.matcher)(&match_path, &name) {
                     self.approved(&policy_path)?;
                     return Err(RetrieveError::NotRegularFile(self.id_for(&scan_path)));
@@ -362,30 +367,47 @@ impl ResourceRetriever for FileRetriever {
         })
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         let base = self.relative_path(&request.base)?;
         let parent = base.parent().unwrap_or_else(|| Path::new(""));
         self.traversal_approved(parent)?;
-        let canonical_parent = self.canonical_directory(parent)?;
-        self.traversal_approved(&canonical_parent)?;
-        let mut matches = Vec::new();
+        let mut matches = BTreeSet::new();
+        let mut visited = 0;
 
         match &request.selector {
             DiscoverySelector::Glob { pattern } => {
                 reject_escaping_pattern(pattern, &request.base)?;
                 let glob = compile_globs(std::slice::from_ref(pattern))?;
+                let (static_prefix, max_depth) = glob_scan_plan(pattern);
+                let requested_dir = parent.join(static_prefix);
+                let requested_dir = normalize_relative(&requested_dir)
+                    .ok_or_else(|| RetrieveError::OutsideRoot(request.base.clone()))?;
+                let canonical_dir = match self.canonical_directory(&requested_dir) {
+                    Ok(directory) => directory,
+                    Err(RetrieveError::NotFound(_)) => {
+                        return Ok(DiscoveryResult {
+                            resources: Vec::new(),
+                            visited: 0,
+                        });
+                    }
+                    Err(error) => return Err(error),
+                };
+                self.traversal_approved(&requested_dir)?;
+                self.traversal_approved(&canonical_dir)?;
                 let matcher = |candidate: &Path, _name: &OsStr| {
                     candidate
                         .strip_prefix(parent)
                         .is_ok_and(|relative| glob.is_match(relative))
                 };
                 let mut state = WalkState {
-                    recursive: true,
+                    max_depth,
                     matcher: &matcher,
-                    maximum: request.max_matches,
+                    max_matches: request.max_matches,
+                    max_visits: request.max_visits,
+                    visited: &mut visited,
                     matches: &mut matches,
                 };
-                self.walk(&canonical_parent, parent, &mut state)?;
+                self.walk(&canonical_dir, &requested_dir, &mut state)?;
             }
             DiscoverySelector::Directory {
                 path,
@@ -407,29 +429,59 @@ impl ResourceRetriever for FileRetriever {
                 let globs = compile_globs(patterns)?;
                 let matcher = |_candidate: &Path, name: &OsStr| globs.is_match(Path::new(name));
                 let mut state = WalkState {
-                    recursive: *recursive,
+                    max_depth: (!*recursive).then_some(0),
                     matcher: &matcher,
-                    maximum: request.max_matches,
+                    max_matches: request.max_matches,
+                    max_visits: request.max_visits,
+                    visited: &mut visited,
                     matches: &mut matches,
                 };
                 self.walk(&canonical_dir, &requested_dir, &mut state)?;
             }
         }
 
-        matches.sort_by(|left, right| compare_paths(left, right));
-        matches.dedup();
-        Ok(matches
-            .into_iter()
-            .map(|relative| self.id_for(&relative))
-            .collect())
+        let mut resources = matches.into_iter().collect::<Vec<_>>();
+        resources.sort_by(|left, right| compare_paths(left, right));
+        Ok(DiscoveryResult {
+            resources: resources
+                .into_iter()
+                .map(|relative| self.id_for(&relative))
+                .collect(),
+            visited,
+        })
     }
 }
 
 struct WalkState<'a> {
-    recursive: bool,
+    max_depth: Option<usize>,
     matcher: &'a dyn Fn(&Path, &OsStr) -> bool,
-    maximum: Option<usize>,
-    matches: &'a mut Vec<PathBuf>,
+    max_matches: Option<usize>,
+    max_visits: Option<usize>,
+    visited: &'a mut usize,
+    matches: &'a mut BTreeSet<PathBuf>,
+}
+
+impl WalkState<'_> {
+    fn visit(&mut self) -> Result<(), RetrieveError> {
+        let observed = self
+            .visited
+            .checked_add(1)
+            .ok_or(RetrieveError::ResourceOverflow("discovery visit count"))?;
+        if let Some(maximum) = self.max_visits
+            && observed > maximum
+        {
+            return Err(RetrieveError::TooManyVisits { observed, maximum });
+        }
+        *self.visited = observed;
+        Ok(())
+    }
+
+    const fn descends_from(&self, depth: usize) -> bool {
+        match self.max_depth {
+            Some(maximum) => depth < maximum,
+            None => true,
+        }
+    }
 }
 
 enum WalkFrame {
@@ -437,6 +489,7 @@ enum WalkFrame {
         scan_dir: PathBuf,
         match_dir: PathBuf,
         policy_dir: PathBuf,
+        depth: usize,
     },
     Exit(PathBuf),
 }
@@ -454,6 +507,36 @@ fn compile_globs(patterns: &[String]) -> Result<GlobSet, RetrieveError> {
     builder
         .build()
         .map_err(|source| RetrieveError::InvalidPattern(source.to_string()))
+}
+
+fn glob_scan_plan(pattern: &str) -> (PathBuf, Option<usize>) {
+    let components = pattern
+        .split('/')
+        .filter(|component| !component.is_empty() && *component != ".")
+        .collect::<Vec<_>>();
+    let dynamic = components
+        .iter()
+        .position(|component| has_glob_meta(component))
+        .unwrap_or_else(|| components.len().saturating_sub(1));
+    let prefix = components[..dynamic].iter().collect::<PathBuf>();
+    let remaining = &components[dynamic..];
+    let max_depth = (!remaining.iter().any(|component| component.contains("**")))
+        .then_some(remaining.len().saturating_sub(1));
+    (prefix, max_depth)
+}
+
+fn has_glob_meta(component: &str) -> bool {
+    let mut escaped = false;
+    for byte in component.bytes() {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if matches!(byte, b'*' | b'?' | b'[' | b'{') {
+            return true;
+        }
+    }
+    false
 }
 
 fn normalize_relative(path: &Path) -> Option<PathBuf> {

@@ -68,6 +68,8 @@ pub struct ResolutionSession<R> {
     active: Vec<ResolutionTarget>,
     edges: usize,
     materialized_bytes: usize,
+    fetched_bytes: usize,
+    discovery_visits: usize,
     report: ResolutionReport,
 }
 
@@ -86,6 +88,8 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             active: Vec::new(),
             edges: 0,
             materialized_bytes: 0,
+            fetched_bytes: 0,
+            discovery_visits: 0,
             report: ResolutionReport::default(),
         }
     }
@@ -172,6 +176,8 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         self.active.clear();
         self.edges = 0;
         self.materialized_bytes = 0;
+        self.fetched_bytes = 0;
+        self.discovery_visits = 0;
         mem::take(&mut self.report)
     }
 
@@ -595,7 +601,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
     }
 
     fn discover_include(
-        &self,
+        &mut self,
         directive: &OwnedNode,
         selector: DiscoverySelector,
     ) -> Result<Vec<ResourceId>, ResolveError> {
@@ -616,22 +622,68 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             .limits
             .max_edges
             .map(|maximum| maximum.saturating_sub(self.edges));
-        let mut resources = self
-            .retriever
-            .discover(&DiscoveryRequest {
-                base: directive.origin.clone(),
-                selector,
-                max_matches,
-            })
-            .map_err(|source| {
-                self.error(
+        let max_visits = self
+            .config
+            .resolution
+            .limits
+            .max_discovery_visits
+            .map(|maximum| maximum.saturating_sub(self.discovery_visits));
+        let result = self.retriever.discover(&DiscoveryRequest {
+            base: directive.origin.clone(),
+            selector,
+            max_matches,
+            max_visits,
+        });
+        let result = match result {
+            Ok(result) => result,
+            Err(source @ RetrieveError::TooManyVisits { .. })
+                if self.config.resolution.limits.max_discovery_visits.is_none() =>
+            {
+                return Err(self.error(
                     retrieve_category(&source),
                     ResolutionCapability::Include,
                     directive.span,
                     directive.origin.to_string(),
                     Some(Box::new(source)),
-                )
-            })?;
+                ));
+            }
+            Err(RetrieveError::TooManyVisits { observed, .. }) => {
+                let Some(maximum) = self.config.resolution.limits.max_discovery_visits else {
+                    unreachable!("unconfigured visit ceilings return through the preceding arm")
+                };
+                let observed = self.discovery_visits.checked_add(observed).ok_or_else(|| {
+                    self.overflow_error(
+                        ResolutionCapability::Include,
+                        directive.span,
+                        directive.origin.to_string(),
+                        "discovery visit count",
+                    )
+                })?;
+                self.discovery_visits = maximum;
+                return Err(self.error(
+                    ResolutionErrorCategory::Limit,
+                    ResolutionCapability::Include,
+                    directive.span,
+                    directive.origin.to_string(),
+                    Some(Box::new(LimitExceeded::new(
+                        ResourceLimit::DiscoveryVisits,
+                        observed,
+                        maximum,
+                    ))),
+                ));
+            }
+            Err(source) => {
+                return Err(self.error(
+                    retrieve_category(&source),
+                    ResolutionCapability::Include,
+                    directive.span,
+                    directive.origin.to_string(),
+                    Some(Box::new(source)),
+                ));
+            }
+        };
+        self.charge_discovery_visits(directive.span, directive.origin.to_string(), result.visited)?;
+        let mut resources = result.resources;
         resources.sort();
         resources.dedup();
         if let Some(maximum) = max_matches
@@ -867,22 +919,66 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             self.bump_cache_hit(capability, span, &canonical)?;
             return Ok((bytes, canonical, true, 0));
         }
-        let retrieved = self
-            .retriever
-            .retrieve(&ResourceRequest {
-                id: requested.clone(),
-                max_bytes: self.config.limits.max_input_bytes,
-            })
-            .map_err(|source| {
-                self.error(
+        let remaining_fetched = self
+            .config
+            .resolution
+            .limits
+            .max_fetched_bytes
+            .map(|maximum| maximum.saturating_sub(self.fetched_bytes));
+        let max_bytes = match (self.config.limits.max_input_bytes, remaining_fetched) {
+            (Some(input), Some(session)) => Some(input.min(session)),
+            (Some(input), None) => Some(input),
+            (None, Some(session)) => Some(session),
+            (None, None) => None,
+        };
+        let session_caps_request = remaining_fetched.is_some_and(|session| {
+            self.config
+                .limits
+                .max_input_bytes
+                .is_none_or(|input| session <= input)
+        });
+        let retrieved = match self.retriever.retrieve(&ResourceRequest {
+            id: requested.clone(),
+            max_bytes,
+        }) {
+            Ok(retrieved) => retrieved,
+            Err(RetrieveError::TooLarge { observed, .. }) if session_caps_request => {
+                let Some(maximum) = self.config.resolution.limits.max_fetched_bytes else {
+                    unreachable!("a session request ceiling requires a configured maximum")
+                };
+                let observed = self.fetched_bytes.checked_add(observed).ok_or_else(|| {
+                    self.overflow_error(
+                        capability,
+                        span,
+                        requested.to_string(),
+                        "fetched byte count",
+                    )
+                })?;
+                self.fetched_bytes = maximum;
+                return Err(self.error(
+                    ResolutionErrorCategory::Limit,
+                    capability,
+                    span,
+                    requested.to_string(),
+                    Some(Box::new(LimitExceeded::new(
+                        ResourceLimit::FetchedBytes,
+                        observed,
+                        maximum,
+                    ))),
+                ));
+            }
+            Err(source) => {
+                return Err(self.error(
                     retrieve_category(&source),
                     capability,
                     span,
                     requested.to_string(),
                     Some(Box::new(source)),
-                )
-            })?;
+                ));
+            }
+        };
         let fetched_bytes = retrieved.bytes.len();
+        self.charge_fetched(capability, span, requested.to_string(), fetched_bytes)?;
         let canonical = retrieved.id;
         if &canonical != requested {
             self.aliases.insert(requested.clone(), canonical.clone());
@@ -936,6 +1032,70 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             self.config.resolution.limits.max_materialized_bytes,
         )?;
         self.materialized_bytes = next;
+        Ok(())
+    }
+
+    fn charge_fetched(
+        &mut self,
+        capability: ResolutionCapability,
+        span: Span,
+        target: String,
+        bytes: usize,
+    ) -> Result<(), ResolveError> {
+        let next = self.fetched_bytes.checked_add(bytes).ok_or_else(|| {
+            self.overflow_error(capability, span, target.clone(), "fetched byte count")
+        })?;
+        if let Some(maximum) = self.config.resolution.limits.max_fetched_bytes
+            && next > maximum
+        {
+            self.fetched_bytes = maximum;
+            return Err(self.error(
+                ResolutionErrorCategory::Limit,
+                capability,
+                span,
+                target,
+                Some(Box::new(LimitExceeded::new(
+                    ResourceLimit::FetchedBytes,
+                    next,
+                    maximum,
+                ))),
+            ));
+        }
+        self.fetched_bytes = next;
+        Ok(())
+    }
+
+    fn charge_discovery_visits(
+        &mut self,
+        span: Span,
+        target: String,
+        visits: usize,
+    ) -> Result<(), ResolveError> {
+        let next = self.discovery_visits.checked_add(visits).ok_or_else(|| {
+            self.overflow_error(
+                ResolutionCapability::Include,
+                span,
+                target.clone(),
+                "discovery visit count",
+            )
+        })?;
+        if let Some(maximum) = self.config.resolution.limits.max_discovery_visits
+            && next > maximum
+        {
+            self.discovery_visits = maximum;
+            return Err(self.error(
+                ResolutionErrorCategory::Limit,
+                ResolutionCapability::Include,
+                span,
+                target,
+                Some(Box::new(LimitExceeded::new(
+                    ResourceLimit::DiscoveryVisits,
+                    next,
+                    maximum,
+                ))),
+            ));
+        }
+        self.discovery_visits = next;
         Ok(())
     }
 
@@ -1498,6 +1658,10 @@ const fn retrieve_category(error: &RetrieveError) -> ResolutionErrorCategory {
         RetrieveError::PolicyDenied { .. }
         | RetrieveError::OutsideRoot(_)
         | RetrieveError::SymlinkDenied(_) => ResolutionErrorCategory::PolicyDenied,
+        RetrieveError::TooLarge { .. }
+        | RetrieveError::TooManyMatches { .. }
+        | RetrieveError::TooManyVisits { .. } => ResolutionErrorCategory::Limit,
+        RetrieveError::ResourceOverflow(_) => ResolutionErrorCategory::ResourceOverflow,
         _ => ResolutionErrorCategory::Retrieval,
     }
 }
@@ -1587,7 +1751,7 @@ fn redact_url(url: &mut Url) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DiscoveryRequest, RetrievedResource};
+    use crate::{DiscoveryRequest, DiscoveryResult, RetrievedResource};
     use yamalgam_core::ResolutionMode;
 
     struct NeverRetrieve;
@@ -1597,7 +1761,7 @@ mod tests {
             Err(RetrieveError::NotFound(request.id.clone()))
         }
 
-        fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+        fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
             Err(RetrieveError::DiscoveryUnsupported(request.base.clone()))
         }
     }

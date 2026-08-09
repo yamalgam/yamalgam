@@ -113,6 +113,17 @@ pub enum RetrieveError {
         /// Configured maximum.
         maximum: usize,
     },
+    /// Discovery exceeded its directory-and-entry visit ceiling.
+    #[error("discovery visit count {observed} exceeds maximum of {maximum}")]
+    TooManyVisits {
+        /// Observed visit count.
+        observed: usize,
+        /// Configured maximum.
+        maximum: usize,
+    },
+    /// Checked retriever accounting exceeded `usize`.
+    #[error("resource accounting overflow for {0}")]
+    ResourceOverflow(&'static str),
     /// HTTP returned a non-success status.
     #[error("HTTP status {status} for {id}")]
     HttpStatus {

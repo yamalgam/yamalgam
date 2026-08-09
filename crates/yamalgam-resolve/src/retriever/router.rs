@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use super::{DiscoveryRequest, ResourceRequest, ResourceRetriever, RetrievedResource};
+use super::{
+    DiscoveryRequest, DiscoveryResult, ResourceRequest, ResourceRetriever, RetrievedResource,
+};
 use crate::{ResourceId, RetrieveError};
 
 /// Deterministic scheme-to-retriever router.
@@ -44,7 +46,7 @@ impl ResourceRetriever for RetrieverRouter {
         self.backend(&request.id)?.retrieve(request)
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         self.backend(&request.base)?.discover(request)
     }
 }

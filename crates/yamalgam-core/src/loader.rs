@@ -189,6 +189,10 @@ pub enum ResourceLimit {
     ResolutionEdges,
     /// Bytes materialized through external resolution.
     MaterializedBytes,
+    /// Bytes fetched across one external-resolution session.
+    FetchedBytes,
+    /// Filesystem entries and directories visited during discovery.
+    DiscoveryVisits,
 }
 
 impl std::fmt::Display for ResourceLimit {
@@ -206,6 +210,8 @@ impl std::fmt::Display for ResourceLimit {
             Self::ResolutionDepth => "resolution depth",
             Self::ResolutionEdges => "resolution edges",
             Self::MaterializedBytes => "materialized bytes",
+            Self::FetchedBytes => "fetched bytes",
+            Self::DiscoveryVisits => "discovery visits",
         })
     }
 }
@@ -462,6 +468,10 @@ pub struct ResolutionLimits {
     pub max_edges: Option<usize>,
     /// Maximum bytes materialized into resolved output.
     pub max_materialized_bytes: Option<usize>,
+    /// Maximum bytes fetched across the complete session.
+    pub max_fetched_bytes: Option<usize>,
+    /// Maximum filesystem entries and directories visited during discovery.
+    pub max_discovery_visits: Option<usize>,
 }
 
 /// Policy governing `!include` and `$ref` resolution.
@@ -501,6 +511,8 @@ impl ResolutionPolicy {
                 max_depth: Some(10),
                 max_edges: Some(256),
                 max_materialized_bytes: Some(256 * 1024 * 1024),
+                max_fetched_bytes: Some(256 * 1024 * 1024),
+                max_discovery_visits: Some(100_000),
             },
         }
     }
@@ -513,6 +525,8 @@ impl ResolutionPolicy {
             max_depth: Some(5),
             max_edges: Some(32),
             max_materialized_bytes: Some(10 * 1024 * 1024),
+            max_fetched_bytes: Some(10 * 1024 * 1024),
+            max_discovery_visits: Some(10_000),
         };
         policy
     }
@@ -525,6 +539,8 @@ impl ResolutionPolicy {
             max_depth: Some(64),
             max_edges: Some(4_096),
             max_materialized_bytes: None,
+            max_fetched_bytes: None,
+            max_discovery_visits: Some(1_000_000),
         };
         policy
     }
@@ -537,6 +553,8 @@ impl ResolutionPolicy {
             max_depth: None,
             max_edges: None,
             max_materialized_bytes: None,
+            max_fetched_bytes: None,
+            max_discovery_visits: None,
         };
         policy
     }
@@ -648,21 +666,37 @@ mod tests {
                 Some(10),
                 Some(256),
                 Some(256 * 1024 * 1024),
+                Some(256 * 1024 * 1024),
+                Some(100_000),
             ),
             (
                 LoaderConfig::strict(),
                 Some(5),
                 Some(32),
                 Some(10 * 1024 * 1024),
+                Some(10 * 1024 * 1024),
+                Some(10_000),
             ),
-            (LoaderConfig::trusted(), Some(64), Some(4_096), None),
-            (LoaderConfig::unchecked(), None, None, None),
+            (
+                LoaderConfig::trusted(),
+                Some(64),
+                Some(4_096),
+                None,
+                None,
+                Some(1_000_000),
+            ),
+            (LoaderConfig::unchecked(), None, None, None, None, None),
         ];
 
-        for (config, depth, edges, bytes) in cases {
+        for (config, depth, edges, materialized, fetched, visits) in cases {
             assert_eq!(config.resolution.limits.max_depth, depth);
             assert_eq!(config.resolution.limits.max_edges, edges);
-            assert_eq!(config.resolution.limits.max_materialized_bytes, bytes);
+            assert_eq!(
+                config.resolution.limits.max_materialized_bytes,
+                materialized
+            );
+            assert_eq!(config.resolution.limits.max_fetched_bytes, fetched);
+            assert_eq!(config.resolution.limits.max_discovery_visits, visits);
             assert!(!config.resolution.is_enabled());
         }
     }
@@ -693,6 +727,14 @@ mod tests {
             (
                 ResourceLimit::MaterializedBytes,
                 "materialized bytes 11 exceeds maximum of 10",
+            ),
+            (
+                ResourceLimit::FetchedBytes,
+                "fetched bytes 11 exceeds maximum of 10",
+            ),
+            (
+                ResourceLimit::DiscoveryVisits,
+                "discovery visits 11 exceeds maximum of 10",
             ),
         ];
 

@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use yamalgam_core::{LoaderConfig, ResolutionMode, TagResolution};
 use yamalgam_parser::{Parser, ResolutionErrorCategory, ResolveError, ScalarStyle};
 use yamalgam_resolve::{
-    DiscoveryRequest, OwnedDocument, OwnedKind, OwnedNode, ResolutionSession, ResourceId,
-    ResourceProvenance, ResourceRequest, ResourceRetriever, RetrieveError, RetrievedResource,
-    SessionError,
+    DiscoveryRequest, DiscoveryResult, OwnedDocument, OwnedKind, OwnedNode, ResolutionSession,
+    ResourceId, ResourceProvenance, ResourceRequest, ResourceRetriever, RetrieveError,
+    RetrievedResource, SessionError,
 };
 
 #[derive(Clone, Default)]
@@ -50,7 +50,7 @@ impl ResourceRetriever for CountingRetriever {
             .ok_or_else(|| RetrieveError::NotFound(request.id.clone()))
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         Err(RetrieveError::DiscoveryUnsupported(request.base.clone()))
     }
 }

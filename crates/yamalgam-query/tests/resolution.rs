@@ -13,8 +13,8 @@ use yamalgam_query::{
     Meta, ResolvedInput, YamlVal, YgError, resolution_handle, resolve_document, resolve_documents,
 };
 use yamalgam_resolve::{
-    DiscoveryRequest, ResourceId, ResourceProvenance, ResourceRequest, ResourceRetriever,
-    RetrieveError, RetrievedResource,
+    DiscoveryRequest, DiscoveryResult, ResourceId, ResourceProvenance, ResourceRequest,
+    ResourceRetriever, RetrieveError, RetrievedResource,
 };
 
 #[derive(Clone, Default)]
@@ -56,7 +56,7 @@ impl ResourceRetriever for CountingRetriever {
             .ok_or_else(|| RetrieveError::NotFound(request.id.clone()))
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         Err(RetrieveError::DiscoveryUnsupported(request.base.clone()))
     }
 }

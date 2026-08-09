@@ -67,6 +67,7 @@ fn discovery_is_unsupported_by_default() {
                 pattern: "*.yaml".into(),
             },
             max_matches: Some(10),
+            max_visits: None,
         })
         .unwrap_err();
     assert!(matches!(error, RetrieveError::DiscoveryUnsupported(id) if id == base));

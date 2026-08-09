@@ -27,8 +27,8 @@ pub use report::{
 };
 pub use resource::{Fragment, ResolvedReference, ResourceError, ResourceId, resolve_reference};
 pub use retriever::{
-    ContentIntegrity, DiscoveryRequest, DiscoverySelector, FileRetriever, LibrebarRetriever,
-    MemoryRetriever, ResourceProvenance, ResourceRequest, ResourceRetriever, ResourceValidator,
-    RetrievedResource, RetrieverRouter,
+    ContentIntegrity, DiscoveryRequest, DiscoveryResult, DiscoverySelector, FileRetriever,
+    LibrebarRetriever, MemoryRetriever, ResourceProvenance, ResourceRequest, ResourceRetriever,
+    ResourceValidator, RetrievedResource, RetrieverRouter,
 };
 pub use session::{ResolutionSession, ResolutionTrigger};

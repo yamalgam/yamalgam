@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use yamalgam_core::{LoaderConfig, ResolutionMode};
 use yamalgam_parser::{Parser, ResolutionErrorCategory, ResolveError};
 use yamalgam_resolve::{
-    DiscoveryRequest, OwnedDocument, OwnedKind, OwnedNode, ResolutionSession, ResourceId,
-    ResourceProvenance, ResourceRequest, ResourceRetriever, RetrieveError, RetrievedResource,
+    DiscoveryRequest, DiscoveryResult, OwnedDocument, OwnedKind, OwnedNode, ResolutionSession,
+    ResourceId, ResourceProvenance, ResourceRequest, ResourceRetriever, RetrieveError,
+    RetrievedResource,
 };
 
 #[derive(Clone, Default)]
@@ -38,7 +39,7 @@ impl ResourceRetriever for AnchorRetriever {
             .ok_or_else(|| RetrieveError::NotFound(request.id.clone()))
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         Err(RetrieveError::DiscoveryUnsupported(request.base.clone()))
     }
 }

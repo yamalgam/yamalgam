@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use yamalgam_core::{LoaderConfig, ResolutionCapability, ResolutionMode, ResourceLimit, Span};
 use yamalgam_parser::{Parser, ResolutionErrorCategory, ResolveError};
 use yamalgam_resolve::{
-    DiscoveryRequest, OwnedDocument, OwnedKind, ResolutionOutcome, ResolutionSession, ResourceId,
-    ResourceProvenance, ResourceRequest, ResourceRetriever, RetrieveError, RetrievedResource,
+    DiscoveryRequest, DiscoveryResult, MemoryRetriever, OwnedDocument, OwnedKind,
+    ResolutionOutcome, ResolutionSession, ResourceId, ResourceProvenance, ResourceRequest,
+    ResourceRetriever, RetrieveError, RetrievedResource,
 };
 
 #[derive(Clone, Default)]
@@ -54,7 +55,7 @@ impl ResourceRetriever for SpyRetriever {
             .ok_or_else(|| RetrieveError::NotFound(request.id.clone()))
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         self.state.lock().unwrap().discover_calls += 1;
         Err(RetrieveError::DiscoveryUnsupported(request.base.clone()))
     }
@@ -419,6 +420,76 @@ fn edge_depth_and_materialized_limits_accept_exact_boundary_and_reject_plus_one(
             ResolutionOutcome::Failed(ResolutionErrorCategory::Limit)
         );
     }
+}
+
+#[test]
+fn unique_resources_share_one_session_fetched_byte_budget() {
+    let retriever = SpyRetriever::default();
+    let root_id = id("memory://root/document.yaml");
+    let first = id("memory://shared/first.yaml");
+    let second = id("memory://shared/second.yaml");
+    retriever.insert(first.clone(), b"value: aaaa\n".to_vec());
+    retriever.insert(second.clone(), b"value: bbbb\n".to_vec());
+    let input = document(
+        &root_id,
+        "- {$ref: 'memory://shared/first.yaml#/value'}\n- {$ref: 'memory://shared/second.yaml#/value'}\n",
+    );
+    let mut limited = config(ResolutionMode::Automatic, ResolutionMode::Disabled);
+    limited.resolution.limits.max_fetched_bytes = Some(21);
+    let mut session = ResolutionSession::new(retriever.clone(), limited);
+
+    let error = session.resolve_root(input).unwrap_err();
+    let ResolveError::Resolution {
+        category,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected structured fetched-byte limit error");
+    };
+    let exceeded = source
+        .downcast_ref::<yamalgam_core::LimitExceeded>()
+        .unwrap();
+
+    assert_eq!(category, ResolutionErrorCategory::Limit);
+    assert_eq!(exceeded.limit, yamalgam_core::ResourceLimit::FetchedBytes);
+    assert_eq!(exceeded.observed, 24);
+    assert_eq!(exceeded.maximum, 21);
+    assert_eq!(retriever.retrieve_calls(), vec![first, second]);
+}
+
+#[test]
+fn backend_byte_ceiling_is_reported_as_the_session_fetched_limit() {
+    let root_id = id("memory://root/document.yaml");
+    let child = id("memory://shared/child.yaml");
+    let mut retriever = MemoryRetriever::default();
+    retriever.insert(RetrievedResource {
+        id: child,
+        bytes: b"value: retained\n".to_vec(),
+        provenance: ResourceProvenance::default(),
+    });
+    let input = document(&root_id, "$ref: 'memory://shared/child.yaml'\n");
+    let mut limited = config(ResolutionMode::Automatic, ResolutionMode::Disabled);
+    limited.resolution.limits.max_fetched_bytes = Some(5);
+    let mut session = ResolutionSession::new(retriever, limited);
+
+    let error = session.resolve_root(input).unwrap_err();
+    let ResolveError::Resolution {
+        category,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected structured fetched-byte limit error");
+    };
+    let exceeded = source
+        .downcast_ref::<yamalgam_core::LimitExceeded>()
+        .unwrap();
+
+    assert_eq!(category, ResolutionErrorCategory::Limit);
+    assert_eq!(exceeded.limit, ResourceLimit::FetchedBytes);
+    assert_eq!(exceeded.observed, 16);
+    assert_eq!(exceeded.maximum, 5);
 }
 
 #[test]

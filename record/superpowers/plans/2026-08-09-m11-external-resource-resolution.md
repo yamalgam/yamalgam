@@ -123,6 +123,8 @@ pub struct ResolutionLimits {
     pub max_depth: Option<usize>,
     pub max_edges: Option<usize>,
     pub max_materialized_bytes: Option<usize>,
+    pub max_fetched_bytes: Option<usize>,
+    pub max_discovery_visits: Option<usize>,
 }
 
 pub struct ResolutionPolicy {
@@ -159,15 +161,38 @@ Add exact tests for these contracts:
 #[test]
 fn resolution_presets_match_adr_0016() {
     let cases = [
-        (LoaderConfig::moderate(), Some(10), Some(256), Some(256 * 1024 * 1024)),
-        (LoaderConfig::strict(), Some(5), Some(32), Some(10 * 1024 * 1024)),
-        (LoaderConfig::trusted(), Some(64), Some(4_096), None),
-        (LoaderConfig::unchecked(), None, None, None),
+        (
+            LoaderConfig::moderate(),
+            Some(10),
+            Some(256),
+            Some(256 * 1024 * 1024),
+            Some(256 * 1024 * 1024),
+            Some(100_000),
+        ),
+        (
+            LoaderConfig::strict(),
+            Some(5),
+            Some(32),
+            Some(10 * 1024 * 1024),
+            Some(10 * 1024 * 1024),
+            Some(10_000),
+        ),
+        (
+            LoaderConfig::trusted(),
+            Some(64),
+            Some(4_096),
+            None,
+            None,
+            Some(1_000_000),
+        ),
+        (LoaderConfig::unchecked(), None, None, None, None, None),
     ];
-    for (config, depth, edges, bytes) in cases {
+    for (config, depth, edges, materialized, fetched, visits) in cases {
         assert_eq!(config.resolution.limits.max_depth, depth);
         assert_eq!(config.resolution.limits.max_edges, edges);
-        assert_eq!(config.resolution.limits.max_materialized_bytes, bytes);
+        assert_eq!(config.resolution.limits.max_materialized_bytes, materialized);
+        assert_eq!(config.resolution.limits.max_fetched_bytes, fetched);
+        assert_eq!(config.resolution.limits.max_discovery_visits, visits);
         assert!(!config.resolution.is_enabled());
     }
 }

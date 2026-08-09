@@ -21,7 +21,10 @@ pub trait ResourceRetriever: Send + Sync {
     fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError>;
 
     /// Discover resources below a capability-specific base.
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    ///
+    /// Implementations must enforce both request ceilings while enumerating
+    /// and report every directory or entry visit, including non-matches.
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         Err(RetrieveError::DiscoveryUnsupported(request.base.clone()))
     }
 }
@@ -31,7 +34,7 @@ impl<T: ResourceRetriever + ?Sized> ResourceRetriever for Box<T> {
         (**self).retrieve(request)
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         (**self).discover(request)
     }
 }
@@ -41,7 +44,7 @@ impl<T: ResourceRetriever + ?Sized> ResourceRetriever for Arc<T> {
         (**self).retrieve(request)
     }
 
-    fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
+    fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, RetrieveError> {
         (**self).discover(request)
     }
 }
@@ -64,6 +67,38 @@ pub struct DiscoveryRequest {
     pub selector: DiscoverySelector,
     /// Maximum approved matches.
     pub max_matches: Option<usize>,
+    /// Maximum directories and entries the backend may visit.
+    pub max_visits: Option<usize>,
+}
+
+/// Deterministic discovery output and the filesystem work used to produce it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveryResult {
+    /// Canonical resource identities selected by the request.
+    pub resources: Vec<ResourceId>,
+    /// Directories and entries visited, including non-matches. Implementations
+    /// must not omit work from this count.
+    pub visited: usize,
+}
+
+impl std::ops::Deref for DiscoveryResult {
+    type Target = [ResourceId];
+
+    fn deref(&self) -> &Self::Target {
+        &self.resources
+    }
+}
+
+impl<const N: usize> PartialEq<[ResourceId; N]> for DiscoveryResult {
+    fn eq(&self, other: &[ResourceId; N]) -> bool {
+        self.resources == *other
+    }
+}
+
+impl PartialEq<Vec<ResourceId>> for DiscoveryResult {
+    fn eq(&self, other: &Vec<ResourceId>) -> bool {
+        self.resources == *other
+    }
 }
 
 /// Selector used for resource discovery.

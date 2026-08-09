@@ -25,6 +25,7 @@ filesystem or network access?
 - Require positive network scheme and host allowlists.
 - Bound recursion and substitutions.
 - Bound the bytes added to output.
+- Bound bytes retained by the session cache and filesystem discovery work.
 - Make cache hits obey the same logical budgets as fresh retrievals.
 
 ## Considered Options
@@ -46,10 +47,18 @@ capability. That capability runs only when its mode is automatic.
 All `LoaderConfig` presets keep both modes disabled. Their resolution limits
 are:
 
-- Moderate: depth 10, 256 edges, and 256 MiB materialized.
-- Strict: depth 5, 32 edges, and 10 MiB materialized.
-- Trusted: depth 64, 4,096 edges, and unlimited materialized bytes.
-- Unchecked: unlimited depth, edges, and bytes.
+- Moderate: depth 10, 256 edges, 256 MiB materialized, 256 MiB fetched, and
+  100,000 discovery visits.
+- Strict: depth 5, 32 edges, 10 MiB materialized, 10 MiB fetched, and 10,000
+  discovery visits.
+- Trusted: depth 64, 4,096 edges, unlimited materialized and fetched bytes,
+  and 1,000,000 discovery visits.
+- Unchecked: unlimited depth, edges, bytes, and discovery visits.
+
+Fetched bytes and discovery visits are cumulative across one resolution
+session. Discovery counts every opened directory and enumerated entry,
+including non-matches. Glob traversal begins at its static directory prefix
+and descends only as deeply as the pattern requires unless it contains `**`.
 
 The file policy uses one opened root-directory capability. Includes use
 relative paths. File references use relative paths or `file:` URIs. Deny rules
@@ -81,6 +90,7 @@ use relative resources.
 - Disabled, explicit, and automatic modes have separate integration tests.
 - Explicit resolution never enables the other capability by accident.
 - Each preset enforces its depth, edge, and byte limits.
+- Fetched-byte and discovery-visit limits are cumulative across one session.
 - File traversal, symlink escape, and network allowlist tests fail closed.
 - Disabled policy performs no file or HTTP retrieval.
 
