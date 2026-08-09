@@ -465,6 +465,116 @@ fn slurped_values_select_their_own_opaque_session() {
 }
 
 #[test]
+fn values_cannot_select_a_same_numbered_session_from_another_context() {
+    let root = id("memory://fixtures/root.yaml");
+    let target = id("memory://fixtures/value.yaml");
+    let config = explicit_config();
+    let context_a = RunCtx::new(config.clone());
+    let context_b = RunCtx::new(config.clone());
+
+    let retriever_a = CountingRetriever::default();
+    retriever_a.insert(target.clone(), "from-a\n");
+    let input_a =
+        resolve_document("$ref: ./value.yaml\n", root.clone(), retriever_a, &config).unwrap();
+    let (value_a, key_a) = context_a.register_resolved_input(input_a).unwrap();
+
+    let retriever_b = CountingRetriever::default();
+    retriever_b.insert(target, "from-b\n");
+    let input_b = resolve_document("null\n", root, retriever_b.clone(), &config).unwrap();
+    let (_, key_b) = context_b.register_resolved_input(input_b).unwrap();
+    assert_ne!(key_a, key_b);
+
+    context_b.stage_input_meta(InputMeta::default());
+    context_b.stage_input_resolution(Some(key_b));
+    let filter = engine::compile_filter("ref", &[]).unwrap();
+    let error = engine::run_filter(
+        &filter,
+        &context_b,
+        std::iter::once(Ok::<_, YgError>(value_a)),
+        |_| Ok::<_, YgError>(()),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        YgError::RuntimeResolution { error, .. }
+            if matches!(error.as_ref(), ResolveError::Resolution {
+                category: ResolutionErrorCategory::InvalidResource,
+                ..
+            })
+    ));
+    assert!(retriever_b.calls().is_empty());
+}
+
+#[test]
+fn caught_runtime_resolution_errors_yield_the_catch_fallback() {
+    let root = id("memory://fixtures/root.yaml");
+    let config = explicit_config();
+    let input = resolve_document(
+        "$ref: ./missing.yaml\n",
+        root,
+        CountingRetriever::default(),
+        &config,
+    )
+    .unwrap();
+    let handle = input.resolution.clone();
+
+    let output = evaluate(&RunCtx::new(config), input, r#"try ref catch "fallback""#).unwrap();
+
+    assert_eq!(output, [YamlVal::str("fallback")]);
+    assert!(matches!(
+        handle.borrow().report().edges()[0].outcome,
+        yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::Retrieval)
+    ));
+}
+
+#[test]
+fn rethrown_runtime_resolution_errors_keep_their_typed_payload() {
+    let root = id("memory://fixtures/root.yaml");
+    let config = explicit_config();
+    let input = resolve_document(
+        "$ref: ./missing.yaml\n",
+        root,
+        CountingRetriever::default(),
+        &config,
+    )
+    .unwrap();
+
+    let error = evaluate(&RunCtx::new(config), input, "try ref catch error(.)").unwrap_err();
+
+    assert!(matches!(
+        error,
+        YgError::RuntimeResolution { error, .. }
+            if matches!(error.as_ref(), ResolveError::Resolution {
+                category: ResolutionErrorCategory::Retrieval,
+                ..
+            })
+    ));
+}
+
+#[test]
+fn explicit_resolution_conversion_enforces_the_configured_value_depth() {
+    let root = id("memory://fixtures/root.yaml");
+    let mut config = explicit_config();
+    config.limits.max_depth = Some(1);
+    let input = ResolvedInput {
+        value: YamlVal::seq(vec![YamlVal::seq(vec![YamlVal::str("deep")])]),
+        resolution: resolution_handle(CountingRetriever::default(), Some(root), config.clone()),
+    };
+
+    let error = evaluate(&RunCtx::new(config), input, "ref").unwrap_err();
+
+    assert!(matches!(
+        error,
+        YgError::RuntimeResolution { error, .. }
+            if matches!(error.as_ref(), ResolveError::Resolution {
+                category: ResolutionErrorCategory::Limit,
+                ..
+            })
+    ));
+}
+
+#[test]
 fn runtime_resolution_error_and_report_survive_the_jaq_boundary() {
     let root = id("memory://fixtures/root.yaml");
     let config = explicit_config();

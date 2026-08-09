@@ -390,6 +390,7 @@ impl<'config> Builder<'config> {
             value: YamlVal {
                 data,
                 meta: Some(Rc::new(meta)),
+                runtime_error_token: None,
             },
             subtree_height,
         };

@@ -1011,6 +1011,22 @@ fn raw_and_null_inputs_can_resolve_constructed_refs_from_the_active_base() {
 }
 
 #[test]
+fn slurp_can_resolve_a_constructed_ref_from_the_explicit_base() {
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().join("stdin.yaml");
+    std::fs::write(directory.path().join("shared.yaml"), "answer: 42\n").unwrap();
+
+    yg().arg("--allow-refs=file")
+        .arg(format!("--resolution-root={}", directory.path().display()))
+        .arg(format!("--base-uri={}", base.display()))
+        .args(["--slurp", r#"{"$ref": "./shared.yaml"} | ref"#])
+        .write_stdin("source: retained\n")
+        .assert()
+        .success()
+        .stdout("answer: 42\n");
+}
+
+#[test]
 fn resolution_works_with_json_output_and_atomic_in_place_edits() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("root.yaml");

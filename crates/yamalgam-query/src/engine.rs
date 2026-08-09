@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use jaq_core::data::HasLut;
 use jaq_core::load::{self, Arena, File, Loader};
@@ -93,8 +94,11 @@ pub struct RunCtx {
     pending_input_resolution: Cell<Option<ResolutionSessionKey>>,
     variables: Vec<YamlVal>,
     resolutions: RefCell<HashMap<ResolutionSessionKey, ResolutionHandle>>,
+    resolution_context: Option<u64>,
     next_resolution_key: Cell<u64>,
 }
+
+static NEXT_RESOLUTION_CONTEXT: AtomicU64 = AtomicU64::new(1);
 
 impl RunCtx {
     /// Construct a run context.
@@ -108,6 +112,11 @@ impl RunCtx {
             pending_input_resolution: Cell::new(None),
             variables: Vec::new(),
             resolutions: RefCell::new(HashMap::new()),
+            resolution_context: NEXT_RESOLUTION_CONTEXT
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                })
+                .ok(),
             next_resolution_key: Cell::new(1),
         }
     }
@@ -137,21 +146,47 @@ impl RunCtx {
     ///
     /// # Errors
     ///
-    /// Returns [`YgError::ResourceOverflow`] if the run-local key space is
-    /// exhausted. Keys are never reused.
+    /// Returns [`YgError::ResourceOverflow`] if the context or local key space
+    /// is exhausted. Keys are never reused.
     pub fn register_resolved_input(
         &self,
         mut input: ResolvedInput,
     ) -> Result<(YamlVal, ResolutionSessionKey), YgError> {
+        let key = self.next_resolution_key()?;
+        crate::resolution::assign_session(&mut input.value, key);
+        self.resolutions.borrow_mut().insert(key, input.resolution);
+        Ok((input.value, key))
+    }
+
+    /// Register a retained resolution handle without rewriting value origins.
+    ///
+    /// This supports constructed aggregate roots whose existing children must
+    /// keep their source-specific sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`YgError::ResourceOverflow`] if the context or local key space
+    /// is exhausted. Keys are never reused.
+    pub fn register_resolution(
+        &self,
+        resolution: ResolutionHandle,
+    ) -> Result<ResolutionSessionKey, YgError> {
+        let key = self.next_resolution_key()?;
+        self.resolutions.borrow_mut().insert(key, resolution);
+        Ok(key)
+    }
+
+    fn next_resolution_key(&self) -> Result<ResolutionSessionKey, YgError> {
+        let context = self.resolution_context.ok_or_else(|| {
+            YgError::resource_overflow("resolution context key", "resolution context key overflow")
+        })?;
         let raw = self.next_resolution_key.get();
         let next = raw.checked_add(1).ok_or_else(|| {
             YgError::resource_overflow("resolution session key", "resolution session key overflow")
         })?;
-        let key = ResolutionSessionKey(raw);
-        crate::resolution::assign_session(&mut input.value, key);
-        self.resolutions.borrow_mut().insert(key, input.resolution);
+        let key = ResolutionSessionKey::registered(context, raw);
         self.next_resolution_key.set(next);
-        Ok((input.value, key))
+        Ok(key)
     }
 
     /// Return a clone of a registered resolution handle.
@@ -456,10 +491,11 @@ where
             let output: YamlVal = output.map_err(|error| match error.get_err() {
                 Ok(error) => {
                     let message = error.to_string();
+                    let error_value = error.into_val();
                     E::from(
                         take_input_error(&pending_input_error, &message)
                             .or_else(|| {
-                                crate::runtime_resolution::take_error().map(|error| {
+                                crate::runtime_resolution::take_error(&error_value).map(|error| {
                                     contextualize_runtime_error(
                                         context,
                                         YgError::runtime_resolution(error, message.clone()),
@@ -481,13 +517,6 @@ where
                     YgError::runtime(exception),
                 )),
             })?;
-            if let Some(error) = crate::runtime_resolution::take_error() {
-                let message = error.to_string();
-                return Err(E::from(contextualize_runtime_error(
-                    context,
-                    YgError::runtime_resolution(error, message),
-                )));
-            }
             if let Some(error) = crate::runtime_limits::take_error() {
                 return Err(E::from(contextualize_runtime_error(
                     context,
@@ -504,13 +533,6 @@ where
                 })?;
             last = Some(jaq_core::ValT::as_bool(&output));
             visit(output)?;
-        }
-        if let Some(error) = crate::runtime_resolution::take_error() {
-            let message = error.to_string();
-            return Err(E::from(contextualize_runtime_error(
-                context,
-                YgError::runtime_resolution(error, message),
-            )));
         }
         if let Some(error) = crate::runtime_limits::take_error() {
             return Err(E::from(contextualize_runtime_error(

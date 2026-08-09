@@ -617,10 +617,18 @@ fn collect_inputs(
         } else {
             YamlVal::seq(values)
         };
+        let (value, resolution) = if context.config.resolution.is_enabled()
+            && (args.base_uri.is_some() || context.config.resolution.files.root.is_some())
+        {
+            let source = resolution_source(args, &context.config, runtime, None)?;
+            register_constructed_value(context, &source, value)?
+        } else {
+            (value, None)
+        };
         return Ok(vec![InputRecord {
             metadata: InputMeta::default(),
             value: Ok(value),
-            resolution: None,
+            resolution,
         }]);
     }
     Ok(records)
@@ -1147,6 +1155,25 @@ fn register_anonymous_value(
     });
     value = value.with_meta(metadata);
     Ok((value, Some(key)))
+}
+
+fn register_constructed_value(
+    context: &RunCtx,
+    source: &ResolutionSource,
+    value: YamlVal,
+) -> Result<(YamlVal, Option<ResolutionSessionKey>), YgError> {
+    let resolution = resolution_handle(
+        Arc::clone(&source.retriever),
+        Some(source.base.clone()),
+        source.config.clone(),
+    );
+    let key = context.register_resolution(resolution)?;
+    let mut metadata = value.meta().cloned().unwrap_or_else(Meta::default);
+    metadata.origin = Some(ResourceOrigin {
+        resource: source.base.clone(),
+        session: key,
+    });
+    Ok((value.with_meta(metadata), Some(key)))
 }
 
 fn anonymous_resolution(

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use yamalgam_core::{LoaderConfig, ResolutionCapability};
+use yamalgam_core::{LimitExceeded, LoaderConfig, ResolutionCapability, ResourceLimits};
 use yamalgam_parser::{
     AtomFlags, Chomp, CollectionStyle, Event, Parser, ResolveError, ScalarStyle,
 };
@@ -22,17 +22,27 @@ use crate::value::{Data, Meta, NodeStyle, ScalarPresentation, YamlVal, YgMap, Yg
 pub struct ResourceOrigin {
     /// Resource containing this node.
     pub resource: ResourceId,
-    /// Run-local resolver session. This is intentionally opaque to callers.
+    /// Process-unique resolver session. This is intentionally opaque to callers.
     #[doc(hidden)]
     pub session: ResolutionSessionKey,
 }
 
-/// Opaque run-local key for one query resolution session.
+/// Opaque process-unique key for one query resolution session.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ResolutionSessionKey(pub(crate) u64);
+pub struct ResolutionSessionKey {
+    context: u64,
+    local: u64,
+}
 
 impl ResolutionSessionKey {
-    pub(crate) const UNREGISTERED: Self = Self(0);
+    pub(crate) const UNREGISTERED: Self = Self {
+        context: 0,
+        local: 0,
+    };
+
+    pub(crate) const fn registered(context: u64, local: u64) -> Self {
+        Self { context, local }
+    }
 }
 
 /// Shared query resolver retained by the run context.
@@ -343,6 +353,7 @@ fn owned_to_value(
                 session,
             }),
         })),
+        runtime_error_token: None,
     };
     if let Some(anchor) = anchor {
         anchors.insert(anchor, value.clone());
@@ -355,74 +366,149 @@ pub(crate) fn value_to_owned_node(
     value: YamlVal,
     fallback: &ResourceId,
     capability: ResolutionCapability,
+    limits: &ResourceLimits,
 ) -> Result<OwnedNode, ResolveError> {
-    value_to_owned(value, fallback, capability, 0)
+    let mut pending = vec![ValueToOwnedWork::Visit { value, depth: 0 }];
+    let mut resolved = Vec::new();
+
+    while let Some(work) = pending.pop() {
+        match work {
+            ValueToOwnedWork::Visit { value, depth } => {
+                limits
+                    .check_depth(depth)
+                    .map_err(|error| value_depth_limit(error, capability))?;
+                let origin = value
+                    .meta()
+                    .and_then(|metadata| metadata.origin.as_ref())
+                    .map_or_else(|| fallback.clone(), |origin| origin.resource.clone());
+                let metadata = value.meta().cloned().unwrap_or_default();
+                if let Some(name) = metadata.alias_of {
+                    resolved.push(OwnedNode {
+                        origin,
+                        span: Default::default(),
+                        anchor: None,
+                        tag: None,
+                        kind: OwnedKind::Alias {
+                            name: name.to_string(),
+                        },
+                    });
+                    continue;
+                }
+                let node = ValueNodeMetadata {
+                    origin,
+                    anchor: metadata.anchor.as_ref().map(ToString::to_string),
+                    tag: metadata.tag.as_ref().map(ToString::to_string),
+                };
+                match value.data {
+                    Data::Seq(values) => {
+                        let child_depth = checked_resolution_depth(depth, capability)?;
+                        let len = values.0.len();
+                        pending.push(ValueToOwnedWork::FinishSequence {
+                            node,
+                            style: collection_style(metadata.style),
+                            len,
+                        });
+                        pending.extend(values.0.iter().rev().cloned().map(|value| {
+                            ValueToOwnedWork::Visit {
+                                value,
+                                depth: child_depth,
+                            }
+                        }));
+                    }
+                    Data::Map(mapping) => {
+                        let child_depth = checked_resolution_depth(depth, capability)?;
+                        let len = mapping.0.len();
+                        pending.push(ValueToOwnedWork::FinishMapping {
+                            node,
+                            style: collection_style(metadata.style),
+                            len,
+                        });
+                        for (key, value) in mapping.0.iter().rev() {
+                            pending.push(ValueToOwnedWork::Visit {
+                                value: value.clone(),
+                                depth: child_depth,
+                            });
+                            pending.push(ValueToOwnedWork::Visit {
+                                value: key.clone(),
+                                depth: child_depth,
+                            });
+                        }
+                    }
+                    data => resolved
+                        .push(node.with_kind(OwnedKind::Scalar(canonical_scalar(data, &metadata)))),
+                }
+            }
+            ValueToOwnedWork::FinishSequence { node, style, len } => {
+                let start = resolved
+                    .len()
+                    .checked_sub(len)
+                    .ok_or_else(|| value_depth_overflow(capability, "query sequence conversion"))?;
+                let items = resolved.split_off(start);
+                resolved.push(node.with_kind(OwnedKind::Sequence { style, items }));
+            }
+            ValueToOwnedWork::FinishMapping { node, style, len } => {
+                let node_count = len
+                    .checked_mul(2)
+                    .ok_or_else(|| value_depth_overflow(capability, "query mapping conversion"))?;
+                let start = resolved
+                    .len()
+                    .checked_sub(node_count)
+                    .ok_or_else(|| value_depth_overflow(capability, "query mapping conversion"))?;
+                let nodes = resolved.split_off(start);
+                let mut nodes = nodes.into_iter();
+                let mut entries = Vec::with_capacity(len);
+                while let Some(key) = nodes.next() {
+                    let value = nodes.next().ok_or_else(|| {
+                        value_depth_overflow(capability, "query mapping conversion")
+                    })?;
+                    entries.push((key, value));
+                }
+                resolved.push(node.with_kind(OwnedKind::Mapping { style, entries }));
+            }
+        }
+    }
+
+    if resolved.len() != 1 {
+        return Err(value_depth_overflow(capability, "query value conversion"));
+    }
+    resolved
+        .pop()
+        .ok_or_else(|| value_depth_overflow(capability, "query value conversion"))
 }
 
-#[allow(clippy::result_large_err)] // Recursive helper preserves the typed resolver error.
-fn value_to_owned(
-    value: YamlVal,
-    fallback: &ResourceId,
-    capability: ResolutionCapability,
-    depth: usize,
-) -> Result<OwnedNode, ResolveError> {
-    let origin = value
-        .meta()
-        .and_then(|metadata| metadata.origin.as_ref())
-        .map_or_else(|| fallback.clone(), |origin| origin.resource.clone());
-    let metadata = value.meta().cloned().unwrap_or_default();
-    if let Some(name) = metadata.alias_of {
-        return Ok(OwnedNode {
-            origin,
+struct ValueNodeMetadata {
+    origin: ResourceId,
+    anchor: Option<String>,
+    tag: Option<String>,
+}
+
+impl ValueNodeMetadata {
+    fn with_kind(self, kind: OwnedKind) -> OwnedNode {
+        OwnedNode {
+            origin: self.origin,
             span: Default::default(),
-            anchor: None,
-            tag: None,
-            kind: OwnedKind::Alias {
-                name: name.to_string(),
-            },
-        });
+            anchor: self.anchor,
+            tag: self.tag,
+            kind,
+        }
     }
-    let anchor = metadata.anchor.as_ref().map(ToString::to_string);
-    let tag = metadata.tag.as_ref().map(ToString::to_string);
-    let kind = match value.data {
-        Data::Seq(values) => {
-            let child_depth = checked_resolution_depth(depth, capability)?;
-            let items = values
-                .iter()
-                .cloned()
-                .map(|value| value_to_owned(value, fallback, capability, child_depth))
-                .collect::<Result<Vec<_>, _>>()?;
-            OwnedKind::Sequence {
-                style: collection_style(metadata.style),
-                items,
-            }
-        }
-        Data::Map(mapping) => {
-            let child_depth = checked_resolution_depth(depth, capability)?;
-            let entries = mapping
-                .0
-                .iter()
-                .map(|(key, value)| {
-                    Ok((
-                        value_to_owned(key.clone(), fallback, capability, child_depth)?,
-                        value_to_owned(value.clone(), fallback, capability, child_depth)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, ResolveError>>()?;
-            OwnedKind::Mapping {
-                style: collection_style(metadata.style),
-                entries,
-            }
-        }
-        data => OwnedKind::Scalar(canonical_scalar(data, &metadata)),
-    };
-    Ok(OwnedNode {
-        origin,
-        span: Default::default(),
-        anchor,
-        tag,
-        kind,
-    })
+}
+
+enum ValueToOwnedWork {
+    Visit {
+        value: YamlVal,
+        depth: usize,
+    },
+    FinishSequence {
+        node: ValueNodeMetadata,
+        style: CollectionStyle,
+        len: usize,
+    },
+    FinishMapping {
+        node: ValueNodeMetadata,
+        style: CollectionStyle,
+        len: usize,
+    },
 }
 
 fn canonical_scalar(data: Data, metadata: &Meta) -> OwnedScalar {
@@ -483,6 +569,30 @@ fn checked_resolution_depth(
             reference_chain: Vec::new(),
             source: None,
         })
+}
+
+fn value_depth_limit(error: LimitExceeded, capability: ResolutionCapability) -> ResolveError {
+    ResolveError::Resolution {
+        category: yamalgam_parser::ResolutionErrorCategory::Limit,
+        capability,
+        span: Default::default(),
+        target: "<query value>".into(),
+        reference_chain: Vec::new(),
+        source: Some(Box::new(error)),
+    }
+}
+
+fn value_depth_overflow(capability: ResolutionCapability, resource: &'static str) -> ResolveError {
+    ResolveError::Resolution {
+        category: yamalgam_parser::ResolutionErrorCategory::ResourceOverflow,
+        capability,
+        span: Default::default(),
+        target: "<query value>".into(),
+        reference_chain: Vec::new(),
+        source: Some(Box::new(crate::value::ValueLimitError::ResourceOverflow(
+            resource,
+        ))),
+    }
 }
 
 impl From<DocumentError> for YgError {
