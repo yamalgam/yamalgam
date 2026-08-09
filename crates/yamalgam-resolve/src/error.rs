@@ -3,7 +3,7 @@
 use crate::ResourceId;
 
 /// Failure produced by resolution-session bookkeeping or selection.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SessionError {
     /// Retrieved bytes were not UTF-8 text.
@@ -24,6 +24,29 @@ pub enum SessionError {
     /// JSON Pointer cannot address a non-string YAML mapping key.
     #[error("JSON Pointer cannot address a non-string YAML mapping key")]
     NonStringMappingKey,
+    /// An `!include` directive has an invalid shape or option combination.
+    #[error("malformed !include directive: {0}")]
+    MalformedInclude(&'static str),
+    /// An include selector did not produce the number of resources required by its mode.
+    #[error("include mode requires {expected} resource(s), observed {observed}")]
+    IncludeMatchCount {
+        /// Required number of resources.
+        expected: usize,
+        /// Observed number of resources.
+        observed: usize,
+    },
+    /// An include mode received incompatible YAML root types.
+    #[error("include aggregation requires homogeneous compatible root types")]
+    IncludeAggregateType,
+    /// An include mode is invalid at its insertion site.
+    #[error("include mode is incompatible with its YAML insertion context")]
+    IncludeContext,
+    /// An include-generated mapping key conflicts with an earlier key.
+    #[error("include aggregation produced a duplicate mapping key")]
+    IncludeConflict,
+    /// A filename-derived include key was not valid portable UTF-8.
+    #[error("include resource cannot produce a portable UTF-8 mapping key")]
+    IncludeName,
     /// Checked session accounting exceeded `usize`.
     #[error("resource accounting overflow for {0}")]
     ResourceOverflow(&'static str),

@@ -7,6 +7,7 @@
 
 pub mod document;
 pub mod error;
+mod include;
 pub mod pointer;
 mod ref_resolver;
 pub mod report;
