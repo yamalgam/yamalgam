@@ -365,12 +365,11 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                             }
                         }
                     }
-                    for entry in explicit {
-                        merged.retain(|(key, _)| {
-                            !include::semantic_key_eq(key, &entry.0, self.config.tag_resolution)
-                        });
-                        merged.push(entry);
-                    }
+                    include::override_mapping_entries(
+                        &mut merged,
+                        explicit,
+                        self.config.tag_resolution,
+                    );
                     resolved.push(TreeResult::Node(node.with_kind(OwnedKind::Mapping {
                         style,
                         entries: merged,

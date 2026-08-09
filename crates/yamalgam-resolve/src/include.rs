@@ -5,7 +5,8 @@
 // r[impl resolution.include.aggregation]
 // r[impl resolution.include.text]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, hash_map::RandomState};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem;
 use std::path::{Component, Path, PathBuf};
 
@@ -492,21 +493,20 @@ fn aggregate_merge(
     }
     if mapping {
         let mut merged = Vec::new();
+        let mut index = SemanticKeyIndex::new(tag_resolution);
         for (_, node) in resources {
             let OwnedKind::Mapping { entries, .. } = node.kind else {
                 return Err(SessionError::IncludeAggregateType);
             };
             for entry in entries {
-                if let Some(position) = merged
-                    .iter()
-                    .position(|(key, _)| semantic_key_eq(key, &entry.0, tag_resolution))
-                {
+                if let Some(position) = index.find(&merged, &entry.0) {
                     match spec.on_conflict {
                         ConflictPolicy::Error => return Err(SessionError::IncludeConflict),
                         ConflictPolicy::First => {}
                         ConflictPolicy::Last => merged[position] = entry,
                     }
                 } else {
+                    index.insert(&entry.0, merged.len());
                     merged.push(entry);
                 }
             }
@@ -698,5 +698,264 @@ fn scalar_semantic_value(
             Some(tag_resolution.resolve_scalar(&scalar.value))
         }
         None => Some(Value::String(scalar.value.clone())),
+    }
+}
+
+struct SemanticKeyIndex {
+    tag_resolution: TagResolution,
+    hash_builder: RandomState,
+    positions: HashMap<u64, Vec<usize>>,
+}
+
+impl SemanticKeyIndex {
+    fn new(tag_resolution: TagResolution) -> Self {
+        Self {
+            tag_resolution,
+            hash_builder: RandomState::new(),
+            positions: HashMap::new(),
+        }
+    }
+
+    fn from_entries(entries: &[(OwnedNode, OwnedNode)], tag_resolution: TagResolution) -> Self {
+        let mut index = Self::new(tag_resolution);
+        for (position, (key, _)) in entries.iter().enumerate() {
+            index.insert(key, position);
+        }
+        index
+    }
+
+    fn fingerprint(&self, key: &OwnedNode) -> u64 {
+        let mut hasher = self.hash_builder.build_hasher();
+        hash_semantic_node(key, self.tag_resolution, &mut hasher);
+        hasher.finish()
+    }
+
+    fn find(&self, entries: &[(OwnedNode, OwnedNode)], key: &OwnedNode) -> Option<usize> {
+        self.positions
+            .get(&self.fingerprint(key))?
+            .iter()
+            .copied()
+            .find(|&position| semantic_key_eq(&entries[position].0, key, self.tag_resolution))
+    }
+
+    fn insert(&mut self, key: &OwnedNode, position: usize) {
+        let fingerprint = self.fingerprint(key);
+        self.positions
+            .entry(fingerprint)
+            .or_default()
+            .push(position);
+    }
+}
+
+pub fn override_mapping_entries(
+    merged: &mut Vec<(OwnedNode, OwnedNode)>,
+    explicit: Vec<(OwnedNode, OwnedNode)>,
+    tag_resolution: TagResolution,
+) {
+    let mut unique_reversed = Vec::with_capacity(explicit.len());
+    let mut seen = SemanticKeyIndex::new(tag_resolution);
+    for entry in explicit.into_iter().rev() {
+        if seen.find(&unique_reversed, &entry.0).is_none() {
+            seen.insert(&entry.0, unique_reversed.len());
+            unique_reversed.push(entry);
+        }
+    }
+    unique_reversed.reverse();
+
+    let explicit_index = SemanticKeyIndex::from_entries(&unique_reversed, tag_resolution);
+    merged.retain(|(key, _)| explicit_index.find(&unique_reversed, key).is_none());
+    merged.extend(unique_reversed);
+}
+
+fn hash_semantic_node<H: Hasher>(node: &OwnedNode, tag_resolution: TagResolution, hasher: &mut H) {
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
+        match &node.kind {
+            OwnedKind::Scalar(scalar) => {
+                0_u8.hash(hasher);
+                if let Some(value) = scalar_semantic_value(node, scalar, tag_resolution) {
+                    0_u8.hash(hasher);
+                    hash_semantic_value(&value, hasher);
+                } else {
+                    1_u8.hash(hasher);
+                    scalar.value.hash(hasher);
+                    node.tag.hash(hasher);
+                }
+            }
+            OwnedKind::Alias { name } => {
+                1_u8.hash(hasher);
+                name.hash(hasher);
+            }
+            OwnedKind::Sequence { items, .. } => {
+                2_u8.hash(hasher);
+                items.len().hash(hasher);
+                pending.extend(items.iter().rev());
+            }
+            OwnedKind::Mapping { entries, .. } => {
+                3_u8.hash(hasher);
+                entries.len().hash(hasher);
+                for (key, value) in entries.iter().rev() {
+                    pending.push(value);
+                    pending.push(key);
+                }
+            }
+        }
+    }
+}
+
+fn hash_semantic_value<H: Hasher>(value: &Value, hasher: &mut H) {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::Null => 0_u8.hash(hasher),
+            Value::Bool(value) => {
+                1_u8.hash(hasher);
+                value.hash(hasher);
+            }
+            Value::Integer(value) => {
+                2_u8.hash(hasher);
+                value.hash(hasher);
+            }
+            Value::Float(value) => {
+                3_u8.hash(hasher);
+                let bits = if *value == 0.0 { 0 } else { value.to_bits() };
+                bits.hash(hasher);
+            }
+            Value::String(value) => {
+                4_u8.hash(hasher);
+                value.hash(hasher);
+            }
+            Value::Sequence(items) => {
+                5_u8.hash(hasher);
+                items.len().hash(hasher);
+                pending.extend(items.iter().rev());
+            }
+            Value::Mapping(entries) => {
+                6_u8.hash(hasher);
+                entries.len().hash(hasher);
+                for (key, value) in entries.into_iter().rev() {
+                    pending.push(value);
+                    pending.push(key);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scalar(value: impl Into<String>) -> OwnedNode {
+        OwnedNode {
+            origin: ResourceId::anonymous(),
+            span: Default::default(),
+            anchor: None,
+            tag: None,
+            kind: OwnedKind::Scalar(OwnedScalar {
+                value: value.into(),
+                style: ScalarStyle::Plain,
+                chomp: yamalgam_parser::Chomp::Clip,
+                flags: AtomFlags::empty(),
+            }),
+        }
+    }
+
+    #[test]
+    fn semantic_key_index_is_complete_and_collision_safe() {
+        let tag_resolution = TagResolution::Yaml12;
+        let entries = (0..10_000)
+            .map(|index| (scalar(format!("key-{index}")), scalar(index.to_string())))
+            .collect::<Vec<_>>();
+        let mut index = SemanticKeyIndex::new(tag_resolution);
+        for (position, (key, _)) in entries.iter().enumerate() {
+            index.insert(key, position);
+        }
+
+        assert_eq!(
+            index.positions.values().map(Vec::len).sum::<usize>(),
+            entries.len()
+        );
+        assert_eq!(index.find(&entries, &entries[0].0), Some(0));
+        assert_eq!(index.find(&entries, &entries[9_999].0), Some(9_999));
+
+        let fingerprint = index.fingerprint(&entries[9_999].0);
+        index.positions.get_mut(&fingerprint).unwrap().insert(0, 0);
+        assert_eq!(index.find(&entries, &entries[9_999].0), Some(9_999));
+    }
+
+    #[test]
+    fn semantic_key_fingerprints_match_every_equality_case() {
+        let tag_resolution = TagResolution::Yaml12;
+        let index = SemanticKeyIndex::new(tag_resolution);
+
+        let mut tagged_string = scalar("null");
+        tagged_string.tag = Some("!!str".into());
+        let mut quoted_string = scalar("null");
+        let OwnedKind::Scalar(quoted) = &mut quoted_string.kind else {
+            unreachable!();
+        };
+        quoted.style = ScalarStyle::DoubleQuoted;
+
+        let signed_zero = (scalar("-0.0"), scalar("0.0"));
+        let styled_sequences = (
+            OwnedNode {
+                origin: ResourceId::anonymous(),
+                span: Default::default(),
+                anchor: None,
+                tag: None,
+                kind: OwnedKind::Sequence {
+                    style: CollectionStyle::Block,
+                    items: vec![tagged_string.clone(), signed_zero.0.clone()],
+                },
+            },
+            OwnedNode {
+                origin: ResourceId::anonymous(),
+                span: Default::default(),
+                anchor: None,
+                tag: None,
+                kind: OwnedKind::Sequence {
+                    style: CollectionStyle::Flow,
+                    items: vec![quoted_string.clone(), signed_zero.1.clone()],
+                },
+            },
+        );
+
+        for (left, right) in [
+            (tagged_string, quoted_string),
+            signed_zero,
+            styled_sequences,
+        ] {
+            assert!(semantic_key_eq(&left, &right, tag_resolution));
+            assert_eq!(index.fingerprint(&left), index.fingerprint(&right));
+        }
+    }
+
+    #[test]
+    fn explicit_mapping_overrides_keep_last_occurrence_order() {
+        let mut merged = vec![
+            (scalar("a"), scalar("included-a")),
+            (scalar("b"), scalar("included-b")),
+            (scalar("c"), scalar("included-c")),
+        ];
+        let explicit = vec![
+            (scalar("b"), scalar("first-b")),
+            (scalar("d"), scalar("explicit-d")),
+            (scalar("b"), scalar("last-b")),
+        ];
+
+        override_mapping_entries(&mut merged, explicit, TagResolution::Yaml12);
+
+        assert_eq!(
+            merged
+                .iter()
+                .map(|(key, _)| semantic_string(key, TagResolution::Yaml12).unwrap())
+                .collect::<Vec<_>>(),
+            ["a", "c", "d", "b"]
+        );
+        assert_eq!(
+            semantic_string(&merged[3].1, TagResolution::Yaml12),
+            Some("last-b")
+        );
     }
 }
