@@ -5,12 +5,14 @@
 //! event middleware without coupling filesystem or network I/O to the parser.
 #![deny(unsafe_code)]
 
+pub mod document;
 pub mod error;
 pub mod pointer;
 pub mod report;
 pub mod resource;
 pub mod retriever;
 
+pub use document::{DocumentError, OwnedDocument, OwnedKind, OwnedNode, OwnedScalar};
 pub use error::RetrieveError;
 pub use pointer::{JsonPointer, PointerError};
 pub use report::{

@@ -147,6 +147,81 @@ pub enum Event<'input> {
 }
 
 impl Event<'_> {
+    /// Detach all borrowed strings from their input buffer.
+    #[must_use]
+    pub fn into_owned(self) -> Event<'static> {
+        match self {
+            Self::StreamStart => Event::StreamStart,
+            Self::StreamEnd => Event::StreamEnd,
+            Self::VersionDirective { major, minor, span } => {
+                Event::VersionDirective { major, minor, span }
+            }
+            Self::TagDirective {
+                handle,
+                prefix,
+                span,
+            } => Event::TagDirective {
+                handle: Cow::Owned(handle.into_owned()),
+                prefix: Cow::Owned(prefix.into_owned()),
+                span,
+            },
+            Self::DocumentStart { implicit, span } => Event::DocumentStart { implicit, span },
+            Self::DocumentEnd { implicit, span } => Event::DocumentEnd { implicit, span },
+            Self::SequenceStart {
+                anchor,
+                tag,
+                style,
+                span,
+            } => Event::SequenceStart {
+                anchor: anchor.map(|value| Cow::Owned(value.into_owned())),
+                tag: tag.map(|value| Cow::Owned(value.into_owned())),
+                style,
+                span,
+            },
+            Self::SequenceEnd { span } => Event::SequenceEnd { span },
+            Self::MappingStart {
+                anchor,
+                tag,
+                style,
+                span,
+            } => Event::MappingStart {
+                anchor: anchor.map(|value| Cow::Owned(value.into_owned())),
+                tag: tag.map(|value| Cow::Owned(value.into_owned())),
+                style,
+                span,
+            },
+            Self::MappingEnd { span } => Event::MappingEnd { span },
+            Self::Scalar {
+                anchor,
+                tag,
+                value,
+                style,
+                chomp,
+                flags,
+                span,
+            } => Event::Scalar {
+                anchor: anchor.map(|value| Cow::Owned(value.into_owned())),
+                tag: tag.map(|value| Cow::Owned(value.into_owned())),
+                value: Cow::Owned(value.into_owned()),
+                style,
+                chomp,
+                flags,
+                span,
+            },
+            Self::Alias { name, span } => Event::Alias {
+                name: Cow::Owned(name.into_owned()),
+                span,
+            },
+            Self::Comment { text, span } => Event::Comment {
+                text: Cow::Owned(text.into_owned()),
+                span,
+            },
+            Self::BlockEntry { span } => Event::BlockEntry { span },
+            Self::KeyIndicator { span } => Event::KeyIndicator { span },
+            Self::ValueIndicator { span } => Event::ValueIndicator { span },
+        }
+    }
+
     /// Source span of this event.
     ///
     /// `StreamStart` and `StreamEnd` are synthetic and carry no span.
