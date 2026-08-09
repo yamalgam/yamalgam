@@ -2,12 +2,12 @@
 audit: 2026-08-09-13-m11-final-review
 last_updated: 2026-08-09
 status:
-  fixed: 9
+  fixed: 11
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 11
+  open: 9
 ---
 
 # Actions Taken: M11 External Resource Resolution
@@ -81,3 +81,26 @@ growth. Both alias and canonical paths pass policy checks. The session contract
 also sorts and deduplicates results from custom retrievers before aggregation.
 Regression coverage exercises denied aliases, independently selected aliases,
 deep traversal, file-only allow patterns, and unsorted duplicate discoveries.
+
+---
+
+## 2026-08-09 — isolate imported anchor namespaces
+
+**Disposition:** fixed
+
+**Addresses:**
+[imported-anchor-prefix-can-collide-with-root](README.md#imported-anchor-prefix-can-collide-with-root),
+[fragment-self-containment-ignores-anchor-binding-order](README.md#fragment-self-containment-ignores-anchor-binding-order)
+
+**Commit:** `d97476db33f07eb3bce4a7ec9f9bd7dcec2f193d`
+
+**Author:** Codex
+
+Each root now reserves its complete anchor namespace before resolution, and
+every import deterministically disambiguates its generated prefix against root
+and prior-import names before reserving the result. Fragment validation walks
+keys, values, and sequence items in YAML event order, so an alias must see an
+earlier in-fragment definition; later same-named anchors no longer make an
+external dependency appear self-contained. Regression coverage preserves root
+alias binding across a formerly colliding import and rejects a forward alias in
+a selected fragment.
