@@ -353,6 +353,10 @@ report when resolution ends. High-level integrations can attach the report to
 diagnostics without changing the event representation. M11 does not add a
 `yg deps` command or persist reports to disk.
 
+High-level input adapters retain all completed and current reports when either
+resolution or the subsequent owned-tree conversion fails. Every attempted
+direct or discovered include records an edge before fallible preflight work.
+
 Reports never contain response bodies, credentials, cookies, or authorization
 data. Public rendering uses a sanitized resource identity; the session keeps
 the full internal identity required for retrieval and cache correctness.
@@ -395,6 +399,10 @@ Every error identifies the directive site and includes the resource/reference
 chain when one exists. The report records the same failure without reducing it
 to display text. A resolver stops after its first terminal error, matching the
 current `ResolvedEvents` contract.
+
+Explicit query-filter failures carry their typed error in a hidden
+reference-counted value payload. Catching an error therefore releases its
+payload normally; no run-long token map retains caught failures.
 
 ## Data flow
 

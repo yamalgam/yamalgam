@@ -315,6 +315,28 @@ fn collection_report_edges_keep_matches_and_terminal_failures() {
 }
 
 #[test]
+fn direct_include_preflight_failures_retain_the_attempted_edge() {
+    let origin = ResourceId::anonymous();
+    let mut session = ResolutionSession::new(IncludeRetriever::default(), config());
+
+    let error = session
+        .resolve_root(document(&origin, "!include child.yaml\n"))
+        .unwrap_err();
+
+    assert_eq!(category(&error), ResolutionErrorCategory::InvalidResource);
+    let [edge] = session.report().edges() else {
+        panic!("expected one failed include edge");
+    };
+    assert_eq!(edge.parent, origin);
+    assert_eq!(edge.child, None);
+    assert_eq!(edge.requested, "child.yaml");
+    assert_eq!(
+        edge.outcome,
+        yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::InvalidResource)
+    );
+}
+
+#[test]
 fn named_uses_stem_or_extensionless_relative_keys_and_rejects_duplicates() {
     let retriever = IncludeRetriever::default();
     let a = file("/workspace/parts/a.yaml");

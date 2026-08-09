@@ -1442,10 +1442,13 @@ one. Store `HashMap<ResolutionSessionKey, ResolutionHandle>` in `RunCtx`; a
 counter overflow returns `YgError::ResourceOverflow` and never reuses a key.
 
 Register native `include` and `ref` filters. Mirror `runtime_limits`. Place the
-typed `ResolveError` and report handle in a one-shot side channel. Then return
-a stable jaq text error. Recover the typed values during engine normalization.
-Add structured `YgError::{InputResolution,RuntimeResolution}` variants with
-preserved rendered context and sources.
+typed `ResolveError` in a hidden reference-counted `YamlVal` payload excluded
+from value equality, ordering, hashing, and emission. Then return a stable jaq
+text error and recover the typed value during engine normalization. Caught
+errors release the payload with the jaq value instead of accumulating in a
+run-scoped token map. Add structured
+`YgError::{InputResolution,InputConversion,RuntimeResolution}` variants with
+preserved rendered context, sources, and completed/current resolution reports.
 
 - [x] **Step 5: Preserve the disabled fast path**
 

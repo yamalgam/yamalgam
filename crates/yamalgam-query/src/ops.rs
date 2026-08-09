@@ -22,7 +22,7 @@ const fn value(data: Data) -> YamlVal {
     YamlVal {
         data,
         meta: None,
-        runtime_error_token: None,
+        runtime_resolution_error: None,
     }
 }
 

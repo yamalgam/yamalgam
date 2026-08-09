@@ -40,7 +40,9 @@ The report records each resource ID. It records parent-to-child edges and
 directive spans. Each edge keeps the request and selected fragment. Collection
 edges keep their matches. Counters track fetched bytes, added bytes, and cache
 hits. Failed edges keep their outcome. Callers can read the report after
-success or failure.
+success or failure. High-level input conversion errors retain reports from all
+completed sessions plus the current session. Include edges are created before
+fallible resource preflight.
 
 The report is structured data, not a log transcript. Public output sanitizes
 resource IDs. It never includes response bodies or credentials. It also omits
@@ -69,6 +71,8 @@ also define frozen behavior later.
 
 - Reports are stable across file enumeration and cache state.
 - Success and failure tests keep the same resource and edge context.
+- Post-resolution conversion failures keep completed and current reports.
+- Preflight failures keep an attempted edge with a terminal failure outcome.
 - Public rendering contains no body or credential material.
 - Optional hash data survives retriever, session, and report layers.
 - M11 performs no report or lockfile writes.

@@ -448,7 +448,6 @@ where
     IE: Into<YgError> + 'a,
 {
     let _limit_guard = crate::runtime_limits::activate(&context.config.limits);
-    let _resolution_guard = crate::runtime_resolution::activate();
     let pending_input_error = Rc::new(RefCell::new(None));
     let captured_input_error = Rc::clone(&pending_input_error);
     let inputs = inputs.map(move |result| match result {
@@ -630,7 +629,7 @@ fn contextualize_runtime_error(context: &RunCtx, error: YgError) -> YgError {
                 .as_deref()
                 .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
             YgError::runtime_resolution(
-                *error,
+                error,
                 format!(
                     "{source} document {}: {message}",
                     metadata.document_index + 1

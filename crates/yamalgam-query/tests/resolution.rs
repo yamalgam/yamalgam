@@ -262,6 +262,80 @@ fn document_stream_failures_retain_prior_and_failed_reports() {
     ));
 }
 
+#[test]
+fn post_resolution_conversion_failures_retain_the_current_report() {
+    let root = id("memory://fixtures/root.yaml");
+    let flat = id("memory://fixtures/flat.yaml");
+    let retriever = CountingRetriever::default();
+    retriever.insert(flat, "resolved: true\n");
+    let mut config = automatic_config();
+    config.limits.max_depth = Some(4);
+
+    let error = resolve_document(
+        concat!(
+            "imported: {$ref: ./flat.yaml}\n",
+            "deep: &deep\n",
+            "  one:\n",
+            "    two: value\n",
+            "outer:\n",
+            "  inner:\n",
+            "    copy: *deep\n",
+        ),
+        root,
+        retriever,
+        &config,
+    )
+    .err()
+    .expect("post-resolution conversion must exceed the depth limit");
+
+    let YgError::InputConversion { error, reports, .. } = error else {
+        panic!("expected a typed post-resolution conversion error, got {error:?}");
+    };
+    assert!(matches!(error.as_ref(), YgError::InputLimit { .. }));
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reports[0].edges()[0].outcome,
+        yamalgam_resolve::ResolutionOutcome::Resolved
+    );
+}
+
+#[test]
+fn document_stream_conversion_failures_retain_prior_and_current_reports() {
+    let root = id("memory://fixtures/root.yaml");
+    let flat = id("memory://fixtures/flat.yaml");
+    let retriever = CountingRetriever::default();
+    retriever.insert(flat, "first: value\n");
+    let mut config = automatic_config();
+    config.limits.max_depth = Some(4);
+
+    let error = resolve_documents(
+        concat!(
+            "---\n$ref: ./flat.yaml\n",
+            "---\nimported: {$ref: ./flat.yaml}\n",
+            "deep: &deep\n",
+            "  one:\n",
+            "    two: value\n",
+            "outer:\n",
+            "  inner:\n",
+            "    copy: *deep\n",
+        ),
+        root,
+        retriever,
+        &config,
+    )
+    .err()
+    .expect("the second post-resolution conversion must exceed the depth limit");
+
+    let YgError::InputConversion { error, reports, .. } = error else {
+        panic!("expected a typed post-resolution conversion error, got {error:?}");
+    };
+    assert!(matches!(error.as_ref(), YgError::InputLimit { .. }));
+    assert_eq!(reports.len(), 2);
+    assert!(reports.iter().all(|report| {
+        report.edges()[0].outcome == yamalgam_resolve::ResolutionOutcome::Resolved
+    }));
+}
+
 // r[verify resolution.session]
 #[test]
 fn document_streams_receive_independent_sessions_over_one_retriever() {
@@ -560,6 +634,28 @@ fn caught_runtime_resolution_errors_yield_the_catch_fallback() {
         handle.borrow().report().edges()[0].outcome,
         yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::Retrieval)
     ));
+}
+
+#[test]
+fn repeated_caught_runtime_resolution_errors_do_not_retain_side_channel_entries() {
+    let root = id("memory://fixtures/root.yaml");
+    let config = explicit_config();
+    let input = resolve_document(
+        "$ref: ./missing.yaml\n",
+        root,
+        CountingRetriever::default(),
+        &config,
+    )
+    .unwrap();
+
+    let output = evaluate(
+        &RunCtx::new(config),
+        input,
+        r#"[range(0; 1000) | try ref catch "fallback"] | length"#,
+    )
+    .unwrap();
+
+    assert_eq!(output, [YamlVal::from(1000_usize)]);
 }
 
 #[test]

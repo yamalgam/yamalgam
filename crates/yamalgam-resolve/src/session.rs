@@ -412,6 +412,22 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         trigger: ResolutionTrigger,
     ) -> Result<IncludeExpansion, ResolveError> {
         let first_edge = self.report.edges().len();
+        let direct_edge = match &spec.selector {
+            IncludeSelector::Path(path) => Some(self.report.record_edge(ResolutionEdge {
+                parent: directive.origin.clone(),
+                child: None,
+                capability: ResolutionCapability::Include,
+                source_span: directive.span,
+                requested: sanitize_reference(path),
+                fragment: Fragment::Root,
+                matches: Vec::new(),
+                cache_hit: false,
+                fetched_bytes: 0,
+                materialized_bytes: 0,
+                outcome: ResolutionOutcome::Resolved,
+            })),
+            IncludeSelector::Glob(_) | IncludeSelector::Dir(_) => None,
+        };
         let collection_edge = match &spec.selector {
             IncludeSelector::Path(_) => None,
             IncludeSelector::Glob(pattern) | IncludeSelector::Dir(pattern) => {
@@ -430,9 +446,16 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                 }))
             }
         };
-        let result = self.resolve_include_inner(directive, spec, context, trigger, collection_edge);
+        let result = self.resolve_include_inner(
+            directive,
+            spec,
+            context,
+            trigger,
+            direct_edge,
+            collection_edge,
+        );
         if let Err(error) = &result {
-            let failed_edge = collection_edge.or_else(|| {
+            let failed_edge = direct_edge.or(collection_edge).or_else(|| {
                 (self.report.edges().len() > first_edge).then(|| self.report.edges().len() - 1)
             });
             if let Some(failed_edge) = failed_edge {
@@ -449,6 +472,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         spec: IncludeSpec,
         context: IncludeContext,
         trigger: ResolutionTrigger,
+        direct_edge: Option<usize>,
         collection_edge: Option<usize>,
     ) -> Result<IncludeExpansion, ResolveError> {
         let targets = match &spec.selector {
@@ -523,11 +547,16 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                         )
                     })?;
                     let resource = resolved.resource.clone();
-                    let node = self.resolve_requested(
+                    let public_requested = sanitize_reference(&requested);
+                    let node = self.resolve_requested_inner(
+                        direct_edge.expect("path includes reserve their report edge"),
                         ResolutionCapability::Include,
-                        directive.origin.clone(),
                         directive.span,
-                        requested,
+                        RequestedReference {
+                            raw: &requested,
+                            public: &public_requested,
+                            parent: &directive.origin,
+                        },
                         trigger,
                     )?;
                     (resource, node)
@@ -548,7 +577,13 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                         )
                     })?;
                     let resource = resolved.resource.clone();
-                    let node = self.resolve_text(directive, resolved, requested)?;
+                    let public_requested = sanitize_reference(&requested);
+                    let node = self.resolve_text_inner(
+                        direct_edge.expect("path includes reserve their report edge"),
+                        directive,
+                        resolved,
+                        &public_requested,
+                    )?;
                     (resource, node)
                 }
                 (IncludeFormat::Text, IncludeTarget::Discovered(resource)) => {

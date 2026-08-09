@@ -3,6 +3,7 @@
 use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::{Equivalent, IndexMap, IndexSet};
 use yamalgam_parser::CollectionStyle;
@@ -96,7 +97,7 @@ pub enum Data {
 pub struct YamlVal {
     pub(crate) data: Data,
     pub(crate) meta: Option<Rc<Meta>>,
-    pub(crate) runtime_error_token: Option<u64>,
+    pub(crate) runtime_resolution_error: Option<Arc<yamalgam_parser::ResolveError>>,
 }
 
 #[derive(Default)]
@@ -267,7 +268,7 @@ impl YamlVal {
         Self {
             data: Data::Null,
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         }
     }
 
@@ -277,7 +278,7 @@ impl YamlVal {
         Self {
             data: Data::Int(value),
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         }
     }
 
@@ -287,7 +288,7 @@ impl YamlVal {
         Self {
             data: Data::Float(value),
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         }
     }
 
@@ -297,7 +298,7 @@ impl YamlVal {
         Self {
             data: Data::Str(value.into()),
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         }
     }
 
@@ -307,7 +308,7 @@ impl YamlVal {
         Self {
             data: Data::Seq(Rc::new(YgSeq(items))),
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         }
     }
 
@@ -317,7 +318,7 @@ impl YamlVal {
         Self {
             data: Data::Map(Rc::new(pairs.into_iter().collect())),
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         }
     }
 
@@ -386,7 +387,7 @@ impl YamlVal {
 
     /// Return mutable value data after invalidating source identity and raw text.
     pub(crate) fn data_mut(&mut self) -> &mut Data {
-        self.runtime_error_token = None;
+        self.runtime_resolution_error = None;
         if let Some(metadata) = &mut self.meta {
             let metadata = Rc::make_mut(metadata);
             metadata.anchor = None;
@@ -500,7 +501,7 @@ impl YamlVal {
         Ok(Self {
             data: crate::build::core_value_to_data(schema.resolve_scalar(&text)),
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         })
     }
 
@@ -522,7 +523,7 @@ impl YamlVal {
                     Self {
                         data,
                         meta: tag.meta,
-                        runtime_error_token: tag.runtime_error_token,
+                        runtime_resolution_error: tag.runtime_resolution_error,
                     },
                     "string or null",
                 ));
@@ -554,7 +555,7 @@ impl YamlVal {
                     Self {
                         data,
                         meta: anchor.meta,
-                        runtime_error_token: anchor.runtime_error_token,
+                        runtime_resolution_error: anchor.runtime_resolution_error,
                     },
                     "string or null",
                 ));
@@ -635,7 +636,7 @@ impl YamlVal {
         Ok(Self {
             data: Data::Map(Rc::new(YgMap(output))),
             meta: self.meta.clone(),
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         })
     }
 
@@ -703,7 +704,7 @@ impl YamlVal {
         Ok(Self {
             data,
             meta,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         })
     }
 
@@ -875,7 +876,7 @@ impl From<bool> for YamlVal {
         Self {
             data: Data::Bool(value),
             meta: None,
-            runtime_error_token: None,
+            runtime_resolution_error: None,
         }
     }
 }

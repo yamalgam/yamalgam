@@ -130,7 +130,16 @@ where
             ));
         }
     };
-    let value = value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config)?;
+    let value =
+        match value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(YgError::input_conversion(
+                    error,
+                    vec![resolver.into_report()],
+                ));
+            }
+        };
     Ok(ResolvedInput {
         value,
         resolution: Rc::new(RefCell::new(resolver)),
@@ -180,9 +189,23 @@ where
                     .with_document_context(document_index));
             }
         };
-        let value =
-            value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config)
-                .map_err(|error| error.with_document_context(document_index))?;
+        let value = match value_from_owned_node(
+            document.root,
+            ResolutionSessionKey::UNREGISTERED,
+            config,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                let mut reports = inputs
+                    .iter()
+                    .map(|input| input.resolution.borrow().report().clone())
+                    .collect::<Vec<_>>();
+                reports.push(resolver.into_report());
+                return Err(
+                    YgError::input_conversion(error, reports).with_document_context(document_index)
+                );
+            }
+        };
         inputs.push(ResolvedInput {
             value,
             resolution: Rc::new(RefCell::new(resolver)),
@@ -242,7 +265,18 @@ pub(crate) fn value_from_owned_node(
     config: &LoaderConfig,
 ) -> Result<YamlVal, YgError> {
     let mut anchors = HashMap::new();
-    owned_to_value(node, session, config, &mut anchors, 0)
+    let value = owned_to_value(node, session, config, &mut anchors, 0)?;
+    value
+        .check_depth(&config.limits)
+        .map_err(|error| match error {
+            crate::value::ValueLimitError::Limit(error) => {
+                YgError::input_limit(error, error.to_string())
+            }
+            crate::value::ValueLimitError::ResourceOverflow(resource) => {
+                YgError::resource_overflow(resource, format!("{resource} overflow"))
+            }
+        })?;
+    Ok(value)
 }
 
 pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey) {
@@ -364,7 +398,7 @@ fn owned_to_value(
                 session,
             }),
         })),
-        runtime_error_token: None,
+        runtime_resolution_error: None,
     };
     if let Some(anchor) = anchor {
         anchors.insert(anchor, value.clone());

@@ -1,5 +1,7 @@
 //! Error types for the query engine.
 
+use std::sync::Arc;
+
 use yamalgam_core::{LimitExceeded, Span};
 use yamalgam_resolve::ResolutionReport;
 
@@ -86,6 +88,17 @@ pub enum YgError {
         /// Rendered diagnostic, including input context when available.
         message: String,
     },
+    /// Converting a successfully resolved document into a query value failed.
+    #[error("{message}")]
+    InputConversion {
+        /// Structured conversion failure.
+        #[source]
+        error: Box<Self>,
+        /// Reports completed before and during the failed conversion.
+        reports: Vec<ResolutionReport>,
+        /// Rendered diagnostic, including input context when available.
+        message: String,
+    },
     /// The filter failed while running.
     #[error("{0}")]
     Runtime(String),
@@ -103,7 +116,7 @@ pub enum YgError {
     RuntimeResolution {
         /// Structured resolver failure.
         #[source]
-        error: Box<yamalgam_parser::ResolveError>,
+        error: Arc<yamalgam_parser::ResolveError>,
         /// Rendered diagnostic, including input context when available.
         message: String,
     },
@@ -154,6 +167,15 @@ impl YgError {
                 reports,
                 message: contextualize(message),
             },
+            Self::InputConversion {
+                error,
+                reports,
+                message,
+            } => Self::InputConversion {
+                error,
+                reports,
+                message: contextualize(message),
+            },
             Self::InputLimit { error, message } => Self::InputLimit {
                 error,
                 message: contextualize(message),
@@ -176,6 +198,15 @@ impl YgError {
                 reports,
                 message,
             } => Self::InputResolution {
+                error,
+                reports,
+                message: contextualize(message),
+            },
+            Self::InputConversion {
+                error,
+                reports,
+                message,
+            } => Self::InputConversion {
                 error,
                 reports,
                 message: contextualize(message),
@@ -231,12 +262,21 @@ impl YgError {
     }
 
     pub(crate) fn runtime_resolution(
-        error: yamalgam_parser::ResolveError,
+        error: Arc<yamalgam_parser::ResolveError>,
         message: impl Into<String>,
     ) -> Self {
         Self::RuntimeResolution {
-            error: Box::new(error),
+            error,
             message: message.into(),
+        }
+    }
+
+    pub(crate) fn input_conversion(error: Self, reports: Vec<ResolutionReport>) -> Self {
+        let message = error.to_string();
+        Self::InputConversion {
+            error: Box::new(error),
+            reports,
+            message,
         }
     }
 

@@ -1,8 +1,6 @@
-//! Query resolution session implementation and jaq error side channel.
+//! Query resolution session implementation and structured jaq error payloads.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use yamalgam_core::{LoaderConfig, ResolutionCapability};
 use yamalgam_parser::{ResolutionErrorCategory, ResolveError};
@@ -132,54 +130,13 @@ pub fn resolution_error(
     }
 }
 
-thread_local! {
-    static PENDING_ERRORS: RefCell<HashMap<u64, ResolveError>> = RefCell::new(HashMap::new());
-    static ACTIVE_GUARDS: Cell<usize> = const { Cell::new(0) };
-}
-
-static NEXT_ERROR_TOKEN: AtomicU64 = AtomicU64::new(1);
-
-pub struct Guard {
-    pending: HashMap<u64, ResolveError>,
-}
-
-pub fn activate() -> Guard {
-    ACTIVE_GUARDS.with(|guards| guards.set(guards.get().saturating_add(1)));
-    Guard {
-        pending: PENDING_ERRORS.with(|errors| errors.replace(HashMap::new())),
-    }
-}
-
 pub fn jaq_error(error: ResolveError) -> jaq_core::Error<YamlVal> {
     let message = error.to_string();
     let mut value = YamlVal::str(format!("external resolution failed: {message}"));
-    let token = ACTIVE_GUARDS.with(|guards| guards.get() > 0).then(|| {
-        NEXT_ERROR_TOKEN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .ok()
-    });
-    let token = token.flatten();
-    if let Some(token) = token {
-        value.runtime_error_token = Some(token);
-        PENDING_ERRORS.with(|errors| {
-            errors.borrow_mut().insert(token, error);
-        });
-    }
+    value.runtime_resolution_error = Some(Arc::new(error));
     jaq_core::Error::new(value)
 }
 
-pub fn take_error(value: &YamlVal) -> Option<ResolveError> {
-    let token = value.runtime_error_token?;
-    PENDING_ERRORS.with(|errors| errors.borrow_mut().remove(&token))
-}
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        PENDING_ERRORS.with(|errors| {
-            errors.replace(std::mem::take(&mut self.pending));
-        });
-        ACTIVE_GUARDS.with(|guards| guards.set(guards.get().saturating_sub(1)));
-    }
+pub fn take_error(value: &YamlVal) -> Option<Arc<ResolveError>> {
+    value.runtime_resolution_error.clone()
 }

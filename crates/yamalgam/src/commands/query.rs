@@ -1215,6 +1215,7 @@ fn exit_for(error: &YgError) -> ExitCode {
         YgError::InputRead(_) => ExitCode::from(2),
         YgError::InputParse(_)
         | YgError::InputLimit { .. }
+        | YgError::InputConversion { .. }
         | YgError::Runtime(_)
         | YgError::RuntimeLimit { .. }
         | YgError::ResourceOverflow { .. } => ExitCode::from(5),
