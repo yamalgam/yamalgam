@@ -64,6 +64,23 @@ fn memory_retrieval_reports_missing_resources() {
 }
 
 #[test]
+fn memory_retrieval_can_back_file_identities_for_embedded_callers() {
+    let id = ResourceId::from_file("/fixtures/document.yaml");
+    let mut retriever = MemoryRetriever::default();
+    retriever.insert(fixture(id.clone(), b"embedded: true"));
+
+    let result = retriever
+        .retrieve(&ResourceRequest {
+            id: id.clone(),
+            max_bytes: None,
+        })
+        .unwrap();
+
+    assert_eq!(result.id, id);
+    assert_eq!(result.bytes, b"embedded: true");
+}
+
+#[test]
 fn router_rejects_duplicate_and_unsupported_schemes() {
     let mut router = RetrieverRouter::default();
     router

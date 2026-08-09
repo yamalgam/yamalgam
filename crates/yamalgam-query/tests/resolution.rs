@@ -69,7 +69,7 @@ fn explicit_config() -> LoaderConfig {
     let mut config = LoaderConfig::unchecked();
     config.resolution.include.mode = ResolutionMode::Explicit;
     config.resolution.refs.mode = ResolutionMode::Explicit;
-    config.resolution.refs.allow_schemes = vec!["memory".into()];
+    config.resolution.refs.allow_schemes = vec!["memory".into(), "file".into()];
     config
 }
 
@@ -303,11 +303,11 @@ fn document_streams_receive_independent_sessions_over_one_retriever() {
 // r[verify resolution.ref]
 #[test]
 fn explicit_include_and_ref_filters_recurse_with_policy_modes() {
-    let root = id("memory://fixtures/root.yaml");
-    let shared = id("memory://fixtures/shared.yaml");
-    let nested = id("memory://fixtures/nested/child.yaml");
-    let leaf = id("memory://fixtures/nested/leaf.yaml");
-    let included = id("memory://fixtures/nested/included.yaml");
+    let root = ResourceId::from_file("/fixtures/root.yaml");
+    let shared = ResourceId::from_file("/fixtures/shared.yaml");
+    let nested = ResourceId::from_file("/fixtures/nested/child.yaml");
+    let leaf = ResourceId::from_file("/fixtures/nested/leaf.yaml");
+    let included = ResourceId::from_file("/fixtures/nested/included.yaml");
     let retriever = CountingRetriever::default();
     retriever.insert(shared, "!include ./nested/included.yaml\n");
     retriever.insert(included, "included: true\n");
@@ -349,9 +349,9 @@ fn explicit_include_and_ref_filters_recurse_with_policy_modes() {
 
 #[test]
 fn explicit_include_filter_accepts_scalar_and_structured_directives() {
-    let root = id("memory://fixtures/root.yaml");
-    let first = id("memory://fixtures/first.yaml");
-    let second = id("memory://fixtures/second.yaml");
+    let root = ResourceId::from_file("/fixtures/root.yaml");
+    let first = ResourceId::from_file("/fixtures/first.yaml");
+    let second = ResourceId::from_file("/fixtures/second.yaml");
     let retriever = CountingRetriever::default();
     retriever.insert(first, "first: 1\n");
     retriever.insert(second, "second: 2\n");

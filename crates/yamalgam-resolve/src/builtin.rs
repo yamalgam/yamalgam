@@ -8,7 +8,7 @@ use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
 
 use crate::{
     DocumentError, OwnedDocument, ResolutionReport, ResolutionSession, ResourceId,
-    ResourceRetriever,
+    ResourceRetriever, SessionError,
 };
 
 /// Yamalgam's `$ref` and `!include` resolver over the parser event contract.
@@ -60,6 +60,11 @@ impl<R: ResourceRetriever> BuiltinResolver<R> {
         event: Event<'input>,
         config: &LoaderConfig,
     ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+        if config != self.session.config() {
+            return Err(ResolveError::Custom(Box::new(
+                SessionError::LoaderConfigMismatch,
+            )));
+        }
         if !automatically_resolves(config) {
             return Ok(yamalgam_parser::resolve::smallvec![event]);
         }

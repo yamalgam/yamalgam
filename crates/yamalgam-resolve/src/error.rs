@@ -6,6 +6,9 @@ use crate::ResourceId;
 #[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum SessionError {
+    /// Resolver construction and downstream consumer policies differ.
+    #[error("resolver and consumer loader configurations must match")]
+    LoaderConfigMismatch,
     /// Retrieved bytes were not UTF-8 text.
     #[error("retrieved YAML is not valid UTF-8")]
     InvalidUtf8(#[source] std::str::Utf8Error),

@@ -6,6 +6,9 @@ use super::{ResourceRequest, ResourceRetriever, RetrievedResource};
 use crate::{ResourceId, RetrieveError};
 
 /// Exact-identity in-memory resource backend.
+///
+/// Direct use can serve any [`ResourceId`] identity. A [`RetrieverRouter`](super::RetrieverRouter)
+/// registration controls which URI scheme reaches it when routing is required.
 #[derive(Default)]
 pub struct MemoryRetriever {
     resources: BTreeMap<ResourceId, RetrievedResource>,
@@ -20,11 +23,6 @@ impl MemoryRetriever {
 
 impl ResourceRetriever for MemoryRetriever {
     fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError> {
-        if request.id.scheme() != "memory" {
-            return Err(RetrieveError::UnsupportedScheme(
-                request.id.scheme().to_owned(),
-            ));
-        }
         let resource = self
             .resources
             .get(&request.id)

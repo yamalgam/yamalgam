@@ -7,9 +7,9 @@ use yamalgam_resolve::{
 };
 
 fn fixture() -> (BuiltinResolver<MemoryRetriever>, LoaderConfig) {
-    let root = ResourceId::new("memory://fixtures/root.yaml").unwrap();
-    let shared = ResourceId::new("memory://fixtures/shared.yaml").unwrap();
-    let included = ResourceId::new("memory://fixtures/included.yaml").unwrap();
+    let root = ResourceId::from_file("/fixtures/root.yaml");
+    let shared = ResourceId::from_file("/fixtures/shared.yaml");
+    let included = ResourceId::from_file("/fixtures/included.yaml");
     let mut retriever = MemoryRetriever::default();
     for (id, input) in [
         (shared, "service: {name: api, ports: [80, 443]}\n"),
@@ -24,7 +24,7 @@ fn fixture() -> (BuiltinResolver<MemoryRetriever>, LoaderConfig) {
     let mut config = LoaderConfig::unchecked();
     config.resolution.include.mode = ResolutionMode::Automatic;
     config.resolution.refs.mode = ResolutionMode::Automatic;
-    config.resolution.refs.allow_schemes = vec!["memory".into()];
+    config.resolution.refs.allow_schemes = vec!["file".into()];
     let resolver = BuiltinResolver::new(retriever, root, config.clone());
     (resolver, config)
 }

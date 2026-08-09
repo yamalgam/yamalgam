@@ -55,7 +55,7 @@ fn document(origin: &ResourceId, input: &str) -> OwnedDocument {
 fn config() -> LoaderConfig {
     let mut config = LoaderConfig::unchecked();
     config.resolution.refs.mode = ResolutionMode::Automatic;
-    config.resolution.refs.allow_schemes = vec!["memory".into()];
+    config.resolution.refs.allow_schemes = vec!["memory".into(), "file".into()];
     config.resolution.include.mode = ResolutionMode::Automatic;
     config
 }
@@ -175,6 +175,36 @@ fn imported_namespace_avoids_anchor_names_reserved_by_the_root() {
 }
 
 #[test]
+fn primed_root_reserves_sibling_anchors_for_explicit_resolution() {
+    let retriever = AnchorRetriever::default();
+    let root = ResourceId::from_file("/workspace/root.yaml");
+    let child = ResourceId::from_file("/workspace/child.yaml");
+    retriever.insert(child, "&shared [imported, *shared]\n");
+    let input = document(
+        &root,
+        concat!(
+            "reserved: &yg_r2_e1_shared original\n",
+            "selected: !include child.yaml\n",
+            "copy: *yg_r2_e1_shared\n",
+        ),
+    );
+    let selected = mapping_value(&input.root, "selected").clone();
+    let mut selected_config = LoaderConfig::unchecked();
+    selected_config.resolution.include.mode = ResolutionMode::Explicit;
+    let mut session = ResolutionSession::new(retriever, selected_config);
+    session.prime_root(root, input);
+
+    let output = session
+        .resolve_explicit(yamalgam_core::ResolutionCapability::Include, selected)
+        .unwrap();
+    let (anchors, aliases) = anchors_and_aliases(&output);
+
+    assert_eq!(anchors, aliases);
+    assert_eq!(anchors.len(), 1);
+    assert_ne!(anchors[0], "yg_r2_e1_shared");
+}
+
+#[test]
 fn selected_fragment_may_use_internal_anchors_but_not_external_ones() {
     let retriever = AnchorRetriever::default();
     let shared = id("memory://shared/fragments.yaml");
@@ -247,15 +277,15 @@ fn aliases_inside_mapping_keys_are_rewritten_with_their_definition() {
 #[test]
 fn nested_imports_get_independent_namespaces_and_anchor_like_text_is_untouched() {
     let retriever = AnchorRetriever::default();
-    let parent = id("memory://shared/parent.yaml");
-    let child = id("memory://shared/child.yaml");
+    let parent = ResourceId::from_file("/workspace/parent.yaml");
+    let child = ResourceId::from_file("/workspace/child.yaml");
     retriever.insert(
         parent,
         "outer: &same [parent, *same]\nchild: !include child.yaml\ntext: 'literal &same and *same'\n",
     );
     retriever.insert(child, "&same [child, *same]\n");
 
-    let output = resolve(retriever, "$ref: 'memory://shared/parent.yaml'\n").unwrap();
+    let output = resolve(retriever, "$ref: 'file:///workspace/parent.yaml'\n").unwrap();
 
     let (anchors, aliases) = anchors_and_aliases(&output.root);
     assert_eq!(anchors, ["yg_r2_e1_same", "yg_r3_e2_same"]);

@@ -98,6 +98,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
 
     /// Seed the raw-document cache with the containing root document.
     pub fn prime_root(&mut self, id: ResourceId, document: OwnedDocument) {
+        anchors::reserve(&document.root, &mut self.reserved_anchors);
         if self.cache.insert(id.clone(), Arc::new(document)).is_none() {
             self.report.record_resource(ResourceRecord {
                 kind: resource_kind(&id),
@@ -115,7 +116,6 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
     ///
     /// Returns a structured [`ResolveError`] on the first failed directive.
     pub fn resolve_root(&mut self, document: OwnedDocument) -> Result<OwnedDocument, ResolveError> {
-        anchors::reserve(&document.root, &mut self.reserved_anchors);
         let origin = document.root.origin.clone();
         self.prime_root(origin, document.clone());
         self.resolve_tree(document.root, ResolutionTrigger::Automatic)
@@ -599,7 +599,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         directive: &OwnedNode,
         selector: DiscoverySelector,
     ) -> Result<Vec<ResourceId>, ResolveError> {
-        if matches!(directive.origin.scheme(), "http" | "https") {
+        if directive.origin.scheme() != "file" {
             return Err(self.error(
                 ResolutionErrorCategory::PolicyDenied,
                 ResolutionCapability::Include,
@@ -1274,9 +1274,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         parent: &ResourceId,
         reference: &ResolvedReference,
     ) -> Result<(), ResolveError> {
-        if capability == ResolutionCapability::Include
-            && matches!(reference.resource.scheme(), "http" | "https")
-        {
+        if capability == ResolutionCapability::Include && reference.resource.scheme() != "file" {
             return Err(self.error(
                 ResolutionErrorCategory::PolicyDenied,
                 capability,

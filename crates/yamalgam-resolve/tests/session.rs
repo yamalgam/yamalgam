@@ -72,7 +72,7 @@ fn document(origin: &ResourceId, yaml: &str) -> OwnedDocument {
 fn config(refs: ResolutionMode, include: ResolutionMode) -> LoaderConfig {
     let mut config = LoaderConfig::unchecked();
     config.resolution.refs.mode = refs;
-    config.resolution.refs.allow_schemes = vec!["memory".into()];
+    config.resolution.refs.allow_schemes = vec!["memory".into(), "file".into()];
     config.resolution.include.mode = include;
     config
 }
@@ -263,6 +263,26 @@ fn cached_include_resources_do_not_bypass_ref_transport_policy() {
     assert_eq!(retriever.retrieve_calls(), vec![shared]);
 }
 
+#[test]
+fn relative_includes_from_non_file_origins_are_denied_before_retrieval() {
+    let retriever = SpyRetriever::default();
+    let root = id("memory://root/document.yaml");
+    let child = id("memory://root/child.yaml");
+    retriever.insert(child, "retained\n");
+    let input = document(&root, "!include child.yaml\n");
+    let selected = config(ResolutionMode::Disabled, ResolutionMode::Automatic);
+
+    let error = ResolutionSession::new(retriever.clone(), selected)
+        .resolve_root(input)
+        .unwrap_err();
+
+    assert_eq!(
+        resolution_error(&error).0,
+        ResolutionErrorCategory::PolicyDenied
+    );
+    assert!(retriever.retrieve_calls().is_empty());
+}
+
 // r[verify resolution.ref.document]
 #[test]
 fn invalid_utf8_yaml_and_document_count_remain_distinct() {
@@ -405,14 +425,14 @@ fn edge_depth_and_materialized_limits_accept_exact_boundary_and_reject_plus_one(
 fn explicit_resolution_recurses_for_that_capability_only() {
     let retriever = SpyRetriever::default();
     let root_id = id("memory://root/document.yaml");
-    let ref_id = id("memory://shared/ref.yaml");
-    let include_id = id("memory://shared/include.yaml");
+    let ref_id = ResourceId::from_file("/shared/ref.yaml");
+    let include_id = ResourceId::from_file("/shared/include.yaml");
     retriever.insert(
         ref_id.clone(),
-        b"nested:\n  value: {$ref: 'memory://shared/ref.yaml#/leaf'}\n  other: !include include.yaml\nleaf: done\n".to_vec(),
+        b"nested:\n  value: {$ref: 'file:///shared/ref.yaml#/leaf'}\n  other: !include include.yaml\nleaf: done\n".to_vec(),
     );
     retriever.insert(include_id.clone(), b"included\n".to_vec());
-    let node = document(&root_id, "$ref: 'memory://shared/ref.yaml#/nested'\n").root;
+    let node = document(&root_id, "$ref: 'file:///shared/ref.yaml#/nested'\n").root;
     let mut session = ResolutionSession::new(
         retriever.clone(),
         config(ResolutionMode::Explicit, ResolutionMode::Explicit),
@@ -431,7 +451,7 @@ fn explicit_resolution_recurses_for_that_capability_only() {
     let mut automatic = config(ResolutionMode::Explicit, ResolutionMode::Automatic);
     automatic.resolution.refs.mode = ResolutionMode::Explicit;
     let mut session = ResolutionSession::new(retriever.clone(), automatic);
-    let node = document(&root_id, "$ref: 'memory://shared/ref.yaml#/nested'\n").root;
+    let node = document(&root_id, "$ref: 'file:///shared/ref.yaml#/nested'\n").root;
     let output = session
         .resolve_explicit(ResolutionCapability::Ref, node)
         .unwrap();
