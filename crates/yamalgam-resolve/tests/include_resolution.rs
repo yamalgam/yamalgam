@@ -194,7 +194,7 @@ fn include_selectors_must_be_relative_paths() {
 }
 
 #[test]
-fn node_requires_one_match_while_list_preserves_discovery_order() {
+fn node_requires_one_match_while_list_normalizes_discovery_order() {
     let retriever = IncludeRetriever::default();
     let a = file("/workspace/parts/a.yaml");
     let b = file("/workspace/parts/b.yaml");
@@ -226,7 +226,7 @@ fn node_requires_one_match_while_list_preserves_discovery_order() {
     .unwrap();
     assert_eq!(scalar(&single.root), "a");
 
-    retriever.set_discoveries(vec![b, a]);
+    retriever.set_discoveries(vec![b.clone(), a, b]);
     let error = resolve(
         retriever.clone(),
         "!include\n  glob: 'parts/*.yaml'\n  mode: node\n",
@@ -243,7 +243,7 @@ fn node_requires_one_match_while_list_preserves_discovery_order() {
     let OwnedKind::Sequence { items, .. } = &output.root.kind else {
         panic!("expected synthesized list");
     };
-    assert_eq!(items.iter().map(scalar).collect::<Vec<_>>(), ["b", "a"]);
+    assert_eq!(items.iter().map(scalar).collect::<Vec<_>>(), ["a", "b"]);
     assert_eq!(session.report().edges().len(), 2);
     assert!(
         session

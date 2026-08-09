@@ -3,11 +3,12 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
-use cap_std::fs::Dir;
+use cap_std::fs::{Dir, File, OpenOptions};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use yamalgam_core::FilePolicy;
 
@@ -82,6 +83,15 @@ impl FileRetriever {
         Ok(())
     }
 
+    fn traversal_approved(&self, relative: &Path) -> Result<(), RetrieveError> {
+        if self.deny.is_match(relative) {
+            return Err(RetrieveError::PolicyDenied {
+                id: self.id_for(relative),
+            });
+        }
+        Ok(())
+    }
+
     fn canonical_existing(&self, relative: &Path) -> Result<PathBuf, RetrieveError> {
         let requested_id = self.id_for(relative);
         if self.follow_symlinks {
@@ -116,14 +126,50 @@ impl FileRetriever {
 
     fn canonical_directory(&self, relative: &Path) -> Result<PathBuf, RetrieveError> {
         let canonical = self.canonical_existing(relative)?;
-        let metadata = self
-            .root
-            .metadata(capability_path(&canonical))
+        let directory = self.open_stable_directory(&canonical)?;
+        let metadata = directory
+            .dir_metadata()
             .map_err(|source| map_io(self.id_for(&canonical), source))?;
         if !metadata.is_dir() {
             return Err(RetrieveError::NotRegularFile(self.id_for(&canonical)));
         }
         Ok(canonical)
+    }
+
+    fn open_stable_directory(&self, relative: &Path) -> Result<Dir, RetrieveError> {
+        let mut directory = self
+            .root
+            .try_clone()
+            .map_err(|source| map_io(self.id_for(Path::new("")), source))?;
+        let mut current = PathBuf::new();
+        for component in relative.components() {
+            current.push(component.as_os_str());
+            directory = directory
+                .open_dir_nofollow(component.as_os_str())
+                .map_err(|source| map_io(self.id_for(&current), source))?;
+        }
+        Ok(directory)
+    }
+
+    fn open_stable_file(&self, relative: &Path) -> Result<File, RetrieveError> {
+        let id = self.id_for(relative);
+        let Some(name) = relative.file_name() else {
+            return Err(RetrieveError::NotRegularFile(id));
+        };
+        let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+        let directory = self.open_stable_directory(parent)?;
+        let file_type = directory
+            .symlink_metadata(name)
+            .map_err(|source| map_io(id.clone(), source))?
+            .file_type();
+        if !file_type.is_file() {
+            return Err(RetrieveError::NotRegularFile(id));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        directory
+            .open_with(name, &options)
+            .map_err(|source| map_io(id, source))
     }
 
     fn id_for(&self, relative: &Path) -> ResourceId {
@@ -132,10 +178,12 @@ impl FileRetriever {
 
     fn record_match(
         &self,
+        requested: &Path,
         canonical: PathBuf,
         maximum: Option<usize>,
         matches: &mut Vec<PathBuf>,
     ) -> Result<(), RetrieveError> {
+        self.approved(requested)?;
         self.approved(&canonical)?;
         matches.push(canonical);
         if let Some(maximum) = maximum
@@ -155,55 +203,110 @@ impl FileRetriever {
         match_dir: &Path,
         state: &mut WalkState<'_>,
     ) -> Result<(), RetrieveError> {
-        if !state.visited.insert(scan_dir.to_path_buf()) {
-            return Ok(());
-        }
-        let entries = self
-            .root
-            .read_dir(capability_path(scan_dir))
-            .map_err(|source| map_io(self.id_for(scan_dir), source))?;
-        for entry in entries {
-            let entry = entry.map_err(|source| map_io(self.id_for(scan_dir), source))?;
-            let name = entry.file_name();
-            let scan_path = scan_dir.join(&name);
-            let match_path = match_dir.join(&name);
-            let file_type = entry
-                .file_type()
-                .map_err(|source| map_io(self.id_for(&scan_path), source))?;
+        let mut active = BTreeSet::new();
+        let mut work = vec![WalkFrame::Enter {
+            scan_dir: scan_dir.to_path_buf(),
+            match_dir: match_dir.to_path_buf(),
+            policy_dir: match_dir.to_path_buf(),
+        }];
 
-            if file_type.is_symlink() {
-                if !self.follow_symlinks {
-                    if (state.matcher)(&match_path, &name) {
-                        return Err(RetrieveError::SymlinkDenied(self.id_for(&scan_path)));
-                    }
-                    continue;
-                }
-                let canonical = self.canonical_existing(&scan_path)?;
-                let metadata = self
-                    .root
-                    .metadata(&canonical)
-                    .map_err(|source| map_io(self.id_for(&canonical), source))?;
-                if metadata.is_dir() {
-                    if state.recursive {
-                        self.walk(&canonical, &match_path, state)?;
-                    }
-                } else if metadata.is_file() && (state.matcher)(&match_path, &name) {
-                    self.record_match(canonical, state.maximum, state.matches)?;
-                } else if (state.matcher)(&match_path, &name) {
-                    return Err(RetrieveError::NotRegularFile(self.id_for(&canonical)));
-                }
+        while let Some(frame) = work.pop() {
+            let WalkFrame::Enter {
+                scan_dir,
+                match_dir,
+                policy_dir,
+            } = frame
+            else {
+                let WalkFrame::Exit(scan_dir) = frame else {
+                    unreachable!();
+                };
+                active.remove(&scan_dir);
+                continue;
+            };
+            if !active.insert(scan_dir.clone()) {
                 continue;
             }
 
-            if file_type.is_dir() {
-                if state.recursive {
-                    self.walk(&scan_path, &match_path, state)?;
+            let directory = self.open_stable_directory(&scan_dir)?;
+            let entries = directory
+                .entries()
+                .map_err(|source| map_io(self.id_for(&scan_dir), source))?;
+            let mut names = entries
+                .map(|entry| {
+                    entry
+                        .map(|entry| entry.file_name())
+                        .map_err(|source| map_io(self.id_for(&scan_dir), source))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            names.sort_by(|left, right| compare_paths(Path::new(left), Path::new(right)));
+
+            let mut children = Vec::new();
+            for name in names {
+                let scan_path = scan_dir.join(&name);
+                let match_path = match_dir.join(&name);
+                let policy_path = policy_dir.join(&name);
+                let file_type = directory
+                    .symlink_metadata(&name)
+                    .map_err(|source| map_io(self.id_for(&scan_path), source))?
+                    .file_type();
+
+                if file_type.is_symlink() {
+                    if !self.follow_symlinks {
+                        if (state.matcher)(&match_path, &name) {
+                            return Err(RetrieveError::SymlinkDenied(self.id_for(&scan_path)));
+                        }
+                        continue;
+                    }
+                    let canonical = self.canonical_existing(&scan_path)?;
+                    let metadata = self
+                        .root
+                        .symlink_metadata(&canonical)
+                        .map_err(|source| map_io(self.id_for(&canonical), source))?;
+                    if metadata.is_dir() {
+                        if state.recursive {
+                            self.traversal_approved(&policy_path)?;
+                            self.traversal_approved(&canonical)?;
+                            children.push(WalkFrame::Enter {
+                                scan_dir: canonical,
+                                match_dir: match_path,
+                                policy_dir: policy_path,
+                            });
+                        }
+                    } else if metadata.is_file() && (state.matcher)(&match_path, &name) {
+                        self.record_match(&policy_path, canonical, state.maximum, state.matches)?;
+                    } else if (state.matcher)(&match_path, &name) {
+                        self.approved(&policy_path)?;
+                        self.approved(&canonical)?;
+                        return Err(RetrieveError::NotRegularFile(self.id_for(&canonical)));
+                    }
+                    continue;
                 }
-            } else if file_type.is_file() && (state.matcher)(&match_path, &name) {
-                self.record_match(scan_path, state.maximum, state.matches)?;
-            } else if (state.matcher)(&match_path, &name) {
-                return Err(RetrieveError::NotRegularFile(self.id_for(&scan_path)));
+
+                if file_type.is_dir() {
+                    if state.recursive {
+                        self.traversal_approved(&policy_path)?;
+                        self.traversal_approved(&scan_path)?;
+                        children.push(WalkFrame::Enter {
+                            scan_dir: scan_path,
+                            match_dir: match_path,
+                            policy_dir: policy_path,
+                        });
+                    }
+                } else if file_type.is_file() && (state.matcher)(&match_path, &name) {
+                    self.record_match(
+                        &policy_path,
+                        scan_path.clone(),
+                        state.maximum,
+                        state.matches,
+                    )?;
+                } else if (state.matcher)(&match_path, &name) {
+                    self.approved(&policy_path)?;
+                    return Err(RetrieveError::NotRegularFile(self.id_for(&scan_path)));
+                }
             }
+
+            work.push(WalkFrame::Exit(scan_dir));
+            work.extend(children.into_iter().rev());
         }
         Ok(())
     }
@@ -216,9 +319,9 @@ impl ResourceRetriever for FileRetriever {
         let canonical = self.canonical_existing(&relative)?;
         self.approved(&canonical)?;
         let id = self.id_for(&canonical);
-        let metadata = self
-            .root
-            .metadata(&canonical)
+        let mut file = self.open_stable_file(&canonical)?;
+        let metadata = file
+            .metadata()
             .map_err(|source| map_io(id.clone(), source))?;
         if !metadata.is_file() {
             return Err(RetrieveError::NotRegularFile(id));
@@ -232,10 +335,17 @@ impl ResourceRetriever for FileRetriever {
                 maximum,
             });
         }
-        let bytes = self
-            .root
-            .read(&canonical)
-            .map_err(|source| map_io(id.clone(), source))?;
+        let mut bytes = Vec::new();
+        if let Some(maximum) = request.max_bytes {
+            let limit = u64::try_from(maximum.saturating_add(1)).unwrap_or(u64::MAX);
+            file.by_ref()
+                .take(limit)
+                .read_to_end(&mut bytes)
+                .map_err(|source| map_io(id.clone(), source))?;
+        } else {
+            file.read_to_end(&mut bytes)
+                .map_err(|source| map_io(id.clone(), source))?;
+        }
         if let Some(maximum) = request.max_bytes
             && bytes.len() > maximum
         {
@@ -255,9 +365,10 @@ impl ResourceRetriever for FileRetriever {
     fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<ResourceId>, RetrieveError> {
         let base = self.relative_path(&request.base)?;
         let parent = base.parent().unwrap_or_else(|| Path::new(""));
+        self.traversal_approved(parent)?;
         let canonical_parent = self.canonical_directory(parent)?;
+        self.traversal_approved(&canonical_parent)?;
         let mut matches = Vec::new();
-        let mut visited = BTreeSet::new();
 
         match &request.selector {
             DiscoverySelector::Glob { pattern } => {
@@ -273,7 +384,6 @@ impl ResourceRetriever for FileRetriever {
                     matcher: &matcher,
                     maximum: request.max_matches,
                     matches: &mut matches,
-                    visited: &mut visited,
                 };
                 self.walk(&canonical_parent, parent, &mut state)?;
             }
@@ -286,7 +396,8 @@ impl ResourceRetriever for FileRetriever {
                 let requested_dir = normalize_relative(&requested_dir)
                     .ok_or_else(|| RetrieveError::OutsideRoot(request.base.clone()))?;
                 let canonical_dir = self.canonical_directory(&requested_dir)?;
-                self.approved(&canonical_dir)?;
+                self.traversal_approved(&requested_dir)?;
+                self.traversal_approved(&canonical_dir)?;
                 let defaults = ["*.yaml".to_owned(), "*.yml".to_owned()];
                 let patterns = if patterns.is_empty() {
                     defaults.as_slice()
@@ -300,7 +411,6 @@ impl ResourceRetriever for FileRetriever {
                     matcher: &matcher,
                     maximum: request.max_matches,
                     matches: &mut matches,
-                    visited: &mut visited,
                 };
                 self.walk(&canonical_dir, &requested_dir, &mut state)?;
             }
@@ -320,7 +430,15 @@ struct WalkState<'a> {
     matcher: &'a dyn Fn(&Path, &OsStr) -> bool,
     maximum: Option<usize>,
     matches: &'a mut Vec<PathBuf>,
-    visited: &'a mut BTreeSet<PathBuf>,
+}
+
+enum WalkFrame {
+    Enter {
+        scan_dir: PathBuf,
+        match_dir: PathBuf,
+        policy_dir: PathBuf,
+    },
+    Exit(PathBuf),
 }
 
 fn compile_globs(patterns: &[String]) -> Result<GlobSet, RetrieveError> {

@@ -287,6 +287,33 @@ fn discovery_returns_empty_and_stops_at_the_match_ceiling() {
     ));
 }
 
+#[test]
+fn discovery_allow_patterns_apply_to_matches_not_parent_directories() {
+    let root = setup();
+    fs::create_dir(root.path().join("data")).unwrap();
+    fs::write(root.path().join("data/allowed.yaml"), b"value").unwrap();
+    let mut configured = policy(root.path());
+    configured.allow = vec!["data/*.yaml".into()];
+    let retriever = FileRetriever::open(&configured).unwrap();
+
+    let discovered = retriever
+        .discover(&DiscoveryRequest {
+            base: ResourceId::from_file(root.path().join("root.yaml")),
+            selector: DiscoverySelector::Directory {
+                path: "data".into(),
+                recursive: false,
+                matches: Vec::new(),
+            },
+            max_matches: None,
+        })
+        .unwrap();
+
+    assert_eq!(
+        discovered,
+        vec![ResourceId::from_file(root.path().join("data/allowed.yaml"))]
+    );
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn non_utf8_file_identities_remain_lossless() {
@@ -347,6 +374,92 @@ fn discovery_rejects_matching_symlinks_and_skips_symlink_directories() {
         recursive
             .iter()
             .all(|id| !id.to_string().contains("linked-dir"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn followed_discovery_checks_alias_and_canonical_paths_against_policy() {
+    use std::os::unix::fs::symlink;
+
+    let root = setup();
+    fs::create_dir_all(root.path().join("real")).unwrap();
+    fs::write(root.path().join("real/data.yaml"), b"value").unwrap();
+    symlink("real", root.path().join("alias")).unwrap();
+    let mut configured = policy(root.path());
+    configured.follow_symlinks = true;
+    configured.deny = vec!["alias/**".into()];
+    let retriever = FileRetriever::open(&configured).unwrap();
+
+    assert!(matches!(
+        retriever.discover(&DiscoveryRequest {
+            base: ResourceId::from_file(root.path().join("root.yaml")),
+            selector: DiscoverySelector::Glob {
+                pattern: "alias/*.yaml".into(),
+            },
+            max_matches: None,
+        }),
+        Err(RetrieveError::PolicyDenied { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn followed_discovery_evaluates_each_alias_path_independently() {
+    use std::os::unix::fs::symlink;
+
+    let root = setup();
+    fs::create_dir_all(root.path().join("real")).unwrap();
+    fs::write(root.path().join("real/data.yaml"), b"value").unwrap();
+    symlink("real", root.path().join("alias-a")).unwrap();
+    symlink("real", root.path().join("alias-b")).unwrap();
+    let mut configured = policy(root.path());
+    configured.follow_symlinks = true;
+    let retriever = FileRetriever::open(&configured).unwrap();
+
+    let discovered = retriever
+        .discover(&DiscoveryRequest {
+            base: ResourceId::from_file(root.path().join("root.yaml")),
+            selector: DiscoverySelector::Glob {
+                pattern: "alias-b/*.yaml".into(),
+            },
+            max_matches: None,
+        })
+        .unwrap();
+
+    assert_eq!(
+        discovered,
+        vec![ResourceId::from_file(root.path().join("real/data.yaml"))]
+    );
+}
+
+#[test]
+fn recursive_discovery_uses_an_explicit_work_stack() {
+    let root = setup();
+    let mut directory = root.path().to_path_buf();
+    for index in 0..96 {
+        directory.push(format!("d{index}"));
+        fs::create_dir(&directory).unwrap();
+    }
+    fs::write(directory.join("leaf.yaml"), b"value").unwrap();
+    let retriever = FileRetriever::open(&policy(root.path())).unwrap();
+
+    let discovered = retriever
+        .discover(&DiscoveryRequest {
+            base: ResourceId::from_file(root.path().join("root.yaml")),
+            selector: DiscoverySelector::Directory {
+                path: ".".into(),
+                recursive: true,
+                matches: Vec::new(),
+            },
+            max_matches: None,
+        })
+        .unwrap();
+
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(
+        discovered[0],
+        ResourceId::from_file(directory.join("leaf.yaml"))
     );
 }
 

@@ -572,7 +572,8 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             .limits
             .max_edges
             .map(|maximum| maximum.saturating_sub(self.edges));
-        self.retriever
+        let mut resources = self
+            .retriever
             .discover(&DiscoveryRequest {
                 base: directive.origin.clone(),
                 selector,
@@ -586,7 +587,25 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                     directive.origin.to_string(),
                     Some(Box::new(source)),
                 )
-            })
+            })?;
+        resources.sort();
+        resources.dedup();
+        if let Some(maximum) = max_matches
+            && resources.len() > maximum
+        {
+            let source = RetrieveError::TooManyMatches {
+                observed: resources.len(),
+                maximum,
+            };
+            return Err(self.error(
+                retrieve_category(&source),
+                ResolutionCapability::Include,
+                directive.span,
+                directive.origin.to_string(),
+                Some(Box::new(source)),
+            ));
+        }
+        Ok(resources)
     }
 
     fn resolve_discovered_yaml(

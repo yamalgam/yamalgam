@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+cap-fs-ext = "4"
 cap-std = "4"
 globset = { version = "0.4", default-features = false }
 librebar = { version = "0.6.0", default-features = false, features = ["http"] }
