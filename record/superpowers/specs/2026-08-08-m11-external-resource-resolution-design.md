@@ -537,10 +537,9 @@ those features without promising their eventual syntax.
 - [ADR-0006: LoaderConfig for resource limits, resolution policy, and security boundaries](../../../record/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md)
 - [ADR-0010: Use stateful event resolver adapters across consumers](../../../record/decisions/0010-use-stateful-event-resolver-adapters.md)
 - [ADR-0011: Reject unhandled resolution policy on no-op paths](../../../record/decisions/0011-reject-unhandled-resolution-policy.md)
+- [ADR-0015: Use pluggable retrievers within shared resolution sessions](../../../record/decisions/0015-pluggable-retrievers-with-shared-resolution-sessions.md)
+- [ADR-0016: Use three resolution modes with explicit security boundaries](../../../record/decisions/0016-use-three-mode-resolution-policy.md)
+- [ADR-0017: Replace sole-key URI references with RFC 6901 targets](../../../record/decisions/0017-use-sole-key-uri-references.md)
+- [ADR-0018: Use structured includes for deterministic typed aggregation](../../../record/decisions/0018-use-structured-include-aggregation.md)
+- [ADR-0019: Record resolution reports and defer integrity lockfiles](../../../record/decisions/0019-record-resolution-reports-and-integrity-metadata.md)
 - [Draft-01 query language: external resolution](../../../docs/spec/yg-query-language-spec-draft-01.md#7-external-resolution)
-
-This design contains five candidates for focused ADRs: the retriever/session
-boundary, the three-mode resolution policy, the sole-key RFC 6901 `$ref`
-contract, the structured include aggregation contract, and the
-`ResolutionReport` plus integrity seam. We will create only the ADRs selected
-during the written-spec review.
