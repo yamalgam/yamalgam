@@ -11,9 +11,10 @@ pub mod pointer;
 pub mod report;
 pub mod resource;
 pub mod retriever;
+pub mod session;
 
 pub use document::{DocumentError, OwnedDocument, OwnedKind, OwnedNode, OwnedScalar};
-pub use error::RetrieveError;
+pub use error::{RetrieveError, SessionError};
 pub use pointer::{JsonPointer, PointerError};
 pub use report::{
     ResolutionEdge, ResolutionErrorCategory, ResolutionOutcome, ResolutionReport, ResourceKind,
@@ -25,3 +26,4 @@ pub use retriever::{
     MemoryRetriever, ResourceProvenance, ResourceRequest, ResourceRetriever, ResourceValidator,
     RetrievedResource, RetrieverRouter,
 };
+pub use session::{ResolutionSession, ResolutionTrigger};

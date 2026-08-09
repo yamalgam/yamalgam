@@ -2,6 +2,24 @@
 
 use crate::ResourceId;
 
+/// Failure produced by resolution-session bookkeeping or selection.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum SessionError {
+    /// Retrieved bytes were not UTF-8 text.
+    #[error("retrieved YAML is not valid UTF-8")]
+    InvalidUtf8(#[source] std::str::Utf8Error),
+    /// A decoded JSON Pointer did not select a node.
+    #[error("JSON Pointer does not select a YAML node")]
+    MissingFragment,
+    /// A sequence pointer token was not a canonical array index.
+    #[error("JSON Pointer token is not a canonical sequence index")]
+    InvalidSequenceIndex,
+    /// Checked session accounting exceeded `usize`.
+    #[error("resource accounting overflow for {0}")]
+    ResourceOverflow(&'static str),
+}
+
 /// Failure while retrieving or discovering an external resource.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

@@ -21,8 +21,9 @@ impl ResolutionReport {
     }
 
     /// Append an attempted edge in traversal order.
-    pub fn record_edge(&mut self, edge: ResolutionEdge) {
+    pub fn record_edge(&mut self, edge: ResolutionEdge) -> usize {
         self.edges.push(edge);
+        self.edges.len() - 1
     }
 
     /// Return resource records in insertion order.
@@ -35,6 +36,14 @@ impl ResolutionReport {
     #[must_use]
     pub fn edges(&self) -> &[ResolutionEdge] {
         &self.edges
+    }
+
+    pub(crate) fn edge_mut(&mut self, index: usize) -> &mut ResolutionEdge {
+        &mut self.edges[index]
+    }
+
+    pub(crate) fn resource_mut(&mut self, id: &ResourceId) -> Option<&mut ResourceRecord> {
+        self.resources.iter_mut().find(|record| &record.id == id)
     }
 }
 
