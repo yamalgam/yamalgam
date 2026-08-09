@@ -2,12 +2,12 @@
 audit: 2026-08-09-1537-m11-post-remediation
 last_updated: 2026-08-09
 status:
-  fixed: 9
+  fixed: 11
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 2
+  open: 0
 ---
 
 # Actions Taken: M11 External Resolution Changes from c85f7e0 through 246f707
@@ -84,3 +84,26 @@ the converted value's expanded depth, including alias expansion. Direct path
 includes reserve a sanitized report edge before resource preflight, so every
 failure has a terminal edge outcome. ADR 0019 and the M11 design and plan now
 record these report-lifecycle guarantees.
+
+---
+
+## 2026-08-09 — Make Query Resolution Walks Stack Safe
+
+**Disposition:** fixed
+**Addresses:**
+[resolved-owned-tree-conversion-remains-recursive](README.md#resolved-owned-tree-conversion-remains-recursive),
+[query-session-assignment-recurses-without-a-bound](README.md#query-session-assignment-recurses-without-a-bound)
+**Commit:** 3647cb1a742e19ef79d7f77d3000cd2ead12b608
+**Author:** Codex
+
+Owned-tree to query-value conversion and query-session assignment now rebuild
+sequences and mappings through explicit work stacks. The conversion preserves
+anchor visibility, mapping order, presentation metadata, resource origins, and
+typed depth failures; assignment preserves mapping keys and `Rc` copy-on-write
+isolation.
+
+Regressions exercise successful unchecked conversion, depth-limit cleanup, and
+session assignment at 20,000 nested sequence levels on a 128 KiB thread stack.
+A focused mapping regression verifies key order, origin updates, and isolation
+of a shared pre-assignment clone. The M11 design and implementation plan now
+state the stack-safety guarantee.
