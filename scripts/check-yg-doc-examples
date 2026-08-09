@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/.." && pwd -P)"
+cd "$repo_root"
+
+if ! command -v mdcode >/dev/null 2>&1; then
+  echo "mdcode is required: go install github.com/szkiba/mdcode@v0.2.0" >&2
+  exit 127
+fi
+
+cargo build -p yamalgam --locked
+yg_bin="$repo_root/target/debug/yg"
+
+docs=(docs/yg/*.md)
+if [[ ! -e "${docs[0]}" ]]; then
+  echo "no docs/yg Markdown files found" >&2
+  exit 1
+fi
+
+for doc in "${docs[@]}"; do
+  if ! grep -q '^```sh name=test$' "$doc"; then
+    echo "$doc: missing hidden sh name=test block" >&2
+    exit 1
+  fi
+  echo "checking $doc"
+  YG_BIN="$yg_bin" mdcode run --quiet --name test "$doc"
+done

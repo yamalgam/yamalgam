@@ -1,0 +1,382 @@
+---
+audit_date: 2026-08-08
+scope: "Full repository static audit — all workspace crates, xtask, fuzz package, dependencies, configuration, and current documentation"
+commit: f72e662bb2e5e83bfd4d3c4c4ce58d805e851c90
+assessment: |
+  Yamalgam's shipped Rust surface is materially stronger after the prior
+  remediation campaign: the workspace has no first-party unsafe code, no active
+  RustSec advisory, and clean API/type-design and concurrency reviews. The fresh
+  audit found two concrete UTF-8 panic paths in comparison-fixture utilities, an
+  opaque public resource-limit error contract, and a documented scanner metadata
+  contract that remains incomplete. The remaining concern is narrower: the
+  excluded fuzz graph is outside the canonical dependency policy. No finding is
+  critical or significant, and none changes the shipped parser's core safety
+  posture.
+
+narratives:
+  - slug: resource-limit-error-contract
+    title: "The Resource Limit Error Surface"
+    thesis: "Resource limits are enforced, but their public check API collapses the breached limit and observed value into display text."
+    verdict: "Limit enforcement is present and consistently called; the gap is diagnostic structure, not missing protection. A typed limit error would let every consumer preserve the same machine-readable failure contract without parsing prose."
+    flow:
+      - id: requested-work
+        label: "Requested work"
+        type: start
+      - id: check-limit
+        label: "Check configured limit"
+        type: decision
+        findings:
+          - slug: resource-limit-checks-return-unstructured-strings
+            label: "String-only error"
+      - id: continue
+        label: "Continue loading"
+        type: end
+      - id: wrap-message
+        label: "Wrap error message"
+        type: process
+        spine: false
+        next: continue
+    findings:
+      - slug: resource-limit-checks-return-unstructured-strings
+        title: "Public resource-limit checks erase structured limit details into strings"
+        criterion: "5.4"
+        surface: "Error Handling"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-core/src/loader.rs
+            start_line: 224
+            end_line: 234
+        evidence: |
+          /// Check whether `depth` is within [`max_depth`](Self::max_depth).
+          ///
+          /// Returns `Ok(())` if the limit is `None` or `depth <= max`.
+          ///
+          /// # Errors
+          ///
+          /// Returns `Err` with a human-readable message when `depth` exceeds the
+          /// configured maximum.
+          pub fn check_depth(&self, depth: usize) -> Result<(), String> {
+              check_limit(depth, self.max_depth, "depth")
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "9"
+            type: mark
+            label: "Public boundary returns String"
+        mechanism: |
+          `ResourceLimits` exposes its failure contract as `String`. Callers
+          cannot inspect the breached limit, observed value, or configured maximum
+          without parsing display text. The other public check methods repeat this
+          signature, so downstream consumers wrap opaque messages rather than
+          preserving structured limit fields.
+        remediation: |
+          Introduce a public limit error carrying the limit category, observed
+          value, and configured maximum. Return it from each check method and
+          preserve it as a source or typed payload through consumer error types.
+        temporal:
+          introduced: 2026-03-07
+          last_modified: 2026-03-07
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: medium
+        effort_notes: "The type is small, but preserving it through every consumer spans the workspace."
+
+  - slug: comparison-fixture-input
+    title: "The Comparison Fixture Input Surface"
+    thesis: "Two comparison helpers validate byte lengths before slicing, but do not prove that the chosen byte is a UTF-8 boundary."
+    verdict: "Both paths are outside the shipped CLI parser, but each is a public utility that processes external fixture text and has a concrete one-line panic trigger. Character-boundary-aware parsing removes both aborts without changing accepted ASCII formats."
+    flow:
+      - id: fixture-text
+        label: "Fixture text"
+        type: start
+      - id: select-format
+        label: "Tree or suite format?"
+        type: decision
+      - id: fixed-byte-slice
+        label: "Slice at byte offset"
+        type: process
+        findings:
+          - slug: compare-tree-parser-panics-on-nonascii-style
+            label: "Style byte panic"
+          - slug: test-suite-extractor-slices-inside-unicode-indentation
+            label: "Indent byte panic"
+      - id: parsed-fixture
+        label: "Parsed fixture"
+        type: end
+    findings:
+      - slug: compare-tree-parser-panics-on-nonascii-style
+        title: "The public tree-format parser panics on a non-ASCII style character"
+        criterion: "11.1"
+        surface: "Panic and Program Flow"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-compare/src/tree_format.rs
+            start_line: 202
+            end_line: 215
+        evidence: |
+          /// Parse a `=VAL` line remainder into a Scalar [`EventSnapshot`].
+          ///
+          /// The remainder has the form: `[&anchor] [<tag>] STYLE_CHAR value`
+          /// where `STYLE_CHAR` is one of `:`, `'`, `"`, `|`, `>`.
+          fn parse_val(rest: &str) -> Option<EventSnapshot> {
+              let (anchor, tag, after_props) = parse_val_properties(rest);
+
+              // The next character is the style indicator, followed by the raw value.
+              if after_props.is_empty() {
+                  return None;
+              }
+
+              let value = &after_props[1..]; // everything after the style char
+              let decoded = unescape_tree_value(value);
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "13"
+            type: del
+            label: "Byte 1 may split a UTF-8 character"
+        mechanism: |
+          `parse_tree("=VALé")` reaches `parse_val` with `after_props` equal to
+          `"é"`. The non-empty check succeeds, but byte offset 1 falls inside the
+          two-byte character. The slice panics instead of rejecting the malformed
+          external tree-format line.
+        remediation: |
+          Parse and validate the documented ASCII style character explicitly.
+          Slice at the returned character boundary, or return `None` for an
+          unsupported style, and add a multibyte regression.
+        temporal:
+          introduced: 2026-03-09
+          last_modified: 2026-03-09
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [test-suite-extractor-slices-inside-unicode-indentation]
+        effort: trivial
+        effort_notes: "Validate one character boundary and add one malformed-input test."
+
+      - slug: test-suite-extractor-slices-inside-unicode-indentation
+        title: "Unicode indentation can panic the YAML Test Suite extractor"
+        criterion: "11.1"
+        surface: "Panic and Program Flow"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-compare/src/test_case.rs
+            start_line: 100
+            end_line: 113
+        evidence: |
+          while idx < lines.len() {
+              let line = lines[idx];
+
+              if let Some(min_indent) = indent {
+                  let stripped = line.trim_start();
+                  let current_indent = line.len() - stripped.len();
+
+                  if !line.trim().is_empty() && current_indent < min_indent {
+                      break;
+                  }
+
+                  if line.len() >= min_indent {
+                      content_lines.push(&line[min_indent..]);
+                  } else if line.trim().is_empty() {
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "13"
+            type: del
+            label: "Indent offset may split multibyte whitespace"
+        mechanism: |
+          An explicit indent of four bytes followed by two ASCII spaces and a
+          three-byte Unicode em space produces `current_indent == 5`. The bounds
+          check passes, but byte offset 4 lies inside the em space, so slicing
+          panics. The public extractor aborts on extended-whitespace input rather
+          than rejecting or skipping it.
+        remediation: |
+          Remove indentation by walking `char_indices` over whitespace and choosing
+          a verified UTF-8 boundary, or reject non-ASCII indentation before slicing.
+          Add a focused explicit-indentation regression; inferred indentation already
+          derives its offset from a valid `trim_start` boundary.
+        temporal:
+          introduced: 2026-03-09
+          last_modified: 2026-03-09
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+        chains:
+          enables: []
+          enabled_by: []
+          related: [compare-tree-parser-panics-on-nonascii-style]
+        effort: small
+        effort_notes: "One shared UTF-8-safe indentation helper plus focused coverage."
+
+  - slug: repository-dependency-policy
+    title: "The Repository Dependency Policy Surface"
+    thesis: "The root workspace graph passes dependency policy, while the separately locked fuzz package sits outside that canonical gate."
+    verdict: "The shipped graph has no active advisory or unused dependency. The remaining gap is repository-wide consistency: fuzzing uses a separate manifest and lockfile, but the canonical deny recipe checks only the root workspace."
+    flow:
+      - id: root-manifest
+        label: "Root manifest"
+        type: start
+      - id: workspace-member
+        label: "Workspace member?"
+        type: decision
+        no: fuzz-graph
+      - id: root-deny
+        label: "Root dependency gate"
+        type: process
+      - id: policy-result
+        label: "Policy result"
+        type: end
+      - id: fuzz-graph
+        label: "Separate fuzz graph"
+        type: process
+        spine: false
+        findings:
+          - slug: fuzz-workspace-escapes-dependency-policy
+            label: "Ungated fuzz graph"
+    findings:
+      - slug: fuzz-workspace-escapes-dependency-policy
+        title: "The excluded fuzz graph bypasses dependency policy and retains a stale lockfile"
+        criterion: "7.1"
+        surface: "Supply Chain"
+        concern: advisory
+        locations:
+          - path: .justfile
+            start_line: 20
+            end_line: 22
+          - path: Cargo.toml
+            start_line: 1
+            end_line: 4
+          - path: fuzz/Cargo.toml
+            start_line: 1
+            end_line: 12
+          - path: fuzz/Cargo.lock
+            start_line: 428
+            end_line: 439
+        evidence: |
+          # Check dependencies for security advisories and license compliance
+          deny:
+              cargo deny --all-features --config .config/deny.toml check
+        evidence_lang: makefile
+        evidence_markers:
+          - lines: "3"
+            type: mark
+            label: "Only the root workspace is checked"
+        mechanism: |
+          `fuzz` is excluded from the root workspace and owns a separate lockfile,
+          so this canonical Cargo Deny invocation never evaluates it. A focused
+          fuzz-manifest check rejects `libfuzzer-sys` because its license expression
+          includes NCSA, which the project policy does not allow, and reports the
+          fuzz package itself as unlicensed. Resolving the fuzz manifest also removes
+          obsolete `serde_yaml`, `unsafe-libyaml`, Figment, logging, and configuration
+          edges from its stale lockfile. The gap is fuzz-only, but repository policy
+          does not cover every first-party manifest.
+        remediation: |
+          Add the workspace license expression to the excluded fuzz package. Decide
+          and document whether NCSA is allowed for the fuzz-only dependency, refresh
+          `fuzz/Cargo.lock`, and extend the canonical dependency gate with a locked
+          Cargo Deny invocation for `fuzz/Cargo.toml`.
+        temporal:
+          introduced: 2026-03-07
+          last_modified: 2026-03-07
+          commit_count: 1
+          monthly_commits: [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: small
+        effort_notes: "One policy decision, a lock refresh, and one additional dependency-gate command."
+
+  - slug: scanner-presentation-metadata
+    title: "The Scanner Presentation Metadata Surface"
+    thesis: "The scanner exposes style, chomp, and content metadata in each atom, but its shared scalar constructor fills two of those fields with defaults."
+    verdict: "Scalar values and styles are preserved, so parsing remains correct. The completeness gap affects presentation fidelity and the documented fast-path contract: computed block chomp data and atom flags never reach public tokens."
+    flow:
+      - id: yaml-scalar
+        label: "YAML scalar"
+        type: start
+      - id: scan-scalar
+        label: "Scan content and style"
+        type: process
+      - id: scalar-token
+        label: "Construct atom"
+        type: process
+        findings:
+          - slug: scanner-never-populates-atom-presentation-metadata
+            label: "Default metadata"
+      - id: public-token
+        label: "Public token"
+        type: end
+    findings:
+      - slug: scanner-never-populates-atom-presentation-metadata
+        title: "Scanner exposes atom metadata but always returns defaults"
+        criterion: "FC-1"
+        surface: "Completeness"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-scanner/src/scanner.rs
+            start_line: 290
+            end_line: 307
+          - path: docs/decisions/0002-preserve-atom-concept-for-cst-fidelity.md
+            start_line: 15
+            end_line: 17
+          - path: docs/decisions/0002-preserve-atom-concept-for-cst-fidelity.md
+            start_line: 27
+            end_line: 34
+        evidence: |
+          /// Build a scalar token with owned or borrowed data and explicit style.
+          fn scalar_token(
+              data: Cow<'input, str>,
+              style: ScalarStyle,
+              start: yamalgam_core::Mark,
+              end: yamalgam_core::Mark,
+          ) -> Token<'input> {
+              Token {
+                  kind: TokenKind::Scalar,
+                  atom: Atom {
+                      data,
+                      span: Span { start, end },
+                      style,
+                      chomp: Chomp::default(),
+                      flags: AtomFlags::empty(),
+                  },
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "14-15"
+            type: mark
+            label: "Scalar metadata is always defaulted"
+        mechanism: |
+          ADR-0002 says atom style, chomp, and content flags survive scanning so
+          consumers can reconstruct presentation and use direct-output paths. All
+          scalar construction passes through `scalar_token`, which hard-codes the
+          chomp and flags. The block-scalar scanner computes a chomp indicator but
+          does not pass it through. Public scanner consumers therefore cannot
+          distinguish clip, strip, and keep metadata or observe documented flags.
+        remediation: |
+          Preserve the computed chomp value when constructing block-scalar atoms and
+          derive `AtomFlags` from scalar content and scanner context. Thread the
+          metadata through any documented emitter fast path, with regressions for
+          `|-`, `|`, `|+`, whitespace, line breaks, and direct-output flag cases.
+        temporal:
+          introduced: 2026-03-06
+          last_modified: 2026-08-08
+          commit_count: 38
+          monthly_commits: [0, 0, 0, 0, 0, 0, 35, 0, 0, 1, 0, 2]
+        chains:
+          enables: []
+          enabled_by: []
+          related: []
+        effort: medium
+        effort_notes: "Scanner construction and downstream metadata tests must be completed together."
+
+summary:
+  counts:
+    critical: 0
+    significant: 0
+    moderate: 4
+    advisory: 1
+    note: 0

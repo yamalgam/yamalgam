@@ -20,6 +20,16 @@ use crate::Value;
 pub trait TagResolver {
     /// Resolve a plain scalar string to a typed Value.
     fn resolve_scalar(&self, value: &str) -> Value;
+
+    /// Return whether a plain scalar resolves as a string.
+    ///
+    /// Implementations may override this method to avoid allocating the
+    /// resolved string, but the result must be observationally equivalent to
+    /// `matches!(self.resolve_scalar(value), Value::String(_))` for every
+    /// input.
+    fn resolves_as_string(&self, value: &str) -> bool {
+        matches!(self.resolve_scalar(value), Value::String(_))
+    }
 }
 
 /// Tag resolution scheme selector.
@@ -53,6 +63,10 @@ impl TagResolver for FailsafeTagResolver {
     fn resolve_scalar(&self, value: &str) -> Value {
         Value::String(value.to_owned())
     }
+
+    fn resolves_as_string(&self, _value: &str) -> bool {
+        true
+    }
 }
 
 /// YAML 1.2 JSON Schema (§10.2) — strict JSON-compatible type resolution.
@@ -80,6 +94,10 @@ impl TagResolver for JsonTagResolver {
             _ => try_json_number(value).unwrap_or_else(|| Value::String(value.to_owned())),
         }
     }
+
+    fn resolves_as_string(&self, value: &str) -> bool {
+        !matches!(value, "null" | "true" | "false") && try_json_number(value).is_none()
+    }
 }
 
 /// Try to parse `s` as a JSON-schema number (integer or float).
@@ -87,40 +105,67 @@ impl TagResolver for JsonTagResolver {
 /// JSON schema integers: `[0-9]+` or `-[0-9]+` (no leading `+`, no `0x`/`0o`).
 /// JSON schema floats: must contain `.` or `e`/`E`, no leading `+`, no `.inf`/`.nan`.
 fn try_json_number(s: &str) -> Option<Value> {
-    if s.is_empty() {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut offset = usize::from(bytes[0] == b'-');
+    if offset == bytes.len() {
         return None;
     }
 
-    let body = s.strip_prefix('-').unwrap_or(s);
-
-    // Must start with a digit after optional `-`
-    if !body.starts_with(|c: char| c.is_ascii_digit()) {
-        return None;
+    match bytes[offset] {
+        b'0' => {
+            offset += 1;
+            if bytes.get(offset).is_some_and(u8::is_ascii_digit) {
+                return None;
+            }
+        }
+        b'1'..=b'9' => {
+            offset += 1;
+            while bytes.get(offset).is_some_and(u8::is_ascii_digit) {
+                offset += 1;
+            }
+        }
+        _ => return None,
     }
 
-    // No leading `+`
-    if s.starts_with('+') {
-        return None;
-    }
-
-    // JSON numbers: 0 | -?[1-9][0-9]* (no leading zeros)
-    if body.len() > 1 && body.starts_with('0') && body.as_bytes()[1].is_ascii_digit() {
-        return None;
-    }
-
-    let is_float = s.contains('.') || s.contains('e') || s.contains('E');
-
-    if is_float {
-        let f: f64 = s.parse().ok()?;
-        Some(Value::Float(f))
-    } else {
-        // Integer — only ASCII digits (plus optional leading `-`)
-        if !body.chars().all(|c| c.is_ascii_digit()) {
+    let mut is_float = false;
+    if bytes.get(offset) == Some(&b'.') {
+        is_float = true;
+        offset += 1;
+        let fraction_start = offset;
+        while bytes.get(offset).is_some_and(u8::is_ascii_digit) {
+            offset += 1;
+        }
+        if offset == fraction_start {
             return None;
         }
-        let i: i64 = s.parse().ok()?;
-        Some(Value::Integer(i))
     }
+
+    if matches!(bytes.get(offset), Some(b'e' | b'E')) {
+        is_float = true;
+        offset += 1;
+        if matches!(bytes.get(offset), Some(b'+' | b'-')) {
+            offset += 1;
+        }
+        let exponent_start = offset;
+        while bytes.get(offset).is_some_and(u8::is_ascii_digit) {
+            offset += 1;
+        }
+        if offset == exponent_start {
+            return None;
+        }
+    }
+
+    if offset != bytes.len() {
+        return None;
+    }
+    if !is_float && let Ok(integer) = s.parse::<i64>() {
+        return Some(Value::Integer(integer));
+    }
+    let float = s.parse::<f64>().ok()?;
+    float.is_finite().then_some(Value::Float(float))
 }
 
 impl TagResolver for TagResolution {
@@ -130,6 +175,15 @@ impl TagResolver for TagResolution {
             Self::Json => JsonTagResolver.resolve_scalar(value),
             Self::Yaml12 => Yaml12TagResolver.resolve_scalar(value),
             Self::Yaml11 => Yaml11TagResolver.resolve_scalar(value),
+        }
+    }
+
+    fn resolves_as_string(&self, value: &str) -> bool {
+        match self {
+            Self::Failsafe => FailsafeTagResolver.resolves_as_string(value),
+            Self::Json => JsonTagResolver.resolves_as_string(value),
+            Self::Yaml12 => Yaml12TagResolver.resolves_as_string(value),
+            Self::Yaml11 => Yaml11TagResolver.resolves_as_string(value),
         }
     }
 }
@@ -187,6 +241,54 @@ impl TagResolver for Yaml11TagResolver {
 
         // Fallback: string
         Value::String(value.to_owned())
+    }
+
+    fn resolves_as_string(&self, value: &str) -> bool {
+        if value.is_empty()
+            || matches!(
+                value,
+                "~" | "null"
+                    | "Null"
+                    | "NULL"
+                    | "true"
+                    | "True"
+                    | "TRUE"
+                    | "yes"
+                    | "Yes"
+                    | "YES"
+                    | "on"
+                    | "On"
+                    | "ON"
+                    | "y"
+                    | "Y"
+                    | "false"
+                    | "False"
+                    | "FALSE"
+                    | "no"
+                    | "No"
+                    | "NO"
+                    | "off"
+                    | "Off"
+                    | "OFF"
+                    | "n"
+                    | "N"
+                    | ".inf"
+                    | ".Inf"
+                    | ".INF"
+                    | "+.inf"
+                    | "+.Inf"
+                    | "+.INF"
+                    | "-.inf"
+                    | "-.Inf"
+                    | "-.INF"
+                    | ".nan"
+                    | ".NaN"
+                    | ".NAN"
+            )
+        {
+            return false;
+        }
+        try_yaml11_number(value).is_none()
     }
 }
 
@@ -308,6 +410,107 @@ fn try_yaml11_number(s: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_as_string_matches_full_resolution() {
+        let samples = [
+            // Empty and null spellings.
+            "",
+            "~",
+            "null",
+            "Null",
+            "NULL",
+            "nil",
+            // JSON, Core, and YAML 1.1 boolean spellings.
+            "true",
+            "True",
+            "TRUE",
+            "false",
+            "False",
+            "FALSE",
+            "yes",
+            "Yes",
+            "YES",
+            "no",
+            "No",
+            "NO",
+            "on",
+            "On",
+            "ON",
+            "off",
+            "Off",
+            "OFF",
+            "y",
+            "Y",
+            "n",
+            "N",
+            // Signs, decimal boundaries, overflow, and invalid leading zeros.
+            "0",
+            "-0",
+            "+1",
+            "42",
+            "-42",
+            "9223372036854775807",
+            "9223372036854775808",
+            "-9223372036854775808",
+            "-9223372036854775809",
+            "01",
+            // Schema-specific radix and underscore forms plus invalid lookalikes.
+            "0o17",
+            "-0o17",
+            "017",
+            "-017",
+            "0x1f",
+            "-0x1f",
+            "0b1010",
+            "-0b1010",
+            "1_000",
+            "0xFF_FF",
+            "0o8",
+            "0x",
+            "0b2",
+            "1__0",
+            // Decimal floats, exponents, and malformed numeric lookalikes.
+            "1.5",
+            "-1.5",
+            "+1.5",
+            "1e3",
+            "1E-3",
+            "1.",
+            ".5",
+            "1e",
+            "1.2.3",
+            // Full Core/YAML 1.1 infinity and NaN literal sets.
+            ".inf",
+            ".Inf",
+            ".INF",
+            "+.inf",
+            "+.Inf",
+            "+.INF",
+            "-.inf",
+            "-.Inf",
+            "-.INF",
+            ".nan",
+            ".NaN",
+            ".NAN",
+            "+.nan",
+            "plain text",
+        ];
+        for resolver in [
+            TagResolution::Failsafe,
+            TagResolution::Json,
+            TagResolution::Yaml12,
+            TagResolution::Yaml11,
+        ] {
+            for sample in samples {
+                assert_eq!(
+                    resolver.resolves_as_string(sample),
+                    matches!(resolver.resolve_scalar(sample), Value::String(_)),
+                    "resolver {resolver:?} disagreed for {sample:?}"
+                );
+            }
+        }
+    }
     use crate::Value;
 
     #[test]
@@ -353,6 +556,10 @@ mod tests {
         // No leading zeros in JSON integers
         assert_eq!(r.resolve_scalar("017"), Value::String("017".into()));
         assert_eq!(r.resolve_scalar("00"), Value::String("00".into()));
+        assert_eq!(
+            r.resolve_scalar("9223372036854775808"),
+            Value::Float(9_223_372_036_854_776_000.0)
+        );
     }
 
     #[test]
@@ -368,6 +575,9 @@ mod tests {
         // No leading zeros in JSON floats
         assert_eq!(r.resolve_scalar("01.5"), Value::String("01.5".into()));
         assert_eq!(r.resolve_scalar("+1.0"), Value::String("+1.0".into()));
+        assert_eq!(r.resolve_scalar("1."), Value::String("1.".into()));
+        assert_eq!(r.resolve_scalar("1e"), Value::String("1e".into()));
+        assert_eq!(r.resolve_scalar("1e400"), Value::String("1e400".into()));
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub fn cmd_man(args: ManArgs) -> Result<(), String> {
     man.render(&mut buffer)
         .map_err(|e| format!("render manpage: {e}"))?;
 
-    let man_path = out_dir.join("yamalgam.1");
+    let man_path = out_dir.join("yg.1");
     fs::write(&man_path, buffer).map_err(|e| format!("{}: {e}", man_path.display()))?;
     println!("wrote {}", man_path.display());
 
@@ -33,7 +33,7 @@ pub fn cmd_man(args: ManArgs) -> Result<(), String> {
         man.render(&mut buffer)
             .map_err(|e| format!("render manpage for {name}: {e}"))?;
 
-        let man_path = out_dir.join(format!("yamalgam-{name}.1"));
+        let man_path = out_dir.join(format!("yg-{name}.1"));
         fs::write(&man_path, buffer).map_err(|e| format!("{}: {e}", man_path.display()))?;
         println!("wrote {}", man_path.display());
     }

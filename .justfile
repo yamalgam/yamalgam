@@ -19,7 +19,18 @@ fix:
 
 # Check dependencies for security advisories and license compliance
 deny:
-  cargo deny --all-features check --config .config/deny.toml
+  cargo deny --all-features --locked --config .config/deny.toml check
+  cargo deny --manifest-path fuzz/Cargo.toml --all-features --locked --config .config/deny.toml check
+
+# Compiler-derived unsafe census for the shipped yg dependency graph.
+unsafe-census:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  CARGO_TARGET_DIR=target/unsafe-census \
+    CARGO_BUILD_JOBS=1 \
+    RUSTC_WRAPPER= \
+    RUSTFLAGS="--force-warn unsafe-code" \
+    cargo check -p yamalgam --locked --message-format=short
 
 test:
   cargo nextest run --workspace --all-features --cargo-quiet
@@ -29,6 +40,21 @@ test-ci:
 
 doc-test:
   cargo test --doc --all-features
+
+# Run executable examples embedded in the yg user guides.
+docs-examples:
+  scripts/check-yg-doc-examples
+
+# Run executable, prose, Markdown, and offline-link checks for yg docs.
+docs-check: docs-examples
+  #!/usr/bin/env bash
+  set -euo pipefail
+  docs=(README.md docs/README.md docs/yg/*.md)
+  rumdl check "${docs[@]}"
+  lychee --offline "${docs[@]}"
+  for doc in docs/README.md docs/yg/*.md; do
+    bito readability "$doc" --max-grade 8
+  done
 
 cov:
   @cargo llvm-cov clean --workspace
@@ -58,8 +84,9 @@ watch-clippy:
 # Lint markdown files
 mdlint *files='':
     #!/usr/bin/env bash
+    files="{{files}}"
     if command -v rumdl &>/dev/null; then
-        rumdl ${files:-.}
+        rumdl check ${files:-.}
     elif command -v markdownlint &>/dev/null; then
         markdownlint ${files:-"**/*.md"}
     else
@@ -70,8 +97,9 @@ mdlint *files='':
 # Fix markdown files
 mdfix *files='':
     #!/usr/bin/env bash
+    files="{{files}}"
     if command -v rumdl &>/dev/null; then
-        rumdl --fix ${files:-.}
+        rumdl check --fix ${files:-.}
     elif command -v markdownlint &>/dev/null; then
         markdownlint --fix ${files:-"**/*.md"}
     else
@@ -174,7 +202,7 @@ release-check:
     # Security/license check
     echo ""
     echo "🔐 Running cargo-deny..."
-    cargo deny check
+    just deny
     echo "✅ Dependencies OK"
     # Build release
     echo ""
@@ -198,16 +226,18 @@ outdated:
 # Safe update: respects semver constraints, only touches Cargo.lock
 update:
     cargo update --workspace --verbose
+    cargo update -p serde-saphyr --precise 1.0.0
+    cargo update -p granit-parser --precise 1.0.0
 
 # Upgrade Cargo.toml to latest compatible versions
 upgrade:
     cargo upgrade
-    cargo update --workspace
+    just update
 
 # The nuclear option: upgrade to latest incompatible versions (breaking changes)
 upgrade-breaking:
     cargo upgrade --incompatible
-    cargo update --workspace
+    just update
 
 # See what WOULD update without doing it
 check-updates:
@@ -294,4 +324,3 @@ release version:
     echo ""
     echo "To publish:"
     echo "  git push && git push --tags"
-

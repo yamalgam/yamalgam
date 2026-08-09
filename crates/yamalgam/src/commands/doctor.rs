@@ -15,7 +15,7 @@ const APP_NAME: &str = env!("CARGO_PKG_NAME");
 /// Arguments for the `doctor` subcommand.
 #[derive(Args, Debug, Default)]
 pub struct DoctorArgs {
-    // No subcommand-specific arguments; uses global --json flag
+    // No subcommand-specific arguments; uses the resolved global output format.
 }
 
 #[derive(Serialize)]
@@ -79,14 +79,13 @@ impl DoctorCheck for ConfigCheck {
 
     fn run(&self) -> CheckResult {
         self.sources.primary_file().map_or_else(
-            || CheckResult {
-                status: CheckStatus::Warn,
-                message: "no config file found; running with defaults".into(),
+            || {
+                CheckResult::new(
+                    CheckStatus::Warn,
+                    "no config file found; running with defaults",
+                )
             },
-            |file| CheckResult {
-                status: CheckStatus::Ok,
-                message: format!("config loaded from {file}"),
-            },
+            |file| CheckResult::new(CheckStatus::Ok, format!("config loaded from {file}")),
         )
     }
 }
@@ -104,21 +103,21 @@ impl DoctorCheck for LogDirCheck {
 
     fn run(&self) -> CheckResult {
         match librebar::logging::platform_log_dir(APP_NAME) {
-            Some(dir) if dir.exists() => CheckResult {
-                status: CheckStatus::Ok,
-                message: format!("log dir exists at {}", dir.display()),
-            },
-            Some(dir) => CheckResult {
-                status: CheckStatus::Ok,
-                message: format!(
+            Some(dir) if dir.exists() => CheckResult::new(
+                CheckStatus::Ok,
+                format!("log dir exists at {}", dir.display()),
+            ),
+            Some(dir) => CheckResult::new(
+                CheckStatus::Ok,
+                format!(
                     "log dir resolves to {} (created on first write)",
                     dir.display()
                 ),
-            },
-            None => CheckResult {
-                status: CheckStatus::Error,
-                message: "platform log directory could not be resolved".into(),
-            },
+            ),
+            None => CheckResult::new(
+                CheckStatus::Error,
+                "platform log directory could not be resolved",
+            ),
         }
     }
 }
@@ -128,10 +127,10 @@ impl DoctorCheck for LogDirCheck {
 impl DoctorReport {
     fn gather(sources: &ConfigSources) -> Self {
         let mut runner = DoctorRunner::new();
-        runner.add(Box::new(ConfigCheck {
+        runner.add(ConfigCheck {
             sources: sources.clone(),
-        }));
-        runner.add(Box::new(LogDirCheck));
+        });
+        runner.add(LogDirCheck);
 
         let checks = runner
             .run_all()

@@ -1,7 +1,9 @@
 #![allow(missing_docs)]
 
 use pretty_assertions::assert_eq;
-use yamalgam_parser::{CollectionStyle, Event, Parser, ScalarStyle};
+use yamalgam_parser::{CollectionStyle, Event, ParseError, Parser, ScalarStyle};
+use yamalgam_scanner::scanner::{ScanError, ScanErrorKind, Scanner};
+use yamalgam_scanner::{AtomFlags, Chomp, TokenKind};
 
 #[test]
 fn empty_stream() {
@@ -38,8 +40,6 @@ fn iterator_returns_none_after_stream_end() {
 fn iterator_stops_on_error() {
     // Feed a broken token stream: scanner error should propagate.
     use yamalgam_scanner::Token;
-    use yamalgam_scanner::scanner::{ScanError, ScanErrorKind};
-
     let tokens: Vec<Result<Token<'_>, ScanError>> = vec![Err(ScanError::new(
         ScanErrorKind::UnexpectedCharacter,
         "boom",
@@ -345,6 +345,29 @@ fn block_scalar_folded() {
     }
 }
 
+#[test]
+fn scalar_events_preserve_scanner_presentation_metadata() {
+    let events = Parser::new("|+\n  hello\n\n")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let Event::Scalar { chomp, flags, .. } = events[2] else {
+        panic!("expected scalar event");
+    };
+    assert_eq!(chomp, Chomp::Keep);
+    assert!(flags.contains(AtomFlags::CHOMP_EXPLICIT));
+    assert!(flags.contains(AtomFlags::HAS_LB));
+    assert!(flags.contains(AtomFlags::IS_MULTILINE));
+    assert!(!flags.contains(AtomFlags::DIRECT_OUTPUT));
+
+    let events = Parser::new("'hello'")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let Event::Scalar { flags, .. } = events[2] else {
+        panic!("expected scalar event");
+    };
+    assert!(flags.contains(AtomFlags::DIRECT_OUTPUT));
+}
+
 // -- Alias tests --
 
 #[test]
@@ -605,6 +628,32 @@ fn flow_sequence_with_implicit_mapping() {
 }
 
 #[test]
+fn flow_pair_finalization_preserves_scanner_error_kind() {
+    let mut tokens: Vec<_> = Scanner::new("[a: b]").collect();
+    let sequence_end = tokens
+        .iter()
+        .position(|result| matches!(result, Ok(token) if token.kind == TokenKind::FlowSequenceEnd))
+        .expect("fixture should contain a flow-sequence end token");
+    tokens[sequence_end] = Err(ScanError::new(
+        ScanErrorKind::UnexpectedCharacter,
+        "malformed flow pair",
+    ));
+
+    let error = Parser::from_tokens(tokens.into_iter())
+        .find_map(Result::err)
+        .expect("malformed flow pair should fail");
+
+    assert!(
+        matches!(
+            error,
+            ParseError::Scan(ref error)
+                if error.kind == ScanErrorKind::UnexpectedCharacter
+        ),
+        "expected scanner UnexpectedCharacter, got {error:?}"
+    );
+}
+
+#[test]
 fn flow_sequence_empty_key_pair() {
     // `[: v]` — single-pair mapping with an empty key (spec example 7.21).
     let events: Vec<_> = Parser::new("[: v]").collect::<Result<Vec<_>, _>>().unwrap();
@@ -802,6 +851,74 @@ fn indentless_sequence_in_mapping() {
         })
         .collect();
     assert_eq!(scalars, vec!["key", "a", "b"]);
+}
+
+#[test]
+fn indentless_sequence_boundaries_do_not_own_visible_tokens() {
+    let events: Vec<_> = Parser::new("key:\n- a\nnext: b")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let sequence_start = events
+        .iter()
+        .find_map(|event| match event {
+            Event::SequenceStart {
+                style: CollectionStyle::Block,
+                span,
+                ..
+            } => Some(*span),
+            _ => None,
+        })
+        .expect("indentless sequence start");
+    assert_eq!(sequence_start.start.offset, 5);
+    assert_eq!(sequence_start.start, sequence_start.end);
+
+    let entry = events
+        .iter()
+        .find_map(|event| match event {
+            Event::BlockEntry { span } => Some(*span),
+            _ => None,
+        })
+        .expect("indentless block entry");
+    assert_eq!(entry.start.offset, 5);
+    assert_eq!(entry.end.offset, 6);
+
+    let sequence_end = events
+        .iter()
+        .find_map(|event| match event {
+            Event::SequenceEnd { span } => Some(*span),
+            _ => None,
+        })
+        .expect("indentless sequence end");
+    assert_eq!(sequence_end.start.offset, 9);
+    assert_eq!(sequence_end.start, sequence_end.end);
+}
+
+#[test]
+fn indentless_sequence_end_does_not_own_value_indicator() {
+    let events: Vec<_> = Parser::new("---\n?\n- a\n:\n- b")
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let sequence_end = events
+        .iter()
+        .find_map(|event| match event {
+            Event::SequenceEnd { span } => Some(*span),
+            _ => None,
+        })
+        .expect("key-side indentless sequence end");
+    assert_eq!(sequence_end.start.offset, 10);
+    assert_eq!(sequence_end.start, sequence_end.end);
+
+    let value_indicator = events
+        .iter()
+        .find_map(|event| match event {
+            Event::ValueIndicator { span } => Some(*span),
+            _ => None,
+        })
+        .expect("mapping value indicator");
+    assert_eq!(value_indicator.start.offset, 10);
+    assert_eq!(value_indicator.end.offset, 11);
 }
 
 #[test]
@@ -1003,14 +1120,26 @@ fn directive_then_document_end_is_error() {
 
 #[test]
 fn max_depth_rejects_deep_nesting() {
-    use yamalgam_core::LoaderConfig;
+    use yamalgam_core::{LoaderConfig, ResourceLimit};
 
     let mut config = LoaderConfig::strict();
     config.limits.max_depth = Some(3);
 
     let input = "a:\n  b:\n    c:\n      d:\n        e: too deep";
-    let result: Vec<_> = Parser::with_config(input, &config).collect();
-    assert!(result.iter().any(|r| r.is_err()));
+    let error = Parser::with_config(input, &config)
+        .find_map(Result::err)
+        .expect("deep nesting should exceed the configured limit");
+    let limit = match error {
+        ParseError::LimitExceeded(error) => error,
+        ParseError::Scan(ScanError {
+            kind: ScanErrorKind::LimitExceeded(error),
+            ..
+        }) => error,
+        other => panic!("expected a structured depth limit, got {other:?}"),
+    };
+    assert_eq!(limit.limit, ResourceLimit::Depth);
+    assert_eq!(limit.observed, 4);
+    assert_eq!(limit.maximum, 3);
 }
 
 #[test]

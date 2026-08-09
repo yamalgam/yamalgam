@@ -1,7 +1,6 @@
 //! Comparative benchmarks: yamalgam vs YAML peers.
 //!
 //! Run with: `cargo bench -p yamalgam-bench`
-//! With yamlstar: `cargo bench -p yamalgam-bench --features yamlstar`
 
 // Benchmark code doesn't need documentation.
 #![allow(missing_docs)]
@@ -70,14 +69,6 @@ fn small_rust_yaml(bencher: Bencher) {
     bencher.bench(|| yamalgam_bench::peers::rust_yaml_parse(&input));
 }
 
-#[cfg(feature = "yamlstar")]
-#[divan::bench]
-fn small_yamlstar(bencher: Bencher) {
-    let ys = yamlstar::YAMLStar::new().expect("libyamlstar not found");
-    let input = yamalgam_bench::inputs::kubernetes_deployment();
-    bencher.bench_local(|| yamalgam_bench::peers::yamlstar_parse(&ys, &input));
-}
-
 // =============================================================================
 // Medium input (~120KB, 1K records)
 // =============================================================================
@@ -136,14 +127,6 @@ fn medium_rust_yaml(bencher: Bencher) {
     bencher.bench(|| yamalgam_bench::peers::rust_yaml_parse(&input));
 }
 
-#[cfg(feature = "yamlstar")]
-#[divan::bench]
-fn medium_yamlstar(bencher: Bencher) {
-    let ys = yamlstar::YAMLStar::new().expect("libyamlstar not found");
-    let input = yamalgam_bench::inputs::records(1_000);
-    bencher.bench_local(|| yamalgam_bench::peers::yamlstar_parse(&ys, &input));
-}
-
 // =============================================================================
 // Large input (~1.2MB, 10K records)
 // =============================================================================
@@ -200,12 +183,4 @@ fn large_serde_saphyr(bencher: Bencher) {
 fn large_rust_yaml(bencher: Bencher) {
     let input = yamalgam_bench::inputs::records(10_000);
     bencher.bench(|| yamalgam_bench::peers::rust_yaml_parse(&input));
-}
-
-#[cfg(feature = "yamlstar")]
-#[divan::bench]
-fn large_yamlstar(bencher: Bencher) {
-    let ys = yamlstar::YAMLStar::new().expect("libyamlstar not found");
-    let input = yamalgam_bench::inputs::records(10_000);
-    bencher.bench_local(|| yamalgam_bench::peers::yamlstar_parse(&ys, &input));
 }

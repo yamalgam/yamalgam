@@ -108,8 +108,8 @@ fn extract_block_field(
                 break;
             }
 
-            if line.len() >= min_indent {
-                content_lines.push(&line[min_indent..]);
+            if let Some(content) = line.get(min_indent..) {
+                content_lines.push(content);
             } else if line.trim().is_empty() {
                 content_lines.push("");
             } else {

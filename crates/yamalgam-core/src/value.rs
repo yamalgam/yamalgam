@@ -14,7 +14,9 @@
 // y[impl overview.scalars.double-quoted-escapes]
 // y[impl overview.scalars.flow-multiline-fold]
 // y[impl overview.scalars.flow-plain]
+use std::collections::{HashMap, hash_map::RandomState};
 use std::fmt;
+use std::hash::{BuildHasher, Hash, Hasher};
 
 /// A YAML value.
 ///
@@ -43,16 +45,82 @@ pub enum Value {
 
 /// An insertion-order-preserving map of YAML key/value pairs.
 ///
-/// Backed by a `Vec<(Value, Value)>`. Insert replaces an existing key (linear
-/// scan) rather than appending a duplicate. This keeps the API predictable at
-/// the cost of O(n) lookups — fine for typical YAML document sizes.
-#[derive(Debug, Clone, PartialEq)]
+/// Backed by a `Vec<(Value, Value)>`. Insert replaces an existing key rather
+/// than appending a duplicate. A private side index accelerates equality-safe
+/// scalar keys while preserving ordered entries as the semantic state.
+#[derive(Clone, Default)]
 // y[impl model.repr.node.mapping]
 // y[impl model.repr.uniqueness]
 // y[impl model.serial.key-order.serialization-detail]
 // y[impl model.serial.key-order.no-representation-order]
 pub struct Mapping {
     entries: Vec<(Value, Value)>,
+    scalar_index: Option<ScalarIndex>,
+}
+
+#[derive(Clone)]
+struct ScalarIndex {
+    hash_builder: RandomState,
+    positions: HashMap<u64, Vec<usize>>,
+}
+
+impl ScalarIndex {
+    fn new() -> Self {
+        Self {
+            hash_builder: RandomState::new(),
+            positions: HashMap::new(),
+        }
+    }
+
+    const fn is_indexable(key: &Value) -> bool {
+        matches!(
+            key,
+            Value::Null | Value::Bool(_) | Value::Integer(_) | Value::String(_)
+        )
+    }
+
+    fn fingerprint_value(&self, key: &Value) -> Option<u64> {
+        let mut hasher = self.hash_builder.build_hasher();
+        match key {
+            Value::Null => 0_u8.hash(&mut hasher),
+            Value::Bool(value) => {
+                1_u8.hash(&mut hasher);
+                value.hash(&mut hasher);
+            }
+            Value::Integer(value) => {
+                2_u8.hash(&mut hasher);
+                value.hash(&mut hasher);
+            }
+            Value::String(value) => {
+                3_u8.hash(&mut hasher);
+                value.hash(&mut hasher);
+            }
+            Value::Float(_) | Value::Sequence(_) | Value::Mapping(_) => return None,
+        }
+        Some(hasher.finish())
+    }
+
+    fn fingerprint_str(&self, key: &str) -> u64 {
+        let mut hasher = self.hash_builder.build_hasher();
+        3_u8.hash(&mut hasher);
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+impl fmt::Debug for Mapping {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Mapping")
+            .field("entries", &self.entries)
+            .finish()
+    }
+}
+
+impl PartialEq for Mapping {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
 }
 
 impl Mapping {
@@ -61,18 +129,43 @@ impl Mapping {
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
+            scalar_index: None,
         }
     }
 
     /// Inserts a key/value pair. If the key already exists, its value is
     /// replaced and the old value is returned.
     pub fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
-        for entry in &mut self.entries {
-            if entry.0 == key {
-                let old = std::mem::replace(&mut entry.1, value);
-                return Some(old);
+        if ScalarIndex::is_indexable(&key) {
+            if self.scalar_index.is_none() {
+                self.scalar_index = Some(ScalarIndex::new());
             }
+
+            let fingerprint = self
+                .scalar_index
+                .as_ref()
+                .and_then(|index| index.fingerprint_value(&key))
+                .expect("indexable scalar must have a fingerprint");
+            if let Some(position) = self.indexed_position(fingerprint, &key) {
+                return Some(std::mem::replace(&mut self.entries[position].1, value));
+            }
+
+            let position = self.entries.len();
+            self.entries.push((key, value));
+            self.scalar_index
+                .as_mut()
+                .expect("scalar index must be initialized")
+                .positions
+                .entry(fingerprint)
+                .or_default()
+                .push(position);
+            return None;
         }
+
+        if let Some(position) = self.linear_position(&key) {
+            return Some(std::mem::replace(&mut self.entries[position].1, value));
+        }
+
         self.entries.push((key, value));
         None
     }
@@ -80,7 +173,49 @@ impl Mapping {
     /// Looks up a value by key.
     #[must_use]
     pub fn get(&self, key: &Value) -> Option<&Value> {
-        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        if ScalarIndex::is_indexable(key) {
+            let index = self.scalar_index.as_ref()?;
+            let fingerprint = index
+                .fingerprint_value(key)
+                .expect("indexable scalar must have a fingerprint");
+            let position = self.indexed_position(fingerprint, key)?;
+            return Some(&self.entries[position].1);
+        }
+
+        self.linear_position(key)
+            .map(|position| &self.entries[position].1)
+    }
+
+    /// Looks up a value by a borrowed string key without allocating.
+    #[must_use]
+    pub fn get_str(&self, key: &str) -> Option<&Value> {
+        let index = self.scalar_index.as_ref()?;
+        let fingerprint = index.fingerprint_str(key);
+        index
+            .positions
+            .get(&fingerprint)?
+            .iter()
+            .copied()
+            .find_map(|position| match &self.entries[position] {
+                (Value::String(candidate), value) if candidate == key => Some(value),
+                _ => None,
+            })
+    }
+
+    fn indexed_position(&self, fingerprint: u64, key: &Value) -> Option<usize> {
+        self.scalar_index
+            .as_ref()?
+            .positions
+            .get(&fingerprint)?
+            .iter()
+            .copied()
+            .find(|&position| &self.entries[position].0 == key)
+    }
+
+    fn linear_position(&self, key: &Value) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|(candidate, _)| candidate == key)
     }
 
     /// Returns an iterator over keys.
@@ -111,9 +246,44 @@ impl Mapping {
     }
 }
 
-impl Default for Mapping {
-    fn default() -> Self {
-        Self::new()
+const fn entry_refs((key, value): &(Value, Value)) -> (&Value, &Value) {
+    (key, value)
+}
+
+const fn entry_refs_mut((key, value): &mut (Value, Value)) -> (&Value, &mut Value) {
+    (key, value)
+}
+
+impl IntoIterator for Mapping {
+    type Item = (Value, Value);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
+impl<'mapping> IntoIterator for &'mapping Mapping {
+    type Item = (&'mapping Value, &'mapping Value);
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'mapping, (Value, Value)>,
+        fn(&'mapping (Value, Value)) -> Self::Item,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter().map(entry_refs)
+    }
+}
+
+impl<'mapping> IntoIterator for &'mapping mut Mapping {
+    type Item = (&'mapping Value, &'mapping mut Value);
+    type IntoIter = std::iter::Map<
+        std::slice::IterMut<'mapping, (Value, Value)>,
+        fn(&'mapping mut (Value, Value)) -> Self::Item,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter_mut().map(entry_refs_mut)
     }
 }
 
@@ -128,7 +298,7 @@ impl Value {
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
-            Self::Mapping(m) => m.get(&Self::String(key.to_owned())),
+            Self::Mapping(m) => m.get_str(key),
             _ => None,
         }
     }
@@ -360,6 +530,142 @@ mod tests {
     }
 
     #[test]
+    fn scalar_keys_use_a_complete_side_index() {
+        let mut mapping = Mapping::new();
+        for index in 0_i64..10_000 {
+            mapping.insert(Value::Integer(index), Value::Integer(index));
+        }
+
+        let scalar_index = mapping.scalar_index.as_ref().expect("scalar index");
+        assert_eq!(
+            scalar_index.positions.values().map(Vec::len).sum::<usize>(),
+            mapping.len()
+        );
+        assert_eq!(
+            mapping.get(&Value::Integer(9_999)),
+            Some(&Value::Integer(9_999))
+        );
+    }
+
+    #[test]
+    fn borrowed_string_lookup_uses_the_scalar_index() {
+        let mut mapping = Mapping::new();
+        mapping.insert(Value::from("alpha"), Value::Integer(1));
+        mapping.insert(Value::from("beta"), Value::Integer(2));
+
+        assert_eq!(mapping.get_str("beta"), Some(&Value::Integer(2)));
+        assert_eq!(
+            Value::Mapping(mapping).get("alpha"),
+            Some(&Value::Integer(1))
+        );
+    }
+
+    #[test]
+    fn absent_scalar_lookup_on_fallback_only_mapping_is_none() {
+        let mut mapping = Mapping::new();
+        for index in 0..1_000 {
+            mapping.insert(Value::Float(f64::from(index) + 0.5), Value::Null);
+        }
+
+        assert!(mapping.scalar_index.is_none());
+        assert_eq!(mapping.get(&Value::from("missing")), None);
+        assert_eq!(mapping.get_str("missing"), None);
+    }
+
+    #[test]
+    fn scalar_and_fallback_keys_preserve_replacement_semantics() {
+        let keys = [
+            Value::Null,
+            Value::Bool(true),
+            Value::Integer(7),
+            Value::from("seven"),
+            Value::Sequence(vec![Value::Integer(7)]),
+        ];
+        let mut mapping = Mapping::new();
+        for key in &keys {
+            assert_eq!(mapping.insert(key.clone(), Value::Integer(1)), None);
+            assert_eq!(
+                mapping.insert(key.clone(), Value::Integer(2)),
+                Some(Value::Integer(1))
+            );
+        }
+        assert_eq!(mapping.len(), keys.len());
+        for key in &keys {
+            assert_eq!(mapping.get(key), Some(&Value::Integer(2)));
+        }
+    }
+
+    #[test]
+    fn fallback_keys_preserve_float_and_nested_mapping_equality() {
+        let mut signed_zero = Mapping::new();
+        assert_eq!(
+            signed_zero.insert(Value::Float(-0.0), Value::Integer(1)),
+            None
+        );
+        assert_eq!(
+            signed_zero.insert(Value::Float(0.0), Value::Integer(2)),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(signed_zero.len(), 1);
+
+        let mut nan = Mapping::new();
+        assert_eq!(nan.insert(Value::Float(f64::NAN), Value::Integer(1)), None);
+        assert_eq!(nan.insert(Value::Float(f64::NAN), Value::Integer(2)), None);
+        assert_eq!(nan.len(), 2);
+
+        let mut nested_key = Mapping::new();
+        nested_key.insert(Value::from("nested"), Value::Bool(true));
+        let nested_key = Value::Mapping(nested_key);
+        let mut outer = Mapping::new();
+        assert_eq!(outer.insert(nested_key.clone(), Value::Integer(1)), None);
+        assert_eq!(
+            outer.insert(nested_key, Value::Integer(2)),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(outer.len(), 1);
+    }
+
+    #[test]
+    fn fingerprint_collisions_compare_actual_string_keys() {
+        let mut mapping = Mapping::new();
+        mapping.insert(Value::from("left"), Value::Integer(1));
+        mapping.insert(Value::from("right"), Value::Integer(2));
+        let scalar_index = mapping.scalar_index.as_mut().expect("scalar index");
+        let fingerprint = scalar_index.fingerprint_str("right");
+        scalar_index
+            .positions
+            .get_mut(&fingerprint)
+            .unwrap()
+            .insert(0, 0);
+
+        assert_eq!(mapping.get_str("right"), Some(&Value::Integer(2)));
+        assert_eq!(
+            mapping.insert(Value::from("right"), Value::Integer(3)),
+            Some(Value::Integer(2))
+        );
+        assert_eq!(mapping.len(), 2);
+    }
+
+    #[test]
+    fn clone_equality_and_debug_ignore_index_identity() {
+        let mut mapping = Mapping::new();
+        mapping.insert(Value::from("key"), Value::Integer(1));
+        let mut same_entries = mapping.clone();
+        same_entries
+            .scalar_index
+            .as_mut()
+            .expect("scalar index")
+            .positions
+            .clear();
+
+        assert_eq!(mapping, same_entries);
+        assert_eq!(
+            format!("{mapping:?}"),
+            "Mapping { entries: [(String(\"key\"), Integer(1))] }"
+        );
+    }
+
+    #[test]
     fn sequence_index() {
         let seq = Value::Sequence(vec![Value::from("a"), Value::from("b"), Value::from("c")]);
         assert_eq!(seq.get_index(1), Some(&Value::from("b")));
@@ -407,6 +713,41 @@ mod tests {
 
         let keys: Vec<&Value> = m.keys().collect();
         assert_eq!(keys, vec![&Value::from("z"), &Value::from("a")]);
+    }
+
+    #[test]
+    fn mapping_supports_standard_borrowed_mutable_and_owned_iteration() {
+        let mut mapping = Mapping::new();
+        mapping.insert(Value::from("first"), Value::Integer(1));
+        mapping.insert(Value::from("second"), Value::Integer(2));
+
+        let borrowed = (&mapping)
+            .into_iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            borrowed,
+            vec![
+                (Value::from("first"), Value::Integer(1)),
+                (Value::from("second"), Value::Integer(2)),
+            ]
+        );
+
+        for (_, value) in &mut mapping {
+            let Value::Integer(integer) = value else {
+                panic!("test mapping values must be integers");
+            };
+            *integer += 10;
+        }
+        assert_eq!(mapping.get_str("first"), Some(&Value::Integer(11)));
+
+        assert_eq!(
+            mapping.into_iter().collect::<Vec<_>>(),
+            vec![
+                (Value::from("first"), Value::Integer(11)),
+                (Value::from("second"), Value::Integer(12)),
+            ]
+        );
     }
 
     // -- serde Deserialize ---------------------------------------------------

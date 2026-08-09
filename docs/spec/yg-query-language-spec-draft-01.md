@@ -22,6 +22,22 @@ yg MUST use jaq-syn and jaq-core as its expression parser and evaluator engine. 
 r[overview.compat-promise]
 yg does not promise jq compatibility. yg promises jq *familiarity*. Where YAML semantics demand different behavior from JSON semantics, yg follows YAML and documents the divergence. Users who need exact jq JSON semantics SHOULD pipe through `yg -j | jq`.
 
+### 1.1 Milestone 10 Implementation Status
+
+This draft describes the target language. Milestone 10 implements it with
+three explicit deferrals:
+
+- [`r[comparison.strict]`](#32-strict-comparison--) is deferred pending the
+  draft-02 decision on extending jaq without forking its grammar.
+- [`r[ext.chomping]`](#61-node-metadata-filters) is deferred to the Phase 3
+  CST milestone, where the required presentation metadata is available.
+- [`r[cli.allow-includes]`](#84-schema-and-security-flags) and
+  [`r[cli.allow-refs]`](#84-schema-and-security-flags) are deferred to M11 /
+  Phase 4 external resolution.
+
+The [draft-01 implementation notes](yg-spec-draft-01-implementation-notes.md)
+record the complete rationale and every other implementation-driven change.
+
 ---
 
 ## 2. Data Model
@@ -518,7 +534,10 @@ r[cli.sort-keys]
 `-S` / `--sort-keys` — output mappings with sorted keys.
 
 r[cli.color]
-`-C` / `--color-output` and `-M` / `--monochrome-output` — control colorized output.
+`--color=<when>` controls colorized output. `when` MUST be one of `auto`
+(detect terminal capabilities, the default), `always`, or `never`. `-C` is
+reserved for the global `--chdir` option and MUST NOT be interpreted as a color
+flag.
 
 ### 8.4 Schema and Security Flags
 
@@ -530,6 +549,11 @@ r[cli.trusted]
 
 r[cli.strict]
 `--strict` — use `LoaderConfig::strict()`. Tight resource limits, no external resolution. For CI pipelines processing untrusted input.
+
+r[cli.no-env]
+`--no-env` — compile filters without the jq-compatible `env` capability. This
+flag MUST select sandboxed filter compilation independently of `--strict`,
+which controls resource limits for input processing.
 
 r[cli.allow-includes]
 `--allow-includes[=root]` — enable `!include` resolution. Optionally set the sandbox root directory. Default root is the directory of the input file.

@@ -6,6 +6,7 @@ use pretty_assertions::assert_eq;
 use yamalgam_core::Span;
 use yamalgam_parser::{CollectionStyle, Event, ParseError, ScalarStyle};
 use yamalgam_scanner::scanner::{ScanError, ScanErrorKind};
+use yamalgam_scanner::{AtomFlags, Chomp};
 
 #[test]
 fn event_stream_start_constructable() {
@@ -121,6 +122,8 @@ fn event_scalar_constructable() {
         tag: None,
         value: Cow::Borrowed("hello"),
         style: ScalarStyle::Plain,
+        chomp: Chomp::Clip,
+        flags: AtomFlags::DIRECT_OUTPUT,
         span: Span::default(),
     };
     assert!(matches!(

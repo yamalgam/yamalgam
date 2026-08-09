@@ -33,7 +33,7 @@ pub fn cmd_install(args: InstallArgs) -> Result<(), String> {
         return Err(format!("built binary not found at {}", bin_path.display()));
     }
 
-    let dest = bin_dir.join("yamalgam");
+    let dest = bin_dir.join("yg");
     fs::copy(&bin_path, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     set_executable(&dest)?;
     println!("installed {}", dest.display());
@@ -60,7 +60,7 @@ fn built_binary(root: &Path, profile: &str) -> PathBuf {
         "dev" => "debug",
         _ => profile,
     };
-    root.join("target").join(dir).join("yamalgam")
+    root.join("target").join(dir).join("yg")
 }
 
 fn expand_tilde(path: &str) -> Result<PathBuf, String> {

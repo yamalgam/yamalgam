@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 
-use yamalgam_core::{ResourceLimits, Span};
+use yamalgam_core::{LimitExceeded, ResourceLimits, Span};
 
 use crate::Atom;
 use crate::reader::Reader;
@@ -31,6 +31,13 @@ enum State {
     Done,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ScalarMetadata {
+    chomp: Chomp,
+    has_escape: bool,
+    chomp_explicit: bool,
+}
+
 /// Error type for scanner failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanError {
@@ -47,6 +54,13 @@ impl ScanError {
         Self {
             kind,
             message: message.into(),
+        }
+    }
+
+    fn limit(error: LimitExceeded) -> Self {
+        Self {
+            kind: ScanErrorKind::LimitExceeded(error),
+            message: error.to_string(),
         }
     }
 }
@@ -82,7 +96,10 @@ pub enum ScanErrorKind {
     /// Content appeared where the document structure does not allow it.
     UnexpectedContent,
     /// A configured resource limit was exceeded.
-    LimitExceeded,
+    LimitExceeded(LimitExceeded),
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    ResourceOverflow(&'static str),
 }
 
 impl std::fmt::Display for ScanError {
@@ -91,7 +108,14 @@ impl std::fmt::Display for ScanError {
     }
 }
 
-impl std::error::Error for ScanError {}
+impl std::error::Error for ScanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            ScanErrorKind::LimitExceeded(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// A potential simple key saved on the simple key stack.
 ///
@@ -202,6 +226,18 @@ pub struct Scanner<'input> {
 }
 
 impl<'input> Scanner<'input> {
+    fn current_depth(&self) -> Result<usize, ScanError> {
+        self.indent_stack
+            .len()
+            .checked_add(self.flow_level as usize)
+            .ok_or_else(|| {
+                ScanError::new(
+                    ScanErrorKind::ResourceOverflow("scan depth accounting"),
+                    "scan depth accounting overflow",
+                )
+            })
+    }
+
     /// Create a new scanner over decoded UTF-8 input.
     ///
     /// Uses [`ResourceLimits::none()`] — no depth or size limits.
@@ -287,21 +323,50 @@ impl<'input> Scanner<'input> {
         }
     }
 
-    /// Build a scalar token with owned or borrowed data and explicit style.
+    /// Build a scalar token with content and scanner-derived presentation metadata.
     fn scalar_token(
+        &self,
         data: Cow<'input, str>,
         style: ScalarStyle,
+        metadata: ScalarMetadata,
         start: yamalgam_core::Mark,
         end: yamalgam_core::Mark,
     ) -> Token<'input> {
+        let mut flags = scalar_content_flags(&data);
+        let multiline = end.line > start.line;
+        if multiline {
+            flags |= AtomFlags::IS_MULTILINE;
+        }
+        if end.offset == self.reader.input().len() {
+            flags |= AtomFlags::ENDS_WITH_EOF;
+        }
+        if metadata.has_escape {
+            flags |= AtomFlags::HAS_ESC;
+        }
+        if metadata.chomp_explicit {
+            flags |= AtomFlags::CHOMP_EXPLICIT;
+        }
+        if style == ScalarStyle::Plain && data == "<<" {
+            flags |= AtomFlags::IS_MERGE_KEY;
+        }
+        if style == ScalarStyle::Plain && multiline {
+            flags |= AtomFlags::SIMPLE_KEY_ALLOWED;
+        }
+        if !matches!(style, ScalarStyle::Literal | ScalarStyle::Folded)
+            && !multiline
+            && matches!(&data, Cow::Borrowed(_))
+        {
+            flags |= AtomFlags::DIRECT_OUTPUT;
+        }
+
         Token {
             kind: TokenKind::Scalar,
             atom: Atom {
                 data,
                 span: Span { start, end },
                 style,
-                chomp: Chomp::default(),
-                flags: AtomFlags::empty(),
+                chomp: metadata.chomp,
+                flags,
             },
         }
     }
@@ -325,6 +390,15 @@ impl<'input> Scanner<'input> {
     }
 
     // -- Whitespace/comment skipping --
+
+    #[cold]
+    #[inline(never)]
+    fn set_static_error(&mut self, kind: ScanErrorKind, message: &'static str) {
+        self.error = Some(ScanError {
+            kind,
+            message: message.to_owned(),
+        });
+    }
 
     /// Skip whitespace, comments, and newlines between tokens.
     ///
@@ -368,10 +442,10 @@ impl<'input> Scanner<'input> {
                     // cref: fy_scan_to_next_token (fy-parse.c)
                     // y[impl struct.indent.tab-forbidden]
                     if at_line_start && self.flow_level == 0 && self.indent >= 0 {
-                        self.error = Some(ScanError {
-                            kind: ScanErrorKind::InvalidTab,
-                            message: "tab character used for indentation".to_string(),
-                        });
+                        self.set_static_error(
+                            ScanErrorKind::InvalidTab,
+                            "tab character used for indentation",
+                        );
                         return;
                     }
                     if at_line_start && self.flow_level > 0 {
@@ -388,10 +462,10 @@ impl<'input> Scanner<'input> {
             // on the same line are indentation — reject them. Tabs on
             // blank lines (Y79Y#2) are fine (next char is newline/EOF).
             if tab_at_flow_line_start && !matches!(self.reader.peek(), Some('\n' | '\r') | None) {
-                self.error = Some(ScanError {
-                    kind: ScanErrorKind::InvalidTab,
-                    message: "tab character used for indentation in flow context".to_string(),
-                });
+                self.set_static_error(
+                    ScanErrorKind::InvalidTab,
+                    "tab character used for indentation in flow context",
+                );
                 return;
             }
 
@@ -411,10 +485,10 @@ impl<'input> Scanner<'input> {
                 && !matches!(self.reader.peek(), Some('\n' | '\r') | None)
                 && (self.reader.mark().column as i32) <= self.flow_indent
             {
-                self.error = Some(ScanError {
-                    kind: ScanErrorKind::InvalidIndentation,
-                    message: "flow content indented at or below block indent".to_string(),
-                });
+                self.set_static_error(
+                    ScanErrorKind::InvalidIndentation,
+                    "flow content indented at or below block indent",
+                );
                 return;
             }
 
@@ -494,14 +568,15 @@ impl<'input> Scanner<'input> {
         }
         self.indent_stack.push(self.indent);
         // Enforce max_depth on combined block + flow nesting.
-        if let Err(msg) = self
-            .config
-            .check_depth(self.indent_stack.len() + self.flow_level as usize)
-        {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        let depth = match self.current_depth() {
+            Ok(depth) => depth,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        if let Err(error) = self.config.check_depth(depth) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
         self.indent = column;
@@ -958,16 +1033,24 @@ impl<'input> Scanner<'input> {
             // Track the block indent when entering flow context.
             self.flow_indent = self.indent;
         }
-        self.flow_level += 1;
+        let Some(flow_level) = self.flow_level.checked_add(1) else {
+            self.error = Some(ScanError::new(
+                ScanErrorKind::ResourceOverflow("flow depth accounting"),
+                "flow depth accounting overflow",
+            ));
+            return;
+        };
+        self.flow_level = flow_level;
         // Enforce max_depth on combined nesting (block indent + flow level).
-        if let Err(msg) = self
-            .config
-            .check_depth(self.indent_stack.len() + self.flow_level as usize)
-        {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        let depth = match self.current_depth() {
+            Ok(depth) => depth,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        if let Err(error) = self.config.check_depth(depth) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
         self.flow_is_mapping.push(c == '{');
@@ -1215,11 +1298,9 @@ impl<'input> Scanner<'input> {
                 // before the key token in the queue.
                 if let Some(pos) = self.queue_position(sk.token_id) {
                     // Enforce max_key_bytes limit on the key's scalar data.
-                    if let Err(msg) = self.config.check_key_size(self.queue[pos].atom.data.len()) {
-                        self.error = Some(ScanError {
-                            kind: ScanErrorKind::LimitExceeded,
-                            message: msg,
-                        });
+                    if let Err(error) = self.config.check_key_size(self.queue[pos].atom.data.len())
+                    {
+                        self.error = Some(ScanError::limit(error));
                         return;
                     }
 
@@ -1244,14 +1325,15 @@ impl<'input> Scanner<'input> {
                         }
                         self.indent_stack.push(self.indent);
                         // Enforce max_depth on combined block + flow nesting.
-                        if let Err(msg) = self
-                            .config
-                            .check_depth(self.indent_stack.len() + self.flow_level as usize)
-                        {
-                            self.error = Some(ScanError {
-                                kind: ScanErrorKind::LimitExceeded,
-                                message: msg,
-                            });
+                        let depth = match self.current_depth() {
+                            Ok(depth) => depth,
+                            Err(error) => {
+                                self.error = Some(error);
+                                return;
+                            }
+                        };
+                        if let Err(error) = self.config.check_depth(depth) {
+                            self.error = Some(ScanError::limit(error));
                             return;
                         }
                         self.indent = sk.mark.column as i32;
@@ -1568,15 +1650,22 @@ impl<'input> Scanner<'input> {
         }
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(text.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(text.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 
-        let scalar = Self::scalar_token(text, ScalarStyle::Plain, start_mark, end_mark);
+        let scalar = self.scalar_token(
+            text,
+            ScalarStyle::Plain,
+            ScalarMetadata {
+                chomp: Chomp::Clip,
+                has_escape: false,
+                chomp_explicit: false,
+            },
+            start_mark,
+            end_mark,
+        );
         let id = self.enqueue(scalar);
         self.save_simple_key_full(id, start_mark, content_end_line, false);
         // Multi-line plain scalars consume newlines internally. In block
@@ -1804,15 +1893,18 @@ impl<'input> Scanner<'input> {
 
         // Parse header: optional chomp and/or indent digit (either order).
         let mut chomp = Chomp::Clip;
+        let mut chomp_explicit = false;
         let mut explicit_indent: Option<usize> = None;
         for _ in 0..2 {
             match self.reader.peek() {
                 Some('+') => {
                     chomp = Chomp::Keep;
+                    chomp_explicit = true;
                     self.reader.advance();
                 }
                 Some('-') => {
                     chomp = Chomp::Strip;
+                    chomp_explicit = true;
                     self.reader.advance();
                 }
                 Some(c) if c.is_ascii_digit() && c != '0' => {
@@ -1974,11 +2066,8 @@ impl<'input> Scanner<'input> {
         }
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(content.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(content.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 
@@ -1988,7 +2077,17 @@ impl<'input> Scanner<'input> {
         } else {
             ScalarStyle::Folded
         };
-        let scalar = Self::scalar_token(Cow::Owned(content), style, start_mark, end_mark);
+        let scalar = self.scalar_token(
+            Cow::Owned(content),
+            style,
+            ScalarMetadata {
+                chomp,
+                has_escape: false,
+                chomp_explicit,
+            },
+            start_mark,
+            end_mark,
+        );
         self.enqueue(scalar);
         // Block scalars always end at a line boundary, so the next token
         // on the new line can be a simple key.
@@ -2166,15 +2265,12 @@ impl<'input> Scanner<'input> {
         };
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(data.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 
-        self.push_quoted_scalar(data, ScalarStyle::SingleQuoted, start_mark, end_mark);
+        self.push_quoted_scalar(data, ScalarStyle::SingleQuoted, false, start_mark, end_mark);
     }
 
     /// Fetch a double-quoted scalar (`"..."`), processing escape sequences.
@@ -2222,6 +2318,7 @@ impl<'input> Scanner<'input> {
 
         let mut result = String::new();
         let mut needs_owned = false;
+        let mut has_escape = false;
         // Byte offset into `result` below which content is protected from
         // trailing-whitespace stripping.  Escape sequences like `\t` produce
         // content characters that must survive line-fold trimming (YAML §6.1).
@@ -2242,6 +2339,7 @@ impl<'input> Scanner<'input> {
                 }
                 Some('\\') => {
                     needs_owned = true;
+                    has_escape = true;
                     self.reader.advance(); // skip backslash
                     match self.reader.peek() {
                         Some('\\') => {
@@ -2314,20 +2412,20 @@ impl<'input> Scanner<'input> {
                         }
                         Some('x') => {
                             self.reader.advance();
-                            if let Some(ch) = self.scan_unicode_escape(2) {
-                                result.push(ch);
+                            if !self.push_unicode_escape(&mut result, 2) {
+                                return;
                             }
                         }
                         Some('u') => {
                             self.reader.advance();
-                            if let Some(ch) = self.scan_unicode_escape(4) {
-                                result.push(ch);
+                            if !self.push_unicode_escape(&mut result, 4) {
+                                return;
                             }
                         }
                         Some('U') => {
                             self.reader.advance();
-                            if let Some(ch) = self.scan_unicode_escape(8) {
-                                result.push(ch);
+                            if !self.push_unicode_escape(&mut result, 8) {
+                                return;
                             }
                         }
                         // Escaped line break: \ + newline joins lines,
@@ -2465,28 +2563,77 @@ impl<'input> Scanner<'input> {
         };
 
         // Enforce max_scalar_bytes limit.
-        if let Err(msg) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError {
-                kind: ScanErrorKind::LimitExceeded,
-                message: msg,
-            });
+        if let Err(error) = self.config.check_scalar_size(data.len()) {
+            self.error = Some(ScanError::limit(error));
             return;
         }
 
-        self.push_quoted_scalar(data, ScalarStyle::DoubleQuoted, start_mark, end_mark);
+        self.push_quoted_scalar(
+            data,
+            ScalarStyle::DoubleQuoted,
+            has_escape,
+            start_mark,
+            end_mark,
+        );
     }
 
-    /// Read `n` hex digits and return the corresponding Unicode character.
+    fn push_unicode_escape(&mut self, output: &mut String, digits: usize) -> bool {
+        match self.scan_unicode_escape(digits) {
+            Ok(character) => {
+                output.push(character);
+                true
+            }
+            Err(message) => {
+                self.error = Some(ScanError {
+                    kind: ScanErrorKind::InvalidEscape,
+                    message,
+                });
+                false
+            }
+        }
+    }
+
+    /// Read a YAML Unicode escape, including JSON-compatible UTF-16 pairs.
     // y[impl char.ns-hex-digit]
-    fn scan_unicode_escape(&mut self, n: usize) -> Option<char> {
-        let mut code: u32 = 0;
-        for _ in 0..n {
-            let c = self.reader.peek()?;
-            let digit = c.to_digit(16)?;
+    fn scan_unicode_escape(&mut self, digits: usize) -> Result<char, String> {
+        let first = self.scan_hex_escape(digits)?;
+        let code = if digits == 4 && (0xd800..=0xdbff).contains(&first) {
+            if self.reader.peek() != Some('\\') {
+                return Err("high surrogate must be followed by a low surrogate escape".into());
+            }
+            self.reader.advance();
+            if self.reader.peek() != Some('u') {
+                return Err("high surrogate must be followed by a low surrogate escape".into());
+            }
+            self.reader.advance();
+            let second = self.scan_hex_escape(4)?;
+            if !(0xdc00..=0xdfff).contains(&second) {
+                return Err("high surrogate must be followed by a low surrogate escape".into());
+            }
+            0x1_0000 + ((first - 0xd800) << 10) + (second - 0xdc00)
+        } else {
+            if (0xdc00..=0xdfff).contains(&first) {
+                return Err("unexpected low surrogate escape".into());
+            }
+            first
+        };
+        char::from_u32(code).ok_or_else(|| "invalid Unicode escape".into())
+    }
+
+    fn scan_hex_escape(&mut self, digits: usize) -> Result<u32, String> {
+        let mut code = 0u32;
+        for _ in 0..digits {
+            let character = self
+                .reader
+                .peek()
+                .ok_or_else(|| "unterminated Unicode escape".to_owned())?;
+            let digit = character
+                .to_digit(16)
+                .ok_or_else(|| "Unicode escape contains a non-hexadecimal digit".to_owned())?;
             code = code * 16 + digit;
             self.reader.advance();
         }
-        char::from_u32(code)
+        Ok(code)
     }
 
     /// Push a quoted scalar to the queue and save a simple key mark.
@@ -2494,10 +2641,21 @@ impl<'input> Scanner<'input> {
         &mut self,
         data: Cow<'input, str>,
         style: ScalarStyle,
+        has_escape: bool,
         start_mark: yamalgam_core::Mark,
         end_mark: yamalgam_core::Mark,
     ) {
-        let scalar = Self::scalar_token(data, style, start_mark, end_mark);
+        let scalar = self.scalar_token(
+            data,
+            style,
+            ScalarMetadata {
+                chomp: Chomp::Clip,
+                has_escape,
+                chomp_explicit: false,
+            },
+            start_mark,
+            end_mark,
+        );
         let id = self.enqueue(scalar);
         self.save_simple_key_ext(id, start_mark, true);
         // Multi-line quoted scalars consume newlines internally.
@@ -2844,6 +3002,60 @@ impl<'input> Scanner<'input> {
             self.fetch_plain_scalar();
         }
     }
+}
+
+/// Derive flags that describe the processed scalar content.
+fn scalar_content_flags(content: &str) -> AtomFlags {
+    let mut flags = AtomFlags::empty();
+    if content.is_empty() {
+        return AtomFlags::SIZE0;
+    }
+
+    let first = content.chars().next().expect("non-empty scalar");
+    let last = content.chars().next_back().expect("non-empty scalar");
+    let has_line_break = content.chars().any(is_linebreak);
+    let has_whitespace = content
+        .chars()
+        .any(|character| matches!(character, ' ' | '\t'));
+
+    if has_line_break {
+        flags |= AtomFlags::HAS_LB;
+    }
+    if has_whitespace {
+        flags |= AtomFlags::HAS_WS;
+    }
+    if matches!(first, ' ' | '\t') {
+        flags |= AtomFlags::STARTS_WITH_WS;
+    }
+    if is_linebreak(first) {
+        flags |= AtomFlags::STARTS_WITH_LB;
+    }
+    if matches!(last, ' ' | '\t') {
+        flags |= AtomFlags::ENDS_WITH_WS;
+    }
+    if is_linebreak(last) {
+        flags |= AtomFlags::ENDS_WITH_LB;
+    }
+    if content
+        .chars()
+        .rev()
+        .take_while(|&c| is_linebreak(c))
+        .count()
+        > 1
+    {
+        flags |= AtomFlags::TRAILING_LB;
+    }
+    if content
+        .chars()
+        .all(|character| matches!(character, ' ' | '\t') || is_linebreak(character))
+    {
+        flags |= AtomFlags::EMPTY;
+    }
+    if !content.is_ascii() {
+        flags |= AtomFlags::HIGH_ASCII;
+    }
+
+    flags
 }
 
 /// Returns `true` if the character is a blank (space or tab) or absent (EOF/newline).

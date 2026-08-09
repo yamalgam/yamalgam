@@ -65,12 +65,12 @@ pub fn compare_token_streams(
 ) -> CompareResult {
     let common_len = c_tokens.len().min(rust_tokens.len());
 
-    for i in 0..common_len {
-        if !tokens_match(&c_tokens[i], &rust_tokens[i]) {
+    for (i, (c_token, rust_token)) in c_tokens.iter().zip(rust_tokens).enumerate() {
+        if !tokens_match(c_token, rust_token) {
             return CompareResult::TokenMismatch {
                 index: i,
-                c_token: c_tokens[i].clone(),
-                rust_token: rust_tokens[i].clone(),
+                c_token: c_token.clone(),
+                rust_token: rust_token.clone(),
                 context: context_slice(c_tokens, i),
             };
         }
@@ -189,12 +189,12 @@ pub fn compare_event_streams(
 ) -> CompareEventResult {
     let common_len = c_events.len().min(rust_events.len());
 
-    for i in 0..common_len {
-        if !events_match(&c_events[i], &rust_events[i]) {
+    for (i, (c_event, rust_event)) in c_events.iter().zip(rust_events).enumerate() {
+        if !events_match(c_event, rust_event) {
             return CompareEventResult::EventMismatch {
                 index: i,
-                c_event: c_events[i].clone(),
-                rust_event: rust_events[i].clone(),
+                c_event: c_event.clone(),
+                rust_event: rust_event.clone(),
                 context: event_context_slice(c_events, i),
             };
         }
@@ -252,12 +252,12 @@ pub fn compare_event_streams_with_tags(
 ) -> CompareEventResult {
     let common_len = c_events.len().min(rust_events.len());
 
-    for i in 0..common_len {
-        if !events_match_strict(&c_events[i], &rust_events[i]) {
+    for (i, (c_event, rust_event)) in c_events.iter().zip(rust_events).enumerate() {
+        if !events_match_strict(c_event, rust_event) {
             return CompareEventResult::EventMismatch {
                 index: i,
-                c_event: c_events[i].clone(),
-                rust_event: rust_events[i].clone(),
+                c_event: c_event.clone(),
+                rust_event: rust_event.clone(),
                 context: event_context_slice(c_events, i),
             };
         }

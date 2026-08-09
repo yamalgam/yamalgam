@@ -34,8 +34,12 @@ exclude = [
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
+divan = "0.1"
 serde_json = "1.0"
+
+[[bench]]
+name = "mapping_bench"
+harness = false
 
 [lints]
 workspace = true
-

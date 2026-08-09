@@ -1,0 +1,43 @@
+---
+audit: 2026-08-08-15-m10-fresh
+commit: f72e662bb2e5e83bfd4d3c4c4ce58d805e851c90
+reviewers:
+  - scope: [cst-to-text-grows-output-without-known-capacity, scanner-never-populates-atom-presentation-metadata]
+    status: DONE
+  - scope: [resource-limit-checks-return-unstructured-strings, compare-tree-parser-panics-on-nonascii-style, test-suite-extractor-slices-inside-unicode-indentation, fuzz-workspace-escapes-dependency-policy]
+    status: DONE
+verdicts:
+  - slug: resource-limit-checks-return-unstructured-strings
+    verdict: confirmed
+    notes: >-
+      The public `Result<(), String>` contract repeats through the limit checks
+      and is consumed across parser, scanner, compose, serde, CST, and query.
+  - slug: compare-tree-parser-panics-on-nonascii-style
+    verdict: confirmed
+    notes: >-
+      `parse_tree("=VALé")` reaches the fixed byte-one slice, and `parse_tree` is
+      a public export.
+  - slug: test-suite-extractor-slices-inside-unicode-indentation
+    verdict: adjusted
+    notes: >-
+      The explicit-indent panic is confirmed. Inferred indentation already uses
+      an offset produced by `trim_start`, so its boundary is valid and does not
+      need a panic regression.
+  - slug: fuzz-workspace-escapes-dependency-policy
+    verdict: confirmed
+    notes: >-
+      The root workspace excludes fuzz, the canonical Cargo Deny recipe checks
+      only the root, NCSA is absent from policy, and the fuzz lock retains stale
+      serde_yaml and unsafe-libyaml edges.
+  - slug: cst-to-text-grows-output-without-known-capacity
+    verdict: disputed
+    notes: >-
+      `String::new` alone does not prove material cost, and public mutable spans
+      are not a sound capacity bound. A tiny token can carry an enormous span,
+      so the proposed reservation could itself create excessive allocation.
+  - slug: scanner-never-populates-atom-presentation-metadata
+    verdict: confirmed
+    notes: >-
+      Every scalar path uses the constructor that hard-codes default chomp and
+      empty flags; block scanning computes chomp without preserving it, while
+      ADR-0002 explicitly promises both metadata classes.

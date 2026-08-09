@@ -8,9 +8,8 @@
 
 use std::collections::HashMap;
 
-use yamalgam_core::tag::Yaml12TagResolver;
 use yamalgam_core::tag_resolution::TagResolver;
-use yamalgam_core::{Mapping, ResourceLimits, Value};
+use yamalgam_core::{LimitExceeded, LoaderConfig, Mapping, ResourceLimits, TagResolution, Value};
 use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
 };
@@ -26,7 +25,10 @@ pub enum ComposeError {
     /// An event was encountered that is not valid in the current context.
     UnexpectedEvent(String),
     /// A resource limit was exceeded during composition.
-    LimitExceeded(String),
+    LimitExceeded(LimitExceeded),
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    ResourceOverflow(&'static str),
 }
 
 impl std::fmt::Display for ComposeError {
@@ -35,7 +37,10 @@ impl std::fmt::Display for ComposeError {
             Self::Resolve(e) => write!(f, "{e}"),
             Self::UndefinedAlias(name) => write!(f, "undefined alias: *{name}"),
             Self::UnexpectedEvent(msg) => write!(f, "unexpected event: {msg}"),
-            Self::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
+            Self::LimitExceeded(error) => write!(f, "limit exceeded: {error}"),
+            Self::ResourceOverflow(resource) => {
+                write!(f, "limit exceeded: {resource} overflow")
+            }
         }
     }
 }
@@ -44,7 +49,8 @@ impl std::error::Error for ComposeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Resolve(e) => Some(e),
-            Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) | Self::LimitExceeded(_) => None,
+            Self::LimitExceeded(error) => Some(error),
+            Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) | Self::ResourceOverflow(_) => None,
         }
     }
 }
@@ -61,20 +67,31 @@ impl From<ParseError> for ComposeError {
     }
 }
 
+fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
+    result.map_err(ResolveError::Parse)
+}
+
+struct AnchoredValue {
+    value: Value,
+    materialized_weight: usize,
+}
+
 /// Builds [`Value`] documents from a resolved event stream.
 ///
 /// The composer consumes events one at a time, tracking anchors for alias
 /// resolution. Each call to [`compose_stream`](Composer::compose_stream)
 /// produces a `Vec<Value>` — one entry per YAML document in the stream.
-pub struct Composer<'input, I>
+pub struct Composer<'input, I, T = TagResolution>
 where
     I: Iterator<Item = Result<Event<'input>, ResolveError>>,
+    T: TagResolver,
 {
     events: std::iter::Peekable<I>,
-    anchors: HashMap<String, Value>,
+    anchors: HashMap<String, AnchoredValue>,
     config: ResourceLimits,
     alias_expansion_count: usize,
-    tag_resolver: Box<dyn TagResolver>,
+    alias_materialized_bytes: usize,
+    tag_resolver: T,
 }
 
 impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
@@ -83,10 +100,19 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
     ///
     /// This is the simplest entry point — equivalent to creating a [`Parser`],
     /// wrapping it in [`ResolvedEvents`] with [`NoopResolver`], and calling
-    /// [`compose_stream`](Composer::compose_stream).
+    /// [`compose_stream`](Composer::compose_stream). It applies
+    /// [`LoaderConfig::default`] resource limits.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(input: &'input str) -> Result<Vec<Value>, ComposeError> {
         Self::with_resolver(input, NoopResolver)
+    }
+
+    /// Parse and compose all documents with no resource limits.
+    ///
+    /// Use only for trusted input. Prefer [`Self::from_str`] for ordinary
+    /// input.
+    pub fn from_str_unchecked(input: &'input str) -> Result<Vec<Value>, ComposeError> {
+        Self::with_resolver_unchecked(input, NoopResolver)
     }
 
     /// Parse and compose all documents from a YAML string with resource limits.
@@ -95,31 +121,42 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
         config: &yamalgam_core::LoaderConfig,
     ) -> Result<Vec<Value>, ComposeError> {
         let parser = Parser::with_config(input, config);
-        let events = ResolvedEvents::new(
-            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
-            NoopResolver,
-        );
+        let events =
+            ResolvedEvents::new_with_config(parser.map(map_parse_error), NoopResolver, config);
         let mut composer = Composer::new_with_config(events, config);
         composer.compose_stream()
     }
 
-    /// Parse and compose all documents using a custom tag resolver.
-    pub fn from_str_with_tag_resolver(
+    /// Parse and compose all documents using a custom tag resolver and
+    /// [`LoaderConfig::default`] resource limits.
+    pub fn from_str_with_tag_resolver<T: TagResolver>(
         input: &'input str,
-        tag_resolver: impl TagResolver + 'static,
+        tag_resolver: T,
     ) -> Result<Vec<Value>, ComposeError> {
-        let parser = Parser::new(input);
-        let events = ResolvedEvents::new(
-            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
-            NoopResolver,
-        );
-        let mut composer = Composer {
-            events: events.peekable(),
-            anchors: HashMap::new(),
-            config: ResourceLimits::none(),
-            alias_expansion_count: 0,
-            tag_resolver: Box::new(tag_resolver),
-        };
+        Self::from_str_with_tag_resolver_and_config(input, tag_resolver, &LoaderConfig::default())
+    }
+
+    /// Parse and compose all documents with a custom tag resolver and no
+    /// resource limits.
+    ///
+    /// Use only for trusted input. Prefer
+    /// [`Self::from_str_with_tag_resolver`] for ordinary input.
+    pub fn from_str_with_tag_resolver_unchecked<T: TagResolver>(
+        input: &'input str,
+        tag_resolver: T,
+    ) -> Result<Vec<Value>, ComposeError> {
+        Self::from_str_with_tag_resolver_and_config(input, tag_resolver, &LoaderConfig::unchecked())
+    }
+
+    fn from_str_with_tag_resolver_and_config<T: TagResolver>(
+        input: &'input str,
+        tag_resolver: T,
+        config: &LoaderConfig,
+    ) -> Result<Vec<Value>, ComposeError> {
+        let parser = Parser::with_config(input, config);
+        let events =
+            ResolvedEvents::new_with_config(parser.map(map_parse_error), NoopResolver, config);
+        let mut composer = Composer::new_with_tag_resolver_and_config(events, tag_resolver, config);
         composer.compose_stream()
     }
 }
@@ -129,14 +166,33 @@ impl<'input, R: Resolver<'input> + 'input> Composer<'input, ResolvedEvents<'inpu
     ///
     /// The resolver intercepts every parser event before it reaches the
     /// composer, enabling custom tag handling, `!include` expansion,
-    /// or any other event-level transformation.
+    /// or any other event-level transformation. This applies
+    /// [`LoaderConfig::default`] resource limits.
     pub fn with_resolver(input: &'input str, resolver: R) -> Result<Vec<Value>, ComposeError> {
-        let parser = Parser::new(input);
-        let events = ResolvedEvents::new(
-            Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
-            resolver,
-        );
-        let mut composer = Composer::new(events);
+        Self::with_resolver_and_config(input, resolver, &LoaderConfig::default())
+    }
+
+    /// Compose documents with a custom event resolver and no resource limits.
+    ///
+    /// Use only for trusted input. Prefer [`Self::with_resolver`] for ordinary
+    /// input.
+    pub fn with_resolver_unchecked(
+        input: &'input str,
+        resolver: R,
+    ) -> Result<Vec<Value>, ComposeError> {
+        Self::with_resolver_and_config(input, resolver, &LoaderConfig::unchecked())
+    }
+
+    /// Compose documents with a custom event resolver and caller-selected
+    /// loader configuration.
+    pub fn with_resolver_and_config(
+        input: &'input str,
+        resolver: R,
+        config: &LoaderConfig,
+    ) -> Result<Vec<Value>, ComposeError> {
+        let parser = Parser::with_config(input, config);
+        let events = ResolvedEvents::new_with_config(parser.map(map_parse_error), resolver, config);
+        let mut composer = Composer::new_with_config(events, config);
         composer.compose_stream()
     }
 }
@@ -145,30 +201,41 @@ impl<'input, I> Composer<'input, I>
 where
     I: Iterator<Item = Result<Event<'input>, ResolveError>>,
 {
-    /// Create a composer from any resolved event iterator (no resource limits).
+    /// Create a composer from any resolved event iterator with
+    /// [`LoaderConfig::default`] resource limits.
     #[must_use]
     pub fn new(events: I) -> Self {
-        Self {
-            events: events.peekable(),
-            // y[impl model.serial.anchor-definition]
-            // y[impl model.serial.alias-resolution]
-            // y[impl model.serial.tree-definition]
-            anchors: HashMap::new(),
-            config: ResourceLimits::none(),
-            alias_expansion_count: 0,
-            tag_resolver: Box::new(Yaml12TagResolver),
-        }
+        Self::new_with_config(events, &LoaderConfig::default())
+    }
+
+    /// Create a composer from an event iterator with no resource limits.
+    ///
+    /// Use only for trusted events. Prefer [`Self::new`] for ordinary input.
+    #[must_use]
+    pub fn new_unchecked(events: I) -> Self {
+        Self::new_with_config(events, &LoaderConfig::unchecked())
     }
 
     /// Create a composer with resource limits from a [`LoaderConfig`].
     #[must_use]
     pub fn new_with_config(events: I, config: &yamalgam_core::LoaderConfig) -> Self {
+        Self::new_with_tag_resolver_and_config(events, config.tag_resolution, config)
+    }
+}
+
+impl<'input, I, T> Composer<'input, I, T>
+where
+    I: Iterator<Item = Result<Event<'input>, ResolveError>>,
+    T: TagResolver,
+{
+    fn new_with_tag_resolver_and_config(events: I, tag_resolver: T, config: &LoaderConfig) -> Self {
         Self {
             events: events.peekable(),
             anchors: HashMap::new(),
             config: config.limits.clone(),
             alias_expansion_count: 0,
-            tag_resolver: Box::new(config.tag_resolution),
+            alias_materialized_bytes: 0,
+            tag_resolver,
         }
     }
 
@@ -212,7 +279,7 @@ where
                 _ => {
                     // Implicit document.
                     self.anchors.clear();
-                    let value = self.compose_node()?;
+                    let value = self.compose_node(0)?;
 
                     // Consume optional DocumentEnd.
                     if let Some(Event::DocumentEnd { .. }) = self.peek_event()? {
@@ -238,7 +305,7 @@ where
             return Ok(Value::Null);
         }
 
-        self.compose_node()
+        self.compose_node(0)
     }
 
     /// Compose a single YAML node from the event stream.
@@ -247,7 +314,10 @@ where
     // y[impl flow.alias.error-undefined-anchor]
     // y[impl flow.alias.must-anchor-first]
     // y[impl flow.alias.must-not-specify-properties]
-    fn compose_node(&mut self) -> Result<Value, ComposeError> {
+    fn compose_node(&mut self, depth: usize) -> Result<Value, ComposeError> {
+        self.config
+            .check_depth(depth)
+            .map_err(ComposeError::LimitExceeded)?;
         let event = self
             .next_event()?
             .ok_or_else(|| ComposeError::UnexpectedEvent("unexpected end of events".into()))?;
@@ -261,10 +331,7 @@ where
             } => {
                 let resolved = self.resolve_scalar(&value, style);
                 if let Some(name) = anchor {
-                    self.anchors.insert(name.into_owned(), resolved.clone());
-                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
-                        return Err(ComposeError::LimitExceeded(msg));
-                    }
+                    self.remember_anchor(name.into_owned(), &resolved)?;
                 }
                 Ok(resolved)
             }
@@ -281,14 +348,12 @@ where
                         self.next_event()?;
                         break;
                     }
-                    items.push(self.compose_node()?);
+                    self.next_collection_size(items.len())?;
+                    items.push(self.compose_node(child_depth(depth)?)?);
                 }
                 let value = Value::Sequence(items);
                 if let Some(name) = anchor {
-                    self.anchors.insert(name.into_owned(), value.clone());
-                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
-                        return Err(ComposeError::LimitExceeded(msg));
-                    }
+                    self.remember_anchor(name.into_owned(), &value)?;
                 }
                 Ok(value)
             }
@@ -296,6 +361,7 @@ where
             Event::MappingStart { anchor, .. } => {
                 let mut map = Mapping::new();
                 let mut merge_pairs: Vec<(Value, Value)> = Vec::new();
+                let mut pair_count = 0_usize;
 
                 loop {
                     let Some(peeked) = self.peek_event()? else {
@@ -306,8 +372,10 @@ where
                         break;
                     }
 
-                    let key = self.compose_node()?;
-                    let val = self.compose_node()?;
+                    pair_count = self.next_collection_size(pair_count)?;
+                    let nested_depth = child_depth(depth)?;
+                    let key = self.compose_node(nested_depth)?;
+                    let val = self.compose_node(nested_depth)?;
 
                     // Merge key handling: `<<` key.
                     if is_merge_key(&key) {
@@ -322,37 +390,49 @@ where
                     let mut merged = Mapping::new();
                     for (k, v) in merge_pairs {
                         merged.insert(k, v);
+                        self.config
+                            .check_collection_size(merged.len())
+                            .map_err(ComposeError::LimitExceeded)?;
                     }
                     // Explicit keys override merged ones.
                     for (k, v) in map.iter() {
                         merged.insert(k.clone(), v.clone());
+                        self.config
+                            .check_collection_size(merged.len())
+                            .map_err(ComposeError::LimitExceeded)?;
                     }
                     map = merged;
                 }
 
                 let value = Value::Mapping(map);
                 if let Some(name) = anchor {
-                    self.anchors.insert(name.into_owned(), value.clone());
-                    if let Err(msg) = self.config.check_anchor_count(self.anchors.len()) {
-                        return Err(ComposeError::LimitExceeded(msg));
-                    }
+                    self.remember_anchor(name.into_owned(), &value)?;
                 }
                 Ok(value)
             }
 
             Event::Alias { name, .. } => {
-                self.alias_expansion_count += 1;
-                if let Err(msg) = self
+                self.alias_expansion_count = self
+                    .alias_expansion_count
+                    .checked_add(1)
+                    .ok_or_else(|| ComposeError::ResourceOverflow("alias expansion count"))?;
+                if let Err(error) = self
                     .config
                     .check_alias_expansions(self.alias_expansion_count)
                 {
-                    return Err(ComposeError::LimitExceeded(msg));
+                    return Err(ComposeError::LimitExceeded(error));
                 }
                 let name_str = name.into_owned();
-                self.anchors
+                let anchored = self
+                    .anchors
                     .get(&name_str)
-                    .cloned()
-                    .ok_or(ComposeError::UndefinedAlias(name_str))
+                    .ok_or(ComposeError::UndefinedAlias(name_str))?;
+                self.alias_materialized_bytes = checked_materialized_total(
+                    self.alias_materialized_bytes,
+                    anchored.materialized_weight,
+                    &self.config,
+                )?;
+                Ok(anchored.value.clone())
             }
 
             other => Err(ComposeError::UnexpectedEvent(format!("{other:?}"))),
@@ -444,11 +524,83 @@ where
             _ => Value::String(value.to_owned()),
         }
     }
+
+    fn next_collection_size(&self, current: usize) -> Result<usize, ComposeError> {
+        let next = current
+            .checked_add(1)
+            .ok_or(ComposeError::ResourceOverflow("collection size"))?;
+        self.config
+            .check_collection_size(next)
+            .map_err(ComposeError::LimitExceeded)?;
+        Ok(next)
+    }
+
+    fn remember_anchor(&mut self, name: String, value: &Value) -> Result<(), ComposeError> {
+        let materialized_weight = materialized_weight(value)?;
+        self.anchors.insert(
+            name,
+            AnchoredValue {
+                value: value.clone(),
+                materialized_weight,
+            },
+        );
+        self.config
+            .check_anchor_count(self.anchors.len())
+            .map_err(ComposeError::LimitExceeded)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
+
+fn child_depth(depth: usize) -> Result<usize, ComposeError> {
+    depth
+        .checked_add(1)
+        .ok_or(ComposeError::ResourceOverflow("depth"))
+}
+
+fn materialized_weight(value: &Value) -> Result<usize, ComposeError> {
+    let mut total = 0_usize;
+    let mut pending = vec![value];
+
+    while let Some(value) = pending.pop() {
+        total = total
+            .checked_add(std::mem::size_of::<Value>())
+            .ok_or(ComposeError::ResourceOverflow("anchor materialized weight"))?;
+        match value {
+            Value::String(string) => {
+                total = total
+                    .checked_add(string.len())
+                    .ok_or(ComposeError::ResourceOverflow("anchor materialized weight"))?;
+            }
+            Value::Sequence(items) => pending.extend(items),
+            Value::Mapping(mapping) => {
+                for (key, value) in mapping.iter() {
+                    pending.push(key);
+                    pending.push(value);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Integer(_) | Value::Float(_) => {}
+        }
+    }
+
+    Ok(total)
+}
+
+fn checked_materialized_total(
+    current: usize,
+    increment: usize,
+    limits: &ResourceLimits,
+) -> Result<usize, ComposeError> {
+    let next = current
+        .checked_add(increment)
+        .ok_or(ComposeError::ResourceOverflow("alias materialization size"))?;
+    limits
+        .check_output_size(next)
+        .map_err(ComposeError::LimitExceeded)?;
+    Ok(next)
+}
 
 /// Check whether a value is the merge key sentinel `<<`.
 fn is_merge_key(key: &Value) -> bool {
@@ -469,13 +621,13 @@ fn collect_merge_pairs(
     config: &ResourceLimits,
     depth: usize,
 ) -> Result<(), ComposeError> {
-    if let Err(msg) = config.check_merge_depth(depth) {
-        return Err(ComposeError::LimitExceeded(msg));
+    if let Err(error) = config.check_merge_depth(depth) {
+        return Err(ComposeError::LimitExceeded(error));
     }
     match val {
         Value::Mapping(m) => {
             for (k, v) in m.iter() {
-                pairs.push((k.clone(), v.clone()));
+                push_merge_pair(pairs, k, v, config)?;
             }
             Ok(())
         }
@@ -484,7 +636,7 @@ fn collect_merge_pairs(
                 match item {
                     Value::Mapping(m) => {
                         for (k, v) in m.iter() {
-                            pairs.push((k.clone(), v.clone()));
+                            push_merge_pair(pairs, k, v, config)?;
                         }
                     }
                     other => {
@@ -502,15 +654,53 @@ fn collect_merge_pairs(
     }
 }
 
+fn push_merge_pair(
+    pairs: &mut Vec<(Value, Value)>,
+    key: &Value,
+    value: &Value,
+    config: &ResourceLimits,
+) -> Result<(), ComposeError> {
+    let next = pairs
+        .len()
+        .checked_add(1)
+        .ok_or(ComposeError::ResourceOverflow("collection size"))?;
+    config
+        .check_collection_size(next)
+        .map_err(ComposeError::LimitExceeded)?;
+    pairs.push((key.clone(), value.clone()));
+    Ok(())
+}
+
 /// Parse a YAML string into a list of [`Value`] documents.
 pub fn from_str(input: &str) -> Result<Vec<Value>, ComposeError> {
     Composer::from_str(input)
+}
+
+/// Parse a YAML string into documents with no resource limits.
+///
+/// Use only for trusted input. Prefer [`from_str`] for ordinary input.
+pub fn from_str_unchecked(input: &str) -> Result<Vec<Value>, ComposeError> {
+    Composer::from_str_unchecked(input)
 }
 
 /// Parse a YAML string into a single [`Value`].
 /// Returns Null for empty input, error for multiple documents.
 pub fn from_str_single(input: &str) -> Result<Value, ComposeError> {
     let mut docs = Composer::from_str(input)?;
+    match docs.len() {
+        0 => Ok(Value::Null),
+        1 => Ok(docs.remove(0)),
+        n => Err(ComposeError::UnexpectedEvent(format!(
+            "expected 1 document, got {n}",
+        ))),
+    }
+}
+
+/// Parse one YAML document with no resource limits.
+///
+/// Use only for trusted input. Prefer [`from_str_single`] for ordinary input.
+pub fn from_str_single_unchecked(input: &str) -> Result<Value, ComposeError> {
+    let mut docs = Composer::from_str_unchecked(input)?;
     match docs.len() {
         0 => Ok(Value::Null),
         1 => Ok(docs.remove(0)),
@@ -550,6 +740,28 @@ pub fn from_str_single_with_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yamalgam_core::ResourceLimit;
+
+    const DEEP_WEIGHT_WORKER: &str = "YAMALGAM_DEEP_WEIGHT_WORKER";
+
+    fn nested_flow_sequence(depth: usize) -> String {
+        format!("{}0{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    fn assert_limit_error(result: Result<Vec<Value>, ComposeError>) {
+        let err = result.expect_err("expected a resource-limit error");
+        match err {
+            ComposeError::LimitExceeded(_)
+            | ComposeError::Resolve(ResolveError::LimitExceeded(_))
+            | ComposeError::Resolve(ResolveError::Parse(ParseError::LimitExceeded(_))) => {}
+            ComposeError::Resolve(ResolveError::Parse(ParseError::Scan(error)))
+                if matches!(
+                    error.kind,
+                    yamalgam_scanner::scanner::ScanErrorKind::LimitExceeded(_)
+                ) => {}
+            other => panic!("expected a resource-limit error, got {other:?}"),
+        }
+    }
 
     fn compose(input: &str) -> Vec<Value> {
         Composer::from_str(input).unwrap()
@@ -559,6 +771,260 @@ mod tests {
         let docs = compose(input);
         assert_eq!(docs.len(), 1, "expected 1 document, got {}", docs.len());
         docs.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn ordinary_string_entry_points_use_moderate_limits() {
+        let input = nested_flow_sequence(257);
+
+        assert_limit_error(Composer::from_str(&input));
+        assert_limit_error(Composer::with_resolver(&input, NoopResolver));
+        assert_limit_error(Composer::from_str_with_tag_resolver(
+            &input,
+            yamalgam_core::tag::Yaml12TagResolver,
+        ));
+
+        let parser = Parser::new(&input);
+        let events = ResolvedEvents::new(
+            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            NoopResolver,
+        );
+        assert_limit_error(Composer::new(events).compose_stream());
+    }
+
+    #[test]
+    fn unchecked_string_entry_points_preserve_unlimited_behavior() {
+        let input = nested_flow_sequence(257);
+
+        assert!(Composer::from_str_unchecked(&input).is_ok());
+        assert!(Composer::with_resolver_unchecked(&input, NoopResolver).is_ok());
+        assert!(
+            Composer::from_str_with_tag_resolver_unchecked(
+                &input,
+                yamalgam_core::tag::Yaml12TagResolver,
+            )
+            .is_ok()
+        );
+        assert!(from_str_unchecked(&input).is_ok());
+        assert!(from_str_single_unchecked(&input).is_ok());
+
+        let parser = Parser::new(&input);
+        let events = ResolvedEvents::new(
+            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            NoopResolver,
+        );
+        assert!(Composer::new_unchecked(events).compose_stream().is_ok());
+    }
+
+    fn compose_with_unchecked_parser(
+        input: &str,
+        config: &LoaderConfig,
+    ) -> Result<Vec<Value>, ComposeError> {
+        let parser = Parser::new(input);
+        let events = ResolvedEvents::new(
+            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            NoopResolver,
+        );
+        Composer::new_with_config(events, config).compose_stream()
+    }
+
+    fn collection_config(max: usize) -> LoaderConfig {
+        LoaderConfig {
+            limits: ResourceLimits {
+                max_collection_size: Some(max),
+                ..ResourceLimits::none()
+            },
+            ..LoaderConfig::unchecked()
+        }
+    }
+
+    fn output_config(max_output_bytes: Option<usize>) -> LoaderConfig {
+        LoaderConfig {
+            limits: ResourceLimits {
+                max_alias_expansions: None,
+                max_output_bytes,
+                ..ResourceLimits::none()
+            },
+            ..LoaderConfig::unchecked()
+        }
+    }
+
+    #[test]
+    fn composer_honors_custom_depth_at_the_exact_boundary() {
+        let config = LoaderConfig {
+            limits: ResourceLimits {
+                max_depth: Some(1),
+                ..ResourceLimits::none()
+            },
+            ..LoaderConfig::unchecked()
+        };
+
+        assert!(compose_with_unchecked_parser("[0]", &config).is_ok());
+        assert!(matches!(
+            compose_with_unchecked_parser("[[0]]", &config),
+            Err(ComposeError::LimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn composer_enforces_sequence_size_for_unchecked_event_sources() {
+        assert!(matches!(
+            compose_with_unchecked_parser("[1, 2, 3]", &collection_config(2)),
+            Err(ComposeError::LimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn composer_counts_duplicate_mapping_entries_toward_the_limit() {
+        assert!(matches!(
+            compose_with_unchecked_parser("{a: 1, a: 2, a: 3}", &collection_config(2)),
+            Err(ComposeError::LimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn composer_limits_materialized_merge_entries() {
+        let input = "one: &one {a: 1, b: 2}\ntwo: &two {c: 3, d: 4}\nout: {<<: [*one, *two]}";
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &collection_config(3)),
+            Err(ComposeError::LimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn materialized_weight_counts_value_storage_and_string_bytes() {
+        let value = Value::Sequence(vec![Value::String("alpha".into()), Value::Integer(7)]);
+        let expected = 3 * std::mem::size_of::<Value>() + "alpha".len();
+
+        assert_eq!(materialized_weight(&value).unwrap(), expected);
+    }
+
+    #[test]
+    fn alias_materialization_budget_honors_exact_boundary() {
+        let input = "base: &base [payload]\none: *base\ntwo: *base";
+        let anchored = Value::Sequence(vec![Value::String("payload".into())]);
+        let weight = materialized_weight(&anchored).unwrap();
+
+        assert!(compose_with_unchecked_parser(input, &output_config(Some(weight * 2))).is_ok());
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(Some(weight * 2 - 1))),
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
+        ));
+    }
+
+    #[test]
+    fn alias_materialization_budget_is_size_weighted_and_cumulative() {
+        let input = "small: &small x\nlarge: &large [one, two, three, four]\na: *small\nb: *large";
+        let small = materialized_weight(&Value::String("x".into())).unwrap();
+        let large = materialized_weight(&Value::Sequence(vec![
+            Value::String("one".into()),
+            Value::String("two".into()),
+            Value::String("three".into()),
+            Value::String("four".into()),
+        ]))
+        .unwrap();
+
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(Some(small + large - 1))),
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
+        ));
+    }
+
+    #[test]
+    fn alias_materialization_arithmetic_overflow_is_a_limit_error() {
+        assert!(matches!(
+            checked_materialized_total(usize::MAX, 1, &ResourceLimits::none()),
+            Err(ComposeError::ResourceOverflow("alias materialization size"))
+        ));
+    }
+
+    #[test]
+    fn anchor_redefinition_replaces_value_and_cached_weight() {
+        let input = "first: &ref x\none: *ref\nreplace: &ref [one, two, three]\ntwo: *ref";
+        let small = materialized_weight(&Value::String("x".into())).unwrap();
+        let redefined = Value::Sequence(vec![
+            Value::String("one".into()),
+            Value::String("two".into()),
+            Value::String("three".into()),
+        ]);
+        let large = materialized_weight(&redefined).unwrap();
+        let mut exact = output_config(Some(small + large));
+        exact.limits.max_anchor_count = Some(1);
+        let documents = compose_with_unchecked_parser(input, &exact).unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].get("two"), Some(&redefined));
+
+        let mut below = output_config(Some(small + large - 1));
+        below.limits.max_anchor_count = Some(1);
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &below),
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
+        ));
+    }
+
+    #[test]
+    fn aliases_cannot_resolve_anchors_from_a_previous_document() {
+        let input = "---\na: &ref value\n---\nb: *ref";
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(None)),
+            Err(ComposeError::UndefinedAlias(name)) if name == "ref"
+        ));
+    }
+
+    #[test]
+    fn alias_materialization_bytes_are_cumulative_across_documents() {
+        let input = "---\na: &ref [payload]\nb: *ref\n---\nc: &ref [payload]\nd: *ref";
+        let anchored = Value::Sequence(vec![Value::String("payload".into())]);
+        let weight = materialized_weight(&anchored).unwrap();
+
+        assert!(compose_with_unchecked_parser(input, &output_config(Some(weight * 2))).is_ok());
+        assert!(matches!(
+            compose_with_unchecked_parser(input, &output_config(Some(weight * 2 - 1))),
+            Err(ComposeError::LimitExceeded(error))
+                if error.limit == ResourceLimit::OutputBytes
+        ));
+    }
+
+    #[test]
+    fn unlimited_output_budget_allows_cumulative_alias_materialization() {
+        let input = "base: &base [one, two, three]\na: *base\nb: *base\nc: *base";
+        assert!(compose_with_unchecked_parser(input, &output_config(None)).is_ok());
+    }
+
+    #[test]
+    fn materialized_weight_is_stack_safe_on_a_deep_public_value() {
+        if std::env::var_os(DEEP_WEIGHT_WORKER).is_some() {
+            let mut value = Value::Null;
+            for _ in 0..100_000 {
+                value = Value::Sequence(vec![value]);
+            }
+            assert_eq!(
+                materialized_weight(&value).unwrap(),
+                100_001 * std::mem::size_of::<Value>()
+            );
+            std::mem::forget(value);
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .env(DEEP_WEIGHT_WORKER, "1")
+            .args([
+                "--exact",
+                "tests::materialized_weight_is_stack_safe_on_a_deep_public_value",
+                "--nocapture",
+            ])
+            .output()
+            .expect("run deep materialized-weight worker");
+        assert!(
+            output.status.success(),
+            "deep weight worker failed: status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]
@@ -794,6 +1260,22 @@ production:
     }
 
     #[test]
+    fn configured_noop_composer_rejects_enabled_resolution_policy() {
+        let mut config = LoaderConfig::moderate();
+        config.resolution.include.enabled = true;
+
+        assert!(matches!(
+            Composer::from_str_with_config("value", &config),
+            Err(ComposeError::Resolve(
+                ResolveError::UnsupportedResolutionPolicy {
+                    include: true,
+                    refs: false,
+                }
+            ))
+        ));
+    }
+
+    #[test]
     fn compose_with_yaml11_booleans() {
         use yamalgam_core::{LoaderConfig, TagResolution};
         let config = LoaderConfig::unchecked().with_tag_resolution(TagResolution::Yaml11);
@@ -838,5 +1320,36 @@ production:
 
         let docs = Composer::from_str_with_tag_resolver("true", MagicResolver).unwrap();
         assert_eq!(docs[0], Value::String("true".into()));
+    }
+
+    #[test]
+    fn borrowed_tag_resolver_state() {
+        use yamalgam_core::tag_resolution::TagResolver;
+
+        struct BorrowedResolver<'lookup> {
+            values: &'lookup HashMap<&'lookup str, Value>,
+        }
+
+        impl TagResolver for BorrowedResolver<'_> {
+            fn resolve_scalar(&self, value: &str) -> Value {
+                self.values
+                    .get(value)
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(value.to_owned()))
+            }
+        }
+
+        let values = HashMap::from([("MAGIC", Value::Integer(42))]);
+        let bounded =
+            Composer::from_str_with_tag_resolver("MAGIC", BorrowedResolver { values: &values })
+                .unwrap();
+        let unchecked = Composer::from_str_with_tag_resolver_unchecked(
+            "MAGIC",
+            BorrowedResolver { values: &values },
+        )
+        .unwrap();
+
+        assert_eq!(bounded, vec![Value::Integer(42)]);
+        assert_eq!(unchecked, bounded);
     }
 }

@@ -11,6 +11,4 @@ homepage.workspace = true
 clap = { version = "4.6", features = ["derive"] }
 clap_complete = "4.6"
 clap_mangen = "0.3"
-serde = { version = "1.0", features = ["derive"] }
-toml = "1.1"
 yamalgam = { path = "../crates/yamalgam" }

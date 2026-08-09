@@ -10,29 +10,6 @@ use std::path::Path;
 use yamalgam_compare::test_case::extract_test_cases;
 use yamalgam_cst::parse_to_cst;
 
-/// Known round-trip failures that are understood and acceptable.
-///
-/// STALENESS: if a case in this list passes, the test panics — remove it.
-///
-/// Categories:
-/// - Flow collection close token duplication (extra `]` or `}`)
-/// - Comment/whitespace ordering when comments arrive out of source order
-/// - Edge cases with complex flow nesting or empty values
-const ROUND_TRIP_ALLOWLIST: &[&str] = &[
-    // --- Flow collection close token duplication ---
-    // (Single-pair flow-SEQUENCE mappings were fixed by zero-width
-    // MappingStart/End spans; the remaining cases involve flow-MAPPING
-    // synthetic ends.)
-    "57H4", // nested flow — extra `]`
-    "6PBE", // flow mapping — extra `}`
-    "7ZZ5", // flow mapping — extra `}`
-    "AZ63", // flow mapping — extra `}`
-    "RLU9", // flow mapping — extra `}`
-    "S3PD", // flow mapping — extra `}`
-    "S9E8", // flow mapping — extra `}`
-    "SKE5", // flow mapping — extra `}`
-];
-
 fn cst_round_trip_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let stem = path.file_stem().unwrap().to_string_lossy().to_string();
@@ -51,8 +28,6 @@ fn cst_round_trip_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             stem.clone()
         };
 
-        let in_allowlist = ROUND_TRIP_ALLOWLIST.contains(&id.as_str());
-
         // Skip fail:true cases — they produce errors, partial CSTs expected.
         if case.fail {
             continue;
@@ -63,11 +38,6 @@ fn cst_round_trip_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
         if round_tripped == case.yaml {
             eprintln!("ROUND_TRIP_PASS: {id}");
-            if in_allowlist {
-                panic!(
-                    "STALE ALLOWLIST: {id} is in ROUND_TRIP_ALLOWLIST but now passes — remove it"
-                );
-            }
         } else {
             let diff_offset = round_tripped
                 .bytes()
@@ -91,13 +61,11 @@ fn cst_round_trip_test(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     case.yaml.as_bytes()[diff_offset]
                 );
             }
-            if !in_allowlist {
-                panic!(
-                    "ROUND_TRIP_FAIL: {id} — CST round-trip failed, not in ROUND_TRIP_ALLOWLIST\n  input:  {:?}\n  output: {:?}",
-                    &case.yaml[..case.yaml.len().min(100)],
-                    &round_tripped[..round_tripped.len().min(100)]
-                );
-            }
+            panic!(
+                "ROUND_TRIP_FAIL: {id} — CST round-trip failed\n  input:  {:?}\n  output: {:?}",
+                &case.yaml[..case.yaml.len().min(100)],
+                &round_tripped[..round_tripped.len().min(100)]
+            );
         }
     }
 

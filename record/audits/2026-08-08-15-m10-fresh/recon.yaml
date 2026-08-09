@@ -1,0 +1,489 @@
+meta:
+  project: yamalgam
+  commit: f72e662bb2e5e83bfd4d3c4c4ce58d805e851c90
+  timestamp: 2026-08-08T15:55:46-04:00
+  scope: full working tree at f72e662
+structure:
+  root: /Users/clay/source/claylo/yamalgam
+  total_files: 1058
+  total_lines: 163056
+  languages:
+    - language: BASH
+      files: 3
+      lines: 525
+      percentage: 0.32
+    - language: CSS
+      files: 2
+      lines: 502
+      percentage: 0.31
+    - language: HTML
+      files: 9
+      lines: 47610
+      percentage: 29.2
+    - language: JavaScript
+      files: 3
+      lines: 199
+      percentage: 0.12
+    - language: jq
+      files: 1
+      lines: 56
+      percentage: 0.03
+    - language: JSON
+      files: 7
+      lines: 107
+      percentage: 0.07
+    - language: Markdown
+      files: 136
+      lines: 52728
+      percentage: 32.34
+    - language: Rust
+      files: 106
+      lines: 30353
+      percentage: 18.62
+    - language: Shell
+      files: 2
+      lines: 138
+      percentage: 0.08
+    - language: SVG
+      files: 2
+      lines: 2
+      percentage: 0
+    - language: Plain Text
+      files: 1
+      lines: 402
+      percentage: 0.25
+    - language: TOML
+      files: 15
+      lines: 580
+      percentage: 0.36
+    - language: YAML
+      files: 771
+      lines: 29854
+      percentage: 18.31
+  modules:
+    - name: xtask
+      path: /Users/clay/source/claylo/yamalgam/xtask
+      files: 7
+      lines: 345
+    - name: yamalgam
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam
+      files: 11
+      lines: 2743
+    - name: yamalgam-core
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-core
+      files: 8
+      lines: 2351
+    - name: yamalgam-query
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-query
+      files: 22
+      lines: 10794
+    - name: yamalgam-parser
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-parser
+      files: 9
+      lines: 3439
+    - name: yamalgam-scanner
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-scanner
+      files: 14
+      lines: 5511
+    - name: yamalgam-serde
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-serde
+      files: 427
+      lines: 6544
+    - name: yamalgam-compose
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-compose
+      files: 3
+      lines: 1435
+    - name: yamalgam-bench
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-bench
+      files: 6
+      lines: 667
+    - name: yamalgam-compare
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-compare
+      files: 12
+      lines: 2322
+    - name: yamalgam-cst
+      path: /Users/clay/source/claylo/yamalgam/crates/yamalgam-cst
+      files: 2
+      lines: 1331
+dependencies:
+  manifest: /Users/clay/source/claylo/yamalgam/Cargo.toml
+  items:
+    - name: clap
+      version: ^4.6
+      kind: direct
+    - name: clap_complete
+      version: ^4.6
+      kind: direct
+    - name: clap_mangen
+      version: ^0.3
+      kind: direct
+    - name: anyhow
+      version: ^1.0
+      kind: direct
+    - name: camino
+      version: ^1.2
+      kind: direct
+    - name: librebar
+      version: ^0.4
+      kind: direct
+    - name: owo-colors
+      version: ^4.3
+      kind: direct
+    - name: serde
+      version: ^1.0
+      kind: direct
+    - name: serde_json
+      version: ^1.0
+      kind: direct
+    - name: tempfile
+      version: ^3.27
+      kind: direct
+    - name: tracing
+      version: ^0.1
+      kind: direct
+    - name: assert_cmd
+      version: ^2.2
+      kind: dev
+    - name: predicates
+      version: ^3.1
+      kind: dev
+    - name: divan
+      version: ^0.1
+      kind: dev
+    - name: serde_json
+      version: ^1.0
+      kind: dev
+    - name: indexmap
+      version: ^2
+      kind: direct
+    - name: jaq-core
+      version: ~3.1.0
+      kind: direct
+    - name: jaq-std
+      version: ~3.0.1
+      kind: direct
+    - name: thiserror
+      version: ^2.0
+      kind: direct
+    - name: serde
+      version: ^1
+      kind: dev
+    - name: smallvec
+      version: ^1
+      kind: direct
+    - name: pretty_assertions
+      version: ^1
+      kind: dev
+    - name: bitflags
+      version: ^2
+      kind: direct
+    - name: encoding_rs
+      version: ^0.8
+      kind: direct
+    - name: erased-serde
+      version: ^0.4
+      kind: direct
+    - name: serde
+      version: ^1.0
+      kind: dev
+    - name: libyaml-safer
+      version: ^0.3
+      kind: direct
+    - name: rust-yaml
+      version: ^1.1
+      kind: direct
+    - name: saphyr
+      version: ^0.0.11
+      kind: direct
+    - name: saphyr-parser
+      version: ^0.0.11
+      kind: direct
+    - name: serde-saphyr
+      version: ^1.0.0
+      kind: direct
+    - name: yaml-rust2
+      version: ^0.11
+      kind: direct
+    - name: yaml_serde
+      version: ^0.10
+      kind: direct
+    - name: datatest-stable
+      version: ^0.3
+      kind: dev
+churn:
+  period: last 12 months
+  hotspots:
+    - path: crates/yamalgam-scanner/src/scanner.rs
+      commits: 36
+      authors: 1
+      last_touched: 2026-06-10
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 35
+        - 0
+        - 0
+        - 1
+        - 0
+    - path: crates/yamalgam-scanner/tests/scanner.rs
+      commits: 21
+      authors: 1
+      last_touched: 2026-03-09
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 21
+        - 0
+        - 0
+        - 0
+        - 0
+    - path: Cargo.lock
+      commits: 20
+      authors: 1
+      last_touched: 2026-06-11
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 15
+        - 0
+        - 0
+        - 5
+        - 0
+    - path: crates/yamalgam-parser/src/parser.rs
+      commits: 13
+      authors: 1
+      last_touched: 2026-06-10
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 10
+        - 0
+        - 0
+        - 3
+        - 0
+    - path: crates/yamalgam-compare/tests/compliance.rs
+      commits: 12
+      authors: 1
+      last_touched: 2026-06-10
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 11
+        - 0
+        - 0
+        - 1
+        - 0
+    - path: crates/yamalgam-parser/tests/parser.rs
+      commits: 10
+      authors: 1
+      last_touched: 2026-06-10
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 8
+        - 0
+        - 0
+        - 2
+        - 0
+    - path: .justfile
+      commits: 10
+      authors: 1
+      last_touched: 2026-06-11
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 7
+        - 0
+        - 0
+        - 3
+        - 0
+    - path: crates/yamalgam-compare/src/harness.rs
+      commits: 9
+      authors: 1
+      last_touched: 2026-03-09
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 9
+        - 0
+        - 0
+        - 0
+        - 0
+    - path: crates/yamalgam-compare/Cargo.toml
+      commits: 9
+      authors: 1
+      last_touched: 2026-06-10
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 7
+        - 0
+        - 0
+        - 2
+        - 0
+    - path: crates/yamalgam-core/src/lib.rs
+      commits: 8
+      authors: 1
+      last_touched: 2026-06-11
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 7
+        - 0
+        - 0
+        - 1
+        - 0
+    - path: crates/yamalgam-core/Cargo.toml
+      commits: 7
+      authors: 1
+      last_touched: 2026-06-11
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 4
+        - 0
+        - 0
+        - 3
+        - 0
+    - path: crates/yamalgam-compare/src/lib.rs
+      commits: 7
+      authors: 1
+      last_touched: 2026-03-09
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 7
+        - 0
+        - 0
+        - 0
+        - 0
+    - path: tools/fyaml-tokenize/main.c
+      commits: 6
+      authors: 1
+      last_touched: 2026-03-09
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 6
+        - 0
+        - 0
+        - 0
+        - 0
+    - path: docs/plans/README.md
+      commits: 6
+      authors: 1
+      last_touched: 2026-06-10
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 3
+        - 0
+        - 0
+        - 3
+        - 0
+    - path: crates/yamalgam-serde/src/de.rs
+      commits: 6
+      authors: 1
+      last_touched: 2026-06-10
+      monthly_commits:
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 0
+        - 1
+        - 0
+        - 0
+        - 5
+        - 0
+  recent_activity:
+    total_commits: 237
+    active_authors: 1
+    files_changed: 177
+testing:
+  runner: just
+  command: just test
+  sources:
+    - .config/scrat.toml
+  notes: >-
+    `.config/nextest.toml` is present; `just test` invokes `cargo nextest run`.
+    Do not invoke `cargo test` directly because env-mutating tests assume nextest
+    process isolation. The signed audited commit passed `just check` immediately
+    before this static audit: warning-denied clippy, Cargo Deny with all features,
+    1,928 nextest tests, and doc tests. The focused static run also passed Cargo
+    Audit, Cargo Machete, and cargo-udeps. The supply-chain surface inspected all
+    normal, all-feature, and fuzz manifests but did not rerun cargo-bloat; binary-
+    size criteria rely on dependency provenance and prior profiles rather than a
+    new measurement at this commit.

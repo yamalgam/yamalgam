@@ -1,0 +1,67 @@
+# jq 1.8 manual divergence tracking. Every rule is exact (program + input).
+expected_failures:
+  - program: '[., tojson] == if have_decnum then [12345678909876543212345,"12345678909876543212345"] else [12345678909876543000000,"12345678909876543000000"] end'
+    input: '12345678909876543212345'
+    reason: "M10 uses an i64/f64 numeric backend and does not preserve arbitrary-precision decimal literals"
+  - program: '[1234567890987654321,-1234567890987654321 | tojson] == if have_decnum then ["1234567890987654321","-1234567890987654321"] else ["1234567890987654400","-1234567890987654400"] end'
+    input: 'null'
+    reason: "M10 uses an i64/f64 numeric backend and does not preserve arbitrary-precision decimal literals"
+  - program: 'map([., . == 1]) | tojson == if have_decnum then "[[1,true],[1.000,true],[1.0,true],[1.00,true]]" else "[[1,true],[1,true],[1,true],[1,true]]" end'
+    input: '[1, 1.000, 1.0, 100e-2]'
+    reason: "M10 uses an i64/f64 numeric backend and does not preserve decimal literal spelling"
+  - program: '. as $big | [$big, $big + 1] | map(. > 10000000000000000000000000000000) | . == if have_decnum then [true, false] else [false, false] end'
+    input: '10000000000000000000000000000001'
+    reason: "M10 uses an i64/f64 numeric backend and does not preserve arbitrary-precision decimal literals"
+  - program: 'keys'
+    input: '{"abc": 1, "abcd": 2, "Foo": 3}'
+    reason: "r[diverge.keys] - yg preserves mapping insertion order; keys_sorted provides jq ordering"
+  - program: 'del(.[1, 2])'
+    input: '["foo", "bar", "baz"]'
+    reason: "jaq 3 applies multi-path sequence deletions sequentially, shifting later indices"
+  - program: '[paths(type == "number")]'
+    input: '[1,[[],{"a":2}]]'
+    reason: "r[diverge.type] - yg reports integer and float instead of jq number"
+  - program: 'map(type)'
+    input: '[0, false, [], {}, null, "hello"]'
+    reason: "r[diverge.type] - yg uses YAML data-model type names"
+  - program: 'infinite, nan | type'
+    input: 'null'
+    reason: "r[diverge.type] - yg reports float instead of jq number"
+  - program: 'walk(if type == "array" then sort else . end)'
+    input: '[[4, 1, 7], [8, 5, 2], [3, 6, 9]]'
+    reason: "r[diverge.type] - jq type predicates must use sequence in yg"
+  - program: 'walk( if type == "object" then with_entries( .key |= sub( "^_+"; "") ) else . end )'
+    input: '[ { "_a": { "__b": 2 } } ]'
+    reason: "r[diverge.type] - jq type predicates must use mapping in yg"
+  - program: '. == {"b": {"d": (4 + 1e-20), "c": 3}, "a":1}'
+    input: '{"a":1, "b": {"c": 3, "d": 4}}'
+    reason: "r[comparison.resolved.collection] - YAML mapping equality is order-sensitive"
+  - program: 'match("foo (?<bar123>bar)? foo"; "ig")'
+    input: '"foo bar foo foo  foo"'
+    reason: "jaq regex results omit unmatched optional capture records"
+
+skip:
+  - program: 'try error("\($__loc__)") catch .'
+    input: 'null'
+    reason: "source-location variables are outside M10 scope"
+  - program: '$ENV.PAGER'
+    input: 'null'
+    reason: "global environment variables are environment-dependent and outside M10 CLI bindings"
+  - program: '.[] as {$a, $b, c: {$d, $e}} ?// {$a, $b, c: [{$d, $e}]} | {$a, $b, $d, $e}'
+    input: '[{"a": 1, "b": 2, "c": {"d": 3, "e": 4}}, {"a": 1, "b": 2, "c": [{"d": 3, "e": 4}]}]'
+    reason: "jaq 3 grammar does not implement jq destructuring alternative ?//"
+  - program: '.[] as {$a, $b, c: {$d}} ?// {$a, $b, c: [{$e}]} | {$a, $b, $d, $e}'
+    input: '[{"a": 1, "b": 2, "c": {"d": 3, "e": 4}}, {"a": 1, "b": 2, "c": [{"d": 3, "e": 4}]}]'
+    reason: "jaq 3 grammar does not implement jq destructuring alternative ?//"
+  - program: '.[] as [$a] ?// [$b] | if $a != null then error("err: \($a)") else {$a,$b} end'
+    input: '[[3]]'
+    reason: "jaq 3 grammar does not implement jq destructuring alternative ?//"
+  - program: 'truncate_stream([[0],"a"],[[1,0],"b"],[[1,0]],[[1]])'
+    input: '1'
+    reason: "jq streaming filters are outside M10 scope"
+  - program: 'fromstream(1|truncate_stream([[0],"a"],[[1,0],"b"],[[1,0]],[[1]]))'
+    input: 'null'
+    reason: "jq streaming filters are outside M10 scope"
+  - program: '. as $dot|fromstream($dot|tostream)|.==$dot'
+    input: '[0,[1,{"a":1},{"b":2}]]'
+    reason: "jq streaming filters are outside M10 scope"

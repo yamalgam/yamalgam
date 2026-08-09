@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Settings the CLI reads from configuration files.
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Baseline log level when no `-q`/`-v` flag is passed.
     pub log_level: LogLevel,

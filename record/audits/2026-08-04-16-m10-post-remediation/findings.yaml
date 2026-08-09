@@ -1,0 +1,1680 @@
+---
+audit_date: '2026-08-04'
+scope: Full Repository Post-Remediation
+commit: a1123b4998722ad943980ef7525a26cc07a2b9ff
+assessment: |
+  The original M10 campaign is closed, but a fresh full-workspace pass exposes
+  additional risks outside that milestone surface. Safe-by-default loading is
+  inconsistent across the composer, serde, and CST convenience APIs; resource
+  limits exist but those paths bypass them. Error types are generally strong,
+  though three boundary paths erase structured failures. The public type and
+  query surfaces are disciplined but retain avoidable allocation costs. Feature
+  promises remain uneven: resolver middleware cannot reach most documented
+  consumers, an intentionally deferred policy is accepted silently, and the
+  lossless CST still corrupts eight known valid flow documents. Dependency policy
+  is explicit, with one isolated unmaintained benchmark edge and two unused xtask
+  declarations.
+narratives:
+- slug: loading-and-composition
+  title: The Loading and Composition Surface
+  thesis: The workspace defines strong resource controls, but several public convenience
+    paths bypass them before recursively building owned trees.
+  verdict: Parser limits are available and tested, yet composer, serde, and CST defaults
+    do not consistently inherit them. Wide mappings and alias materialization add
+    CPU and memory multipliers after parsing, so safe construction needs to be structural
+    rather than an opt-in convention.
+  flow:
+  - id: yaml-input
+    label: YAML input
+    type: start
+  - id: parser
+    label: Parse events
+    type: process
+  - id: consumer
+    label: Select consumer
+    type: decision
+    serde: serde-deserialize
+    cst: build-cst
+  - id: limits-enabled
+    label: Composer limits enabled?
+    type: decision
+    false: unchecked-composer
+  - id: compose
+    label: Build owned values
+    type: process
+    findings:
+    - slug: composer-mapping-insertion-is-quadratic
+      label: Quadratic map
+    - slug: composer-alias-deep-clone-is-size-unbudgeted
+      label: Clone expansion
+  - id: output
+    label: Owned document
+    type: end
+  - id: unchecked-composer
+    label: Recursive composer
+    type: process
+    spine: false
+    findings:
+    - slug: composer-default-path-has-unbounded-recursion
+      label: Composer depth
+    next: compose
+  - id: serde-deserialize
+    label: Deserialize events
+    type: process
+    spine: false
+    findings:
+    - slug: serde-default-disables-loader-limits
+      label: Serde limits
+    next: serde-output
+  - id: serde-output
+    label: Deserialized value
+    type: end
+    spine: false
+  - id: build-cst
+    label: Build CST
+    type: process
+    spine: false
+    findings:
+    - slug: cst-recursive-traversals-have-no-depth-bound
+      label: CST depth
+    next: cst-output
+  - id: cst-output
+    label: Concrete syntax tree
+    type: end
+    spine: false
+  findings:
+  - slug: composer-default-path-has-unbounded-recursion
+    title: Default composition recursively descends untrusted YAML without a depth
+      bound
+    criterion: '11.5'
+    surface: Panic & Program Flow
+    concern: significant
+    locations:
+    - path: crates/yamalgam-compose/src/lib.rs
+      start_line: 272
+      end_line: 285
+    evidence: |2
+                  Event::SequenceStart { anchor, .. } => {
+                      let mut items = Vec::new();
+                      loop {
+                          let Some(peeked) = self.peek_event()? else {
+                              return Err(ComposeError::UnexpectedEvent(
+                                  "unterminated sequence".into(),
+                              ));
+                          };
+                          if matches!(peeked, Event::SequenceEnd { .. }) {
+                              self.next_event()?;
+                              break;
+                          }
+                          items.push(self.compose_node()?);
+                      }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '13'
+      type: mark
+      label: recursive call has no depth counter or local limit check
+    mechanism: 'compose_node recursively descends every nested sequence and mapping
+      without carrying depth. The public from_str and from_str_single paths reach
+      it through Parser::new and Composer::new, both of which use ResourceLimits::none
+      rather than LoaderConfig''s moderate default. Deeply nested external YAML can
+      therefore grow the Rust call stack until the process aborts; dropping the resulting
+      recursive Value can repeat the same failure. Even Composer::new_with_config
+      relies on its event source to enforce max_depth instead of enforcing the advertised
+      limit locally.
+
+      '
+    remediation: 'Thread a depth argument through compose_node, call self.config.check_depth
+      before descending, and use checked_add for child depth. Route the convenience
+      from_str paths through LoaderConfig::default; retain unlimited behavior only
+      behind an explicitly named unchecked constructor.
+
+      '
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-03-08'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - serde-default-disables-loader-limits
+      - cst-recursive-traversals-have-no-depth-bound
+    effort: medium
+    effort_notes: Depth threading is local, but safe defaults affect several public
+      constructors.
+  - slug: serde-default-disables-loader-limits
+    title: The default serde entry point explicitly disables every loader limit
+    criterion: '11.5'
+    surface: Panic & Program Flow
+    concern: significant
+    locations:
+    - path: crates/yamalgam-serde/src/de.rs
+      start_line: 52
+      end_line: 59
+    evidence: |2
+          pub fn from_str(input: &'input str) -> Self {
+              let parser = Parser::new(input);
+              Self {
+                  events: (Box::new(parser) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
+                  tag_resolver: Box::new(Yaml12TagResolver),
+                  limits: ResourceLimits::none(),
+                  finished: false,
+                  at_document_start: false,
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '2'
+      type: mark
+      label: unchecked parser
+    - lines: '6'
+      type: mark
+      label: alias, anchor, and depth limits disabled
+    mechanism: 'yamalgam_serde::from_str and from_reader use this constructor. Nested
+      collections drive recursive serde visitors with no parser depth ceiling, while
+      alias and anchor counters are checked against an all-None ResourceLimits value.
+      Adversarial YAML can consequently exhaust the call stack or memory instead of
+      returning Error::LimitExceeded. This bypasses LoaderConfig::default, which is
+      documented as the moderate safe profile.
+
+      '
+    remediation: 'Construct the parser and deserializer from LoaderConfig::default
+      in from_str, and expose the current behavior under an explicit from_str_unchecked
+      API. Keep from_str_with_config for callers selecting strict, trusted, or custom
+      limits.
+
+      '
+    temporal:
+      introduced: '2026-03-27'
+      last_modified: '2026-03-27'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - composer-default-path-has-unbounded-recursion
+      - cst-recursive-traversals-have-no-depth-bound
+      - from-reader-erases-io-errors
+    effort: small
+    effort_notes: One safe-default constructor path plus an explicit compatibility
+      escape hatch.
+  - slug: cst-recursive-traversals-have-no-depth-bound
+    title: CST traversal and destruction remain recursively stack-bound
+    criterion: '11.5'
+    surface: Panic & Program Flow
+    concern: significant
+    locations:
+    - path: crates/yamalgam-cst/src/lib.rs
+      start_line: 141
+      end_line: 152
+    evidence: |2
+          pub fn to_text(&self) -> String {
+              let mut buf = String::new();
+              self.collect_text(&mut buf);
+              buf
+          }
+
+          fn collect_text(&self, buf: &mut String) {
+              for child in &self.children {
+                  match child {
+                      CstElement::Node(node) => node.collect_text(buf),
+                      CstElement::Token(token) => buf.push_str(&token.text),
+                  }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '10'
+      type: mark
+      label: unbounded recursion for every nested CST node
+    mechanism: 'to_text, node_at_offset, and leaf_count recursively traverse CstNode,
+      and the derived tree destruction path is recursive as well. parse_to_cst accepts
+      external text through Parser::new, whose limits are disabled, and no config-aware
+      convenience function exists. A sufficiently deep valid document can therefore
+      build a CST and then abort while traversing, formatting, or merely dropping
+      it.
+
+      '
+    remediation: 'Add parse_to_cst_with_config and make parse_to_cst use LoaderConfig::default.
+      Convert whole-tree traversals and destruction to explicit worklists, or document
+      and enforce a construction-time maximum depth that makes their recursion safe.
+
+      '
+    temporal:
+      introduced: '2026-03-09'
+      last_modified: '2026-03-09'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - composer-default-path-has-unbounded-recursion
+      - serde-default-disables-loader-limits
+      - cst-discards-parse-error
+    effort: medium
+    effort_notes: Safe parsing is small; making all public traversal and drop paths
+      structurally iterative is broader.
+  - slug: composer-mapping-insertion-is-quadratic
+    title: Composer mapping insertion is quadratic in mapping width
+    criterion: '12.1'
+    surface: Performance
+    concern: significant
+    locations:
+    - path: crates/yamalgam-core/src/value.rs
+      start_line: 67
+      end_line: 77
+    - path: crates/yamalgam-compose/src/lib.rs
+      start_line: 296
+      end_line: 317
+    evidence: |2
+          /// Inserts a key/value pair. If the key already exists, its value is
+          /// replaced and the old value is returned.
+          pub fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
+              for entry in &mut self.entries {
+                  if entry.0 == key {
+                      let old = std::mem::replace(&mut entry.1, value);
+                      return Some(old);
+                  }
+              }
+              self.entries.push((key, value));
+              None
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 4-9
+      type: mark
+      label: every insertion rescans all previously inserted entries
+    mechanism: |
+      `Mapping` preserves order in a `Vec`, and `Composer` calls `insert` once for
+      every non-merge mapping pair. Inserting n distinct scalar keys therefore
+      performs n(n-1)/2 equality checks; collection-valued keys make each check
+      recursive as well. This path consumes untrusted YAML, and the composer does
+      not enforce `max_collection_size`, so the strict input-byte limit still permits
+      a wide document that spends quadratic CPU before composition completes.
+    remediation: |
+      Keep the ordered entry vector, but add a randomized side index from equality-safe
+      scalar keys to entry positions and use the linear fallback only for keys such as
+      NaN or collection-valued keys whose current `PartialEq` semantics cannot safely
+      back `Eq + Hash`. Enforce `max_collection_size` in the sequence and mapping
+      composition loops as a defense-in-depth bound, and add a wide-map benchmark.
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-06-10'
+      commit_count: 3
+      monthly_commits:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 2
+      - 0
+      - 0
+      - 1
+      - 0
+      - 0
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - composer-alias-deep-clone-is-size-unbudgeted
+      - borrowed-value-get-allocates-key
+    effort: medium
+    effort_notes: A side index must preserve insertion order, duplicate replacement,
+      and float-key equality semantics.
+  - slug: composer-alias-deep-clone-is-size-unbudgeted
+    title: Alias expansion deep-clones entire DOM subtrees under a count-only budget
+    criterion: '3.1'
+    surface: Performance
+    concern: significant
+    locations:
+    - path: crates/yamalgam-compose/src/lib.rs
+      start_line: 343
+      end_line: 355
+    - path: crates/yamalgam-core/src/value.rs
+      start_line: 23
+      end_line: 41
+    evidence: |2
+                  Event::Alias { name, .. } => {
+                      self.alias_expansion_count += 1;
+                      if let Err(msg) = self
+                          .config
+                          .check_alias_expansions(self.alias_expansion_count)
+                      {
+                          return Err(ComposeError::LimitExceeded(msg));
+                      }
+                      let name_str = name.into_owned();
+                      self.anchors
+                          .get(&name_str)
+                          .cloned()
+                          .ok_or(ComposeError::UndefinedAlias(name_str))
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 2-5
+      type: mark
+      label: the budget counts aliases but not cloned subtree size
+    - lines: 10-12
+      type: mark
+      label: Value::clone recursively copies owned strings and collections
+    mechanism: |
+      Core `Value` derives `Clone` over owned `String`, `Vec<Value>`, and `Mapping`, so
+      `.cloned()` recursively allocates and copies the complete anchored subtree for
+      every alias. The only guard counts alias occurrences: cloning a large but legal
+      anchor 100 times under the strict profile, or 10,000 times under the default
+      profile, can multiply memory and CPU far beyond the input-size limit without
+      exceeding the alias count.
+    remediation: |
+      Store a cached node/byte weight with each anchored value and charge that weight
+      to an expanded-node or expanded-byte budget before cloning. Reject the alias when
+      the cumulative expansion would exceed the configured collection/output bound.
+      A future shareable DOM representation can make immutable alias clones cheap, but
+      the size-weighted budget is the compatible fix for the current public `Value` API.
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-03-27'
+      commit_count: 6
+      monthly_commits:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 6
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - composer-mapping-insertion-is-quadratic
+    effort: medium
+    effort_notes: Cache subtree weights at anchor registration and thread one cumulative
+      expansion budget through composition.
+- slug: error-preservation
+  title: The Error Preservation Surface
+  thesis: Typed scanner, parser, and serde errors are available, but three adapters
+    flatten or discard them at consumer boundaries.
+  verdict: 'The core error architecture remains strong. The gaps are localized: one
+    parser span probe consumes a scanner error, CST recovery throws away its diagnostic,
+    and reader I/O becomes an untyped string.'
+  flow:
+  - id: external-input
+    label: External input
+    type: start
+  - id: reader-io
+    label: Reader succeeds?
+    type: decision
+    failure: reader-error
+  - id: scan
+    label: Scan tokens
+    type: process
+  - id: parse
+    label: Parse events
+    type: process
+    findings:
+    - slug: flow-pair-finalization-swallows-scanner-errors
+      label: Error consumed
+  - id: consumer
+    label: CST or serde
+    type: decision
+  - id: caller
+    label: Caller diagnostic
+    type: end
+  - id: cst-recovery
+    label: CST recovery
+    type: process
+    spine: false
+    findings:
+    - slug: cst-discards-parse-error
+      label: Diagnostic lost
+    next: caller
+  - id: reader-error
+    label: Reader failure
+    type: process
+    spine: false
+    findings:
+    - slug: from-reader-erases-io-errors
+      label: I/O flattened
+    next: caller
+  findings:
+  - slug: flow-pair-finalization-swallows-scanner-errors
+    title: Synthetic flow-pair finalization consumes scanner errors while calculating
+      a span
+    criterion: '5.3'
+    surface: Error Handling
+    concern: moderate
+    locations:
+    - path: crates/yamalgam-parser/src/parser.rs
+      start_line: 1167
+      end_line: 1179
+    evidence: |2
+          fn parse_flow_sequence_entry_mapping_end(
+              &mut self,
+          ) -> Result<Option<Event<'input>>, ParseError> {
+              let span = self
+                  .peek_token()
+                  .ok()
+                  .flatten()
+                  .map_or_else(Span::default, |t| Span {
+                      start: t.atom.span.start,
+                      end: t.atom.span.start,
+                  });
+              self.state = ParserState::FlowSequenceEntry;
+              Ok(Some(Event::MappingEnd { span }))
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 5-7
+      type: mark
+      label: ParseError is converted to absence after consuming the scanner item
+    mechanism: 'peek_token obtains its value through self.tokens.next().transpose(),
+      so an Err consumes the scanner error. Converting that result with ok() replaces
+      ParseError::Scan with None, emits a default-span MappingEnd, and advances parser
+      state. Invalid input immediately following an implicit mapping in a flow sequence
+      can therefore lose the original machine-readable ScanErrorKind and message;
+      a later generic EOF error may replace it. Six similar ok().flatten() span probes
+      make the same fragile assumption that a token was already buffered.
+
+      '
+    remediation: 'Propagate the error with self.peek_token()? and map only the Option.
+      Sweep all seven ok().flatten() span probes, retaining a default span only for
+      genuine None, and add a malformed flow-pair regression that asserts the original
+      scanner error kind survives.
+
+      '
+    temporal:
+      introduced: '2026-03-07'
+      last_modified: '2026-06-10'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - cst-discards-parse-error
+    effort: small
+    effort_notes: Mechanical propagation changes plus focused malformed-input coverage.
+  - slug: cst-discards-parse-error
+    title: CST recovery discards the only structured parse error
+    criterion: '5.3'
+    surface: Error Handling
+    concern: moderate
+    locations:
+    - path: crates/yamalgam-cst/src/lib.rs
+      start_line: 548
+      end_line: 548
+    evidence: "        let _ = error; // consumed\n"
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '1'
+      type: del
+      label: structured ParseError is dropped
+    mechanism: 'parse_to_cst never returns Result. On malformed external input, handle_error
+      creates a NodeKind::Error containing only the remaining source text as a Whitespace
+      token, then discards ParseError. Callers can detect that recovery happened but
+      cannot obtain the error variant, message, or diagnostic span, leaving no useful
+      failure information outside reparsing the source.
+
+      '
+    remediation: 'Preserve ParseError in a diagnostic collection returned alongside
+      the CST, or add structured error data to error nodes without affecting leaf-text
+      round trips. Expose a Result- or report-returning convenience API while retaining
+      the current recovery API where needed.
+
+      '
+    temporal:
+      introduced: '2026-03-09'
+      last_modified: '2026-03-09'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - cst-recursive-traversals-have-no-depth-bound
+    effort: small
+    effort_notes: Requires a small public representation for recovered diagnostics.
+  - slug: from-reader-erases-io-errors
+    title: Serde from_reader erases I/O failures into the Custom data-error variant
+    criterion: '5.4'
+    surface: Error Handling
+    concern: moderate
+    locations:
+    - path: crates/yamalgam-serde/src/lib.rs
+      start_line: 84
+      end_line: 91
+    evidence: |
+      pub fn from_reader<R: std::io::Read, T: serde::de::DeserializeOwned>(
+          mut reader: R,
+      ) -> Result<T, Error> {
+          let mut buf = String::new();
+          reader
+              .read_to_string(&mut buf)
+              .map_err(|e| Error::Custom(format!("I/O error: {e}")))?;
+          from_str(&buf)
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '7'
+      type: del
+      label: io::Error kind and source chain are flattened to text
+    mechanism: 'Error::Custom is documented for failures produced by serde Deserialize
+      implementations. Mapping std::io::Error into that same String variant makes
+      reader failures indistinguishable from schema or visitor failures and causes
+      Error::source to return None. Callers cannot inspect ErrorKind, downcast the
+      source, or apply retry policy without parsing display text.
+
+      '
+    remediation: 'Add Error::Io(#[source] std::io::Error), map read_to_string failures
+      into it, and return that source from std::error::Error::source. Keep Custom
+      reserved for serde-generated data-model errors.
+
+      '
+    temporal:
+      introduced: '2026-03-27'
+      last_modified: '2026-03-27'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - serde-default-disables-loader-limits
+    effort: small
+    effort_notes: One typed variant, one conversion site, and source-chain coverage.
+- slug: public-api-and-types
+  title: The Public API and Type Surface
+  thesis: The public APIs are mostly idiomatic, but a few ownership, lifetime, and
+    collection contracts impose unnecessary allocation or constrain callers.
+  verdict: 'No type-safety defect emerged. The actionable items are ergonomic and
+    performance-facing: borrowed lookup still allocates, event peeking clones owned
+    data, collection iteration is incomplete, and boxed resolver plumbing rejects
+    useful borrowed implementations.'
+  findings:
+  - slug: borrowed-value-get-allocates-key
+    title: Borrowed string lookup allocates an owned Value key
+    criterion: 3.3 - Functions Accept References When Callee Does Not Need Ownership
+    surface: Ownership & Borrowing
+    concern: advisory
+    locations:
+    - path: crates/yamalgam-core/src/value.rs
+      start_line: 128
+      end_line: 134
+    evidence: |2
+          #[must_use]
+          pub fn get(&self, key: &str) -> Option<&Self> {
+              match self {
+                  Self::Mapping(m) => m.get(&Self::String(key.to_owned())),
+                  _ => None,
+              }
+          }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '4'
+      type: mark
+      label: allocates solely for comparison
+    mechanism: |
+      The public API correctly accepts a borrowed str, but each lookup converts it
+      into an owned String and wraps it in Value before performing a linear scan.
+      The temporary allocation is discarded immediately, so repeated lookups pay
+      a per-call allocator and copy cost without any ownership requirement.
+    remediation: |
+      Add a borrowed string-key lookup on Mapping that directly matches
+      Value::String candidates against &str, then delegate Value::get to it.
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-03-08'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - mapping-omits-intoiterator
+    effort: trivial
+    effort_notes: One borrowed-key helper and delegation change.
+  - slug: serde-peek-clones-owned-event
+    title: Serde unit deserialization clones an event before consuming the same event
+    criterion: 3.1 - .clone() Is Not Used to Appease the Borrow Checker
+    surface: Ownership & Borrowing
+    concern: advisory
+    locations:
+    - path: crates/yamalgam-serde/src/de.rs
+      start_line: 647
+      end_line: 656
+    evidence: |2
+          fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+              let event = self.peek_event()?.clone();
+              match event {
+                  Event::StreamEnd | Event::DocumentEnd { .. } => {
+                      // Empty document = null.
+                      let _ = self.next_event()?;
+                      visitor.visit_unit()
+                  }
+                  Event::Scalar { .. } => {
+                      let (value, style, span) = self.expect_scalar()?;
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '2'
+      type: del
+      label: clone releases the peek borrow
+    - lines: '6'
+      type: mark
+      label: same event is consumed
+    mechanism: |
+      Event contains Cow-backed scalar text. Cloning an Event::Scalar whose Cow
+      is owned allocates and copies the scalar, after which next_event or
+      expect_scalar consumes the original event. The same residual
+      peek-clone-consume shape exists in enum deserialization, while null probing
+      separately clones the scalar Cow to release its borrow.
+    remediation: |
+      Extract only a small borrowed discriminant from the peek, end that borrow,
+      and then consume the owned event. For enum deserialization, match directly
+      on next_event where the value is needed after consumption.
+    temporal:
+      introduced: '2026-03-27'
+      last_modified: '2026-03-27'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - parser-consumers-erase-concrete-hot-path-types
+    effort: small
+    effort_notes: Refactor the remaining peek-clone sites around a small discriminant
+      helper.
+  - slug: custom-tag-resolver-requires-static
+    title: Synchronous custom tag resolution unnecessarily requires a static resolver
+    criterion: 4.2 - 'static Bounds Are Not Used to Work Around Lifetime Complexity
+    surface: Lifetimes
+    concern: advisory
+    locations:
+    - path: crates/yamalgam-compose/src/lib.rs
+      start_line: 106
+      end_line: 123
+    evidence: |2
+          /// Parse and compose all documents using a custom tag resolver.
+          pub fn from_str_with_tag_resolver(
+              input: &'input str,
+              tag_resolver: impl TagResolver + 'static,
+          ) -> Result<Vec<Value>, ComposeError> {
+              let parser = Parser::new(input);
+              let events = ResolvedEvents::new(
+                  Box::new(parser.map(|r| r.map_err(ResolveError::Parse))),
+                  NoopResolver,
+              );
+              let mut composer = Composer {
+                  events: events.peekable(),
+                  anchors: HashMap::new(),
+                  config: ResourceLimits::none(),
+                  alias_expansion_count: 0,
+                  tag_resolver: Box::new(tag_resolver),
+              };
+              composer.compose_stream()
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '4'
+      type: del
+      label: rejects borrowed resolver state
+    - lines: '16'
+      type: mark
+      label: Box defaults to a static trait object
+    mechanism: |
+      The method consumes the entire stream and returns owned Values before the
+      call ends, yet the Box<dyn TagResolver> field forces the resolver to be
+      static. A resolver borrowing a caller-owned lookup table or configuration
+      is rejected even when that state outlives the synchronous call.
+    remediation: |
+      Parameterize Composer over its resolver type, or add a resolver lifetime
+      to the trait object so this entry point can accept borrowed implementations.
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-03-08'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - parser-consumers-erase-concrete-hot-path-types
+    effort: medium
+    effort_notes: Requires threading a resolver type or lifetime through Composer.
+  - slug: mapping-omits-intoiterator
+    title: Mapping exposes iterator methods but omits standard IntoIterator implementations
+    criterion: 9 - Trait Design (missing standard IntoIterator implementation)
+    surface: Trait Design
+    concern: note
+    locations:
+    - path: crates/yamalgam-core/src/value.rs
+      start_line: 86
+      end_line: 99
+    evidence: |2
+          /// Returns an iterator over keys.
+          pub fn keys(&self) -> impl Iterator<Item = &Value> {
+              self.entries.iter().map(|(k, _)| k)
+          }
+
+          /// Returns an iterator over values.
+          pub fn values(&self) -> impl Iterator<Item = &Value> {
+              self.entries.iter().map(|(_, v)| v)
+          }
+
+          /// Returns an iterator over `(key, value)` pairs.
+          pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> {
+              self.entries.iter().map(|(k, v)| (k, v))
+          }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '12'
+      type: mark
+      label: inherent iteration only
+    mechanism: |
+      Mapping behaves as a collection but cannot participate in idiomatic
+      `for (key, value) in &mapping` iteration, and callers cannot consume it
+      into entries because the backing Vec is private. The inherent iter method
+      duplicates the role of the standard conversion trait.
+    remediation: |
+      Implement IntoIterator for Mapping, &Mapping, and &mut Mapping, delegating
+      to the backing Vec iterators while retaining iter, keys, and values as
+      convenience methods.
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-03-08'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - borrowed-value-get-allocates-key
+      - mapping-default-manually-matches-derive
+    effort: small
+    effort_notes: Three additive trait implementations with no representation change.
+  - slug: mapping-default-manually-matches-derive
+    title: Mapping manually implements the same Default that derive would generate
+    criterion: 9.4 - Standard Traits Are Derived When Possible
+    surface: Trait Design
+    concern: note
+    locations:
+    - path: crates/yamalgam-core/src/value.rs
+      start_line: 114
+      end_line: 118
+    evidence: |
+      impl Default for Mapping {
+          fn default() -> Self {
+              Self::new()
+          }
+      }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 1-5
+      type: mark
+      label: manual implementation matches derive
+    mechanism: |
+      Mapping contains only a Vec, and Mapping::new constructs exactly
+      Vec::new. The manual implementation therefore has no semantic distinction
+      from #[derive(Default)] and creates an unnecessary maintenance site.
+    remediation: 'Add Default to Mapping''s derive list and remove the manual implementation.
+
+      '
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-03-08'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - mapping-omits-intoiterator
+    effort: trivial
+    effort_notes: Derive addition and five-line deletion.
+  - slug: compare-streams-use-index-loops
+    title: Stream comparison manually indexes two slices in lockstep
+    criterion: 10.1 - Iterator Combinators Replace Manual Index Loops
+    surface: Idiomatic Patterns
+    concern: note
+    locations:
+    - path: crates/yamalgam-compare/src/compare.rs
+      start_line: 66
+      end_line: 77
+    evidence: |2
+          let common_len = c_tokens.len().min(rust_tokens.len());
+
+          for i in 0..common_len {
+              if !tokens_match(&c_tokens[i], &rust_tokens[i]) {
+                  return CompareResult::TokenMismatch {
+                      index: i,
+                      c_token: c_tokens[i].clone(),
+                      rust_token: rust_tokens[i].clone(),
+                      context: context_slice(c_tokens, i),
+                  };
+              }
+          }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 3-8
+      type: mark
+      label: parallel indexed access
+    mechanism: |
+      The loop computes a minimum length solely to make parallel indexing safe.
+      zip with enumerate expresses the lockstep traversal directly and removes
+      the need to repeat the same index across both slices. The same pattern
+      recurs in both event comparison functions.
+    remediation: |
+      Iterate with c_tokens.iter().zip(rust_tokens).enumerate(), cloning only
+      the mismatching pair when constructing the owned result.
+    temporal:
+      introduced: '2026-03-06'
+      last_modified: '2026-03-06'
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: trivial
+    effort_notes: Mechanical rewrite in three comparison functions.
+  - slug: with-variables-collect-target-inferred
+    title: with_variables relies on distant field inference for collect
+    criterion: 10.5 - collect() Specifies the Target Type
+    surface: Idiomatic Patterns
+    concern: note
+    locations:
+    - path: crates/yamalgam-query/src/engine.rs
+      start_line: 103
+      end_line: 107
+    evidence: |2
+          /// Attach values for the globals declared while compiling the filter.
+          #[must_use]
+          pub fn with_variables(mut self, variables: impl IntoIterator<Item = YamlVal>) -> Self {
+              self.variables = variables.into_iter().collect();
+              self
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '4'
+      type: mark
+      label: target type inferred from a field declaration
+    mechanism: |
+      The collect target is determined only by RunCtx::variables, outside the
+      method body. This violates the repository rubric's explicit-target rule
+      and makes the allocation shape less obvious during local review.
+    remediation: |
+      Use collect::<Vec<_>>() here and add explicit targets to the analogous
+      inference-only collect calls in query operations and CLI assembly.
+    temporal:
+      introduced: '2026-08-03'
+      last_modified: '2026-08-03'
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: trivial
+    effort_notes: Add turbofish annotations to inference-only collect calls.
+- slug: feature-completeness
+  title: The Feature Completeness Surface
+  thesis: Several public promises are broader than the behavior users can currently
+    reach, including an intentionally deferred loader policy and universal CST losslessness.
+  verdict: This surface has the largest documentation-to-runtime gaps. The resolver
+    architecture is only partly composable, deferred loader resolution settings are
+    accepted without an unsupported-capability error, eight valid flow documents violate
+    the lossless-CST contract, and shipped configuration examples advertise ignored settings.
+  findings:
+  - slug: resolver-middleware-cannot-reach-most-documented-consumers
+    title: Resolver middleware cannot reach the documented CST and serde consumers
+    criterion: '14.5'
+    surface: Feature Completeness
+    concern: significant
+    locations:
+    - path: crates/yamalgam-serde/src/de.rs
+      start_line: 22
+      end_line: 28
+    evidence: |
+      pub struct Deserializer<'input> {
+          /// Event source (parser or resolved events), wrapped in Peekable.
+          events: Peekable<Box<dyn Iterator<Item = Result<Event<'input>, ParseError>> + 'input>>,
+          /// Tag resolver for plain scalar typing.
+          tag_resolver: Box<dyn TagResolver>,
+          /// Resource limits for anchor/alias caps and future extensions.
+          limits: ResourceLimits,
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 2-3
+      type: mark
+      label: The promised resolved-event source is private and requires ParseError,
+        while ResolvedEvents yields ResolveError
+    mechanism: |
+      The resolver module documents middleware between the parser and the Value builder, CST,
+      and serde, and the README diagrams the same fan-out. Only Composer actually exposes a
+      resolver-aware entry point. Deserializer has only string constructors; its private event
+      field cannot accept ResolvedEvents because their error item is ResolveError rather than
+      ParseError. CstBuilder::build has the same ParseError-only item constraint, while the query
+      builder hard-codes Parser. A custom resolver therefore cannot be composed with most of the
+      consumers the public architecture promises.
+    remediation: |
+      Add public event-source or resolver-aware constructors for serde and CST, using a shared
+      resolved-event error contract. Route their string convenience constructors through those
+      entry points and add one custom-resolver integration test per downstream consumer.
+    temporal:
+      introduced: '2026-03-27'
+      last_modified: '2026-03-27'
+      commit_count: 1
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - loader-resolution-policy-is-entirely-unwired
+    effort: medium
+    effort_notes: Requires aligning event error types and adding constructors across
+      multiple consumer crates.
+  - slug: loader-resolution-policy-is-entirely-unwired
+    title: Deferred loader resolution policy is publicly accepted but never enforced
+    criterion: '14.1'
+    surface: Feature Completeness
+    concern: advisory
+    locations:
+    - path: crates/yamalgam-core/src/loader.rs
+      start_line: 32
+      end_line: 48
+    - path: docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md
+      start_line: 152
+      end_line: 156
+    - path: docs/plans/README.md
+      start_line: 152
+      end_line: 155
+    evidence: |
+      /// Top-level loader configuration.
+      ///
+      /// Combines [`ResourceLimits`] (caps on sizes, depth, expansions) with
+      /// [`ResolutionPolicy`] (include/ref handling).
+      ///
+      /// The [`Default`] implementation returns [`LoaderConfig::moderate()`].
+      #[derive(Debug, Clone, PartialEq, Eq)]
+      // y[impl model.loading.well-formed]
+      // y[impl model.loading.reject-ill-formed]
+      pub struct LoaderConfig {
+          /// Resource limits applied during loading.
+          pub limits: ResourceLimits,
+          /// Policy for resolving `!include` and `$ref` references.
+          pub resolution: ResolutionPolicy,
+          /// Tag resolution scheme for plain scalar typing.
+          pub tag_resolution: TagResolution,
+      }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 3-4
+      type: mark
+      label: Rustdoc presents resolution as an active LoaderConfig concern
+    - lines: 13-14
+      type: mark
+      label: Callers can enable a public policy with no observable effect
+    mechanism: |
+      Outside its constructors and tests, no crate reads config.resolution or any IncludePolicy
+      or RefPolicy field. Parser and scanner retain only config.limits; composer, serde, and query
+      retain limits and tag_resolution. The accepted ADR explicitly defers enforcement until the
+      resolver layer exists, and Milestone 11 remains not started, so this is an intentional public
+      placeholder rather than an active exploit or data-loss path. The actionable gap is that
+      with-config APIs accept enabled policies without resolving them or reporting that the requested
+      capability is not implemented.
+    remediation: |
+      Until built-in resolvers are wired, reject enabled resolution policies at public loading
+      entry points with a typed unsupported-capability error, or hide the policy behind an
+      explicitly unstable surface. Keep the full resolver and policy implementation in M11,
+      where every path, host, recursion, byte-budget, and timeout field can be enforced.
+    temporal:
+      introduced: '2026-03-07'
+      last_modified: '2026-03-08'
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - resolver-middleware-cannot-reach-most-documented-consumers
+    effort: small
+    effort_notes: Rejecting enabled policies is a small interim guard; the deferred
+      built-in-resolver milestone remains large.
+  - slug: lossless-cst-corrupts-eight-valid-flow-documents
+    title: The lossless CST duplicates closing tokens in eight valid YAML cases
+    criterion: '14.1'
+    surface: Feature Completeness
+    concern: significant
+    locations:
+    - path: crates/yamalgam-compare/tests/cst_round_trip.rs
+      start_line: 13
+      end_line: 34
+    evidence: |
+      /// Known round-trip failures that are understood and acceptable.
+      ///
+      /// STALENESS: if a case in this list passes, the test panics — remove it.
+      ///
+      /// Categories:
+      /// - Flow collection close token duplication (extra `]` or `}`)
+      /// - Comment/whitespace ordering when comments arrive out of source order
+      /// - Edge cases with complex flow nesting or empty values
+      const ROUND_TRIP_ALLOWLIST: &[&str] = &[
+          // --- Flow collection close token duplication ---
+          // (Single-pair flow-SEQUENCE mappings were fixed by zero-width
+          // MappingStart/End spans; the remaining cases involve flow-MAPPING
+          // synthetic ends.)
+          "57H4", // nested flow — extra `]`
+          "6PBE", // flow mapping — extra `}`
+          "7ZZ5", // flow mapping — extra `}`
+          "AZ63", // flow mapping — extra `}`
+          "RLU9", // flow mapping — extra `}`
+          "S3PD", // flow mapping — extra `}`
+          "S9E8", // flow mapping — extra `}`
+          "SKE5", // flow mapping — extra `}`
+      ];
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 5-9
+      type: mark
+      label: The core byte-for-byte property has an explicit failure escape hatch
+    - lines: 14-21
+      type: mark
+      label: Eight valid suite cases emit an extra closing token
+    mechanism: |
+      yamalgam-cst's crate docs and parse_to_cst rustdoc promise that every input byte is
+      reproduced, which is the crate's defining capability. The compliance harness instead
+      accepts inequality for eight non-failing YAML Test Suite documents. Synthetic flow-mapping
+      end spans cause to_text() to emit an additional closing bracket or brace, so parse and
+      re-emit corrupts valid source for these documented cases.
+    remediation: |
+      Correct flow-mapping synthetic-end span/token ownership so each source delimiter is emitted
+      exactly once, remove the allowlist as cases pass, and keep the universal rustdoc claim only
+      once the suite enforces it without exemptions.
+    temporal:
+      introduced: '2026-03-09'
+      last_modified: '2026-06-10'
+      commit_count: 2
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: medium
+    effort_notes: Localized to parser/CST flow-end accounting, but all eight nesting
+      shapes need regression coverage.
+  - slug: config-template-advertises-silently-ignored-settings
+    title: The shipped configuration template advertises settings the CLI deliberately
+      ignores
+    criterion: '14.1'
+    surface: Feature Completeness
+    concern: moderate
+    locations:
+    - path: config/yamalgam.toml.example
+      start_line: 33
+      end_line: 52
+    evidence: |
+      # Config options:
+      # - log_dir = "/path/to/log/dir"
+      # - otel_endpoint = "http://127.0.0.1:4317"
+
+      # ------------------------------------------------------------------------------
+      # Add your configuration options below
+      # ------------------------------------------------------------------------------
+
+      # Example: API endpoint
+      # api_url = "https://api.example.com"
+
+      # Example: Feature flags
+      # [features]
+      # experimental = false
+      # telemetry = true
+
+      # Example: Output settings
+      # [output]
+      # format = "text"  # "text", "json", "table"
+      # color = "auto"   # "auto", "always", "never"
+    evidence_lang: toml
+    evidence_markers:
+    - lines: 1-3
+      type: mark
+      label: otel_endpoint is labeled a config option but Config has no such field
+    - lines: 6-20
+      type: mark
+      label: Generic API, feature, telemetry, and output settings are all nonfunctional
+    mechanism: |
+      The CLI Config type contains only log_level and log_dir. It has no otel_endpoint, api_url,
+      features, telemetry, output, format, or color fields. Serde accepts unknown keys, and the
+      integration suite explicitly asserts that unknown configuration fields are ignored.
+      Uncommenting the template's suggested settings therefore succeeds while changing nothing,
+      making configuration mistakes and nonexistent capabilities indistinguishable.
+    remediation: |
+      Reduce both TOML and YAML templates to fields the CLI actually consumes and add
+      deny_unknown_fields so misspellings fail loudly. Add future settings to the templates only
+      with their Config fields, behavior, and integration tests.
+    temporal:
+      introduced: '2026-03-06'
+      last_modified: '2026-03-06'
+      commit_count: 1
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: trivial
+    effort_notes: Template cleanup plus one serde attribute and an inverted integration
+      test.
+  - slug: multidocument-rustdoc-example-is-never-compiled
+    title: The sole multi-document rustdoc example is ignored and incomplete
+    criterion: '14.1'
+    surface: Feature Completeness
+    concern: note
+    locations:
+    - path: crates/yamalgam-serde/src/de.rs
+      start_line: 87
+      end_line: 100
+    evidence: |2
+          /// Create a streaming iterator over documents in a multi-document YAML
+          /// stream.
+          ///
+          /// Each call to `Iterator::next()` deserializes one document into `T`.
+          /// Iteration stops at `StreamEnd` or on the first error.
+          ///
+          /// ```ignore
+          /// let docs: Vec<i64> = Deserializer::from_str("---\n42\n---\n99")
+          ///     .documents::<i64>()
+          ///     .collect::<Result<_, _>>()
+          ///     .unwrap();
+          /// assert_eq!(docs, vec![42, 99]);
+          /// ```
+          pub const fn documents<T>(self) -> crate::Documents<'input, T>
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 7-13
+      type: mark
+      label: ignore suppresses compilation, and the snippet omits the Deserializer
+        import
+    mechanism: |
+      cargo test --doc reports green without compiling the public API's only multi-document
+      example. As written, the snippet also lacks a use yamalgam_serde::Deserializer import, so
+      removing ignore would expose the failure. API or trait-bound changes can therefore break
+      the documented entry point without any documentation test detecting it.
+    remediation: |
+      Add the public import, change the fence to a normal Rust doctest, and leave the existing
+      assertion as the executable multi-document contract.
+    temporal:
+      introduced: '2026-03-27'
+      last_modified: '2026-03-27'
+      commit_count: 1
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: trivial
+    effort_notes: One import and removal of the ignore annotation.
+- slug: runtime-performance
+  title: The Runtime Performance Surface
+  thesis: The query and scanner pipelines are correct but retain repeated whole-tree
+    work and avoidable short-lived allocations on hot paths.
+  verdict: 'The largest cost is structural: the query builder rewalks every completed
+    subtree. Identity inventory and string slicing add smaller allocation multipliers,
+    while boxed parser consumers and inline scanner error construction are lower-priority
+    tuning opportunities.'
+  flow:
+  - id: scan-input
+    label: Scan YAML
+    type: start
+    findings:
+    - slug: scanner-error-branches-remain-in-hot-functions
+      label: Inline cold paths
+  - id: parse-events
+    label: Parse events
+    type: process
+    findings:
+    - slug: parser-consumers-erase-concrete-hot-path-types
+      label: Dynamic dispatch
+  - id: build-value
+    label: Build query value
+    type: process
+    findings:
+    - slug: query-builder-rewalks-every-completed-node
+      label: Repeated walks
+  - id: identity-filter
+    label: Identity filter?
+    type: decision
+    yes: inspect-identity
+  - id: evaluate-filter
+    label: Evaluate filter
+    type: process
+  - id: string-slice-filter
+    label: String slice?
+    type: decision
+    yes: slice-string
+  - id: emit-result
+    label: Emit result
+    type: end
+  - id: inspect-identity
+    label: Inventory identity
+    type: process
+    spine: false
+    findings:
+    - slug: identity-inventory-allocates-path-node-per-map-key
+      label: Path allocation
+    next: evaluate-filter
+  - id: slice-string
+    label: Slice string
+    type: process
+    spine: false
+    findings:
+    - slug: string-range-retains-intermediate-string
+      label: Double copy
+    next: emit-result
+  findings:
+  - slug: query-builder-rewalks-every-completed-node
+    title: The query builder allocates a depth stack and rewalks every completed node
+    criterion: '12.5'
+    surface: Performance
+    concern: significant
+    locations:
+    - path: crates/yamalgam-query/src/value.rs
+      start_line: 210
+      end_line: 230
+    - path: crates/yamalgam-query/src/build.rs
+      start_line: 287
+      end_line: 292
+    evidence: |2
+          pub(crate) fn check_depth(&self, limits: &yamalgam_core::ResourceLimits) -> Result<(), String> {
+              let mut stack = vec![(self, 0_usize)];
+              while let Some((value, depth)) = stack.pop() {
+                  limits.check_depth(depth)?;
+                  let child_depth = depth
+                      .checked_add(1)
+                      .ok_or_else(|| "value depth overflow".to_owned())?;
+                  match &value.data {
+                      Data::Seq(items) => {
+                          stack.extend(items.iter().map(|item| (item, child_depth)));
+                      }
+                      Data::Map(mapping) => {
+                          stack.extend(
+                              mapping
+                                  .0
+                                  .iter()
+                                  .flat_map(<[_; 2]>::from)
+                                  .map(|item| (item, child_depth)),
+                          );
+                      }
+                      Data::Null | Data::Bool(_) | Data::Int(_) | Data::Float(_) | Data::Str(_) => {}
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 2-3
+      type: mark
+      label: a fresh heap-backed traversal stack is created for every node
+    - lines: 9-20
+      type: mark
+      label: completed descendants are traversed again
+    mechanism: |
+      `Builder::finish` invokes `check_depth` for every completed scalar, sequence, and
+      mapping. Scalars therefore pay a fresh `Vec` allocation for a one-node check, and
+      each collection walks its entire completed subtree. Nested documents revisit each
+      descendant once per ancestor, adding O(nodes * depth) work even though the recursive
+      builder already knows each child's depth and the configured depth bound.
+    remediation: |
+      Have the private node builder return `(YamlVal, subtree_height)`, compute collection
+      height from child heights, and store `(YamlVal, subtree_height)` for anchors. Alias
+      nodes then carry the cached target height, so the expanded-depth check remains correct
+      without allocating a traversal stack or rewalking completed subtrees.
+    temporal:
+      introduced: '2026-08-02'
+      last_modified: '2026-08-04'
+      commit_count: 23
+      monthly_commits:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 23
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - identity-inventory-allocates-path-node-per-map-key
+    effort: medium
+    effort_notes: The builder and anchor table need an internal height value while
+      the public YamlVal representation can remain unchanged.
+  - slug: identity-inventory-allocates-path-node-per-map-key
+    title: Identity inventory builds a heap-backed YAML path node for every mapping
+      key
+    criterion: '12.5'
+    surface: Performance
+    concern: advisory
+    locations:
+    - path: crates/yamalgam-query/src/value.rs
+      start_line: 763
+      end_line: 780
+    evidence: |2
+              match &value.data {
+                  Data::Seq(items) => {
+                      for (index, item) in items.iter().enumerate() {
+                          path.push(YamlVal::from(index));
+                          self.visit(item, path);
+                          path.pop();
+                      }
+                  }
+                  Data::Map(mapping) => {
+                      for (key, value) in &mapping.0 {
+                          path.push(YamlVal::map(vec![(YamlVal::str("$key"), key.clone())]));
+                          self.visit(key, path);
+                          path.pop();
+                          path.push(key.clone());
+                          self.visit(value, path);
+                          path.pop();
+                      }
+                  }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 10-13
+      type: mark
+      label: each key allocates a String/Rc, Vec, IndexMap, and Rc-backed map node
+    mechanism: |
+      Both `aliases` and `orphan_anchors` traverse the complete document through this
+      visitor. For every mapping entry, including documents with no aliases in key
+      position, the visitor materializes the jq path encoding `{"$key": key}` and
+      immediately pops it. That creates several heap allocations per key solely to
+      maintain traversal state; the path is only copied into output when an alias is found.
+    remediation: |
+      Track traversal state as a reusable `Vec<PathPart<'_>>` with borrowed `Key`,
+      `MapKey`, and numeric index variants. Materialize `YamlVal` path elements only when
+      recording an encountered alias. This preserves the public path format while making
+      alias-free traversal allocation-free after the path vector reaches capacity.
+    temporal:
+      introduced: '2026-08-02'
+      last_modified: '2026-08-04'
+      commit_count: 23
+      monthly_commits:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 23
+    chains:
+      enables: []
+      enabled_by: []
+      related:
+      - query-builder-rewalks-every-completed-node
+    effort: medium
+    effort_notes: A private borrowed path enum and one materialization helper are
+      needed; output semantics stay unchanged.
+  - slug: string-range-retains-intermediate-string
+    title: String slicing allocates and copies through an intermediate String
+    criterion: '2.5'
+    surface: Performance
+    concern: advisory
+    locations:
+    - path: crates/yamalgam-query/src/valt.rs
+      start_line: 135
+      end_line: 150
+    - path: crates/yamalgam-query/src/valt.rs
+      start_line: 477
+      end_line: 484
+    evidence: |2
+          // r[impl filters.slice]
+          fn range(self, range: Range<&Self>) -> ValR<Self> {
+              let (start, end) = range_bounds(range)?;
+              match self.data {
+                  Data::Seq(items) => {
+                      let (skip, take) = skip_take(start, end, items.len());
+                      Ok(Self::seq(
+                          items.iter().skip(skip).take(take).cloned().collect(),
+                      ))
+                  }
+                  Data::Str(string) => {
+                      let (skip, take) = skip_take(start, end, string.chars().count());
+                      Ok(Self::str(
+                          string.chars().skip(skip).take(take).collect::<String>(),
+                      ))
+                  }
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 12-14
+      type: mark
+      label: the slice is collected into String before being copied into Rc<str>
+    mechanism: |
+      A jq string range first collects the selected characters into an owned `String`.
+      `YamlVal::str` then converts that `String` to `Rc<str>`, which requires a second
+      allocation and copy for the reference-counted layout. The same module already has
+      `char_byte_range` and uses a borrowed substring in the range-update path, so this
+      read path retains a duplicate allocation the adjacent implementation avoids.
+    remediation: |
+      Reuse `char_byte_range`: compute `(start_byte, end_byte)` from `skip` and `take`,
+      then call `Self::str(&string[start_byte..end_byte])`. This removes the intermediate
+      String and leaves the single allocation required for Rc<str>. Add ASCII and multibyte
+      range tests to pin jq character-index semantics.
+    temporal:
+      introduced: '2026-08-02'
+      last_modified: '2026-08-04'
+      commit_count: 12
+      monthly_commits:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 12
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: trivial
+    effort_notes: The single-allocation borrowed-substring helper path already exists
+      in the same file.
+  - slug: parser-consumers-erase-concrete-hot-path-types
+    title: Parser consumers erase concrete event and resolver types on hot paths
+    criterion: '9.1'
+    surface: Performance
+    concern: note
+    locations:
+    - path: crates/yamalgam-serde/src/de.rs
+      start_line: 22
+      end_line: 26
+    - path: crates/yamalgam-parser/src/resolve.rs
+      start_line: 125
+      end_line: 136
+    - path: crates/yamalgam-compose/src/lib.rs
+      start_line: 97
+      end_line: 102
+    evidence: |
+      pub struct Deserializer<'input> {
+          /// Event source (parser or resolved events), wrapped in Peekable.
+          events: Peekable<Box<dyn Iterator<Item = Result<Event<'input>, ParseError>> + 'input>>,
+          /// Tag resolver for plain scalar typing.
+          tag_resolver: Box<dyn TagResolver>,
+    evidence_lang: rust
+    evidence_markers:
+    - lines: '3'
+      type: mark
+      label: every parser event crosses an iterator vtable
+    - lines: '5'
+      type: mark
+      label: every resolved plain scalar crosses a resolver vtable
+    mechanism: |
+      `Deserializer::from_str` and `from_str_with_config` always construct a concrete
+      `Parser` and a statically known tag-resolution value, but immediately box both.
+      `ResolvedEvents` is generic over its resolver while independently boxing its
+      upstream iterator, and all composer string constructors pass the same concrete
+      parser adapter. The vtable calls are real, but the accepted architecture treats
+      this indirection as noise unless profiling proves otherwise, and serde documents
+      the type erasure as a deliberate way to limit monomorphization.
+    remediation: |
+      Profile representative serde, composer, and resolved-event workloads first. Only
+      if dynamic dispatch is measurable should Deserializer or ResolvedEvents gain generic
+      iterator/resolver forms, with boxed aliases retained to control monomorphization and
+      preserve the intentional erased API.
+    temporal:
+      introduced: '2026-03-27'
+      last_modified: '2026-06-10'
+      commit_count: 6
+      monthly_commits:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 1
+      - 0
+      - 0
+      - 5
+      - 0
+      - 0
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: medium
+    effort_notes: Generic defaults and aliases can preserve ergonomics, but public
+      type signatures and constructor call sites must be updated together.
+  - slug: scanner-error-branches-remain-in-hot-functions
+    title: Scanner error construction remains inline in tokenization hot loops
+    criterion: '12.9'
+    surface: Performance
+    concern: note
+    locations:
+    - path: crates/yamalgam-scanner/src/scanner.rs
+      start_line: 354
+      end_line: 375
+    evidence: |2
+          fn scan_to_next_token(&mut self) {
+              self.tab_in_preceding_whitespace = false;
+              let mut at_line_start = self.reader.mark().column == 0;
+              let mut tab_at_flow_line_start = false;
+              loop {
+                  while let Some(c) = self.reader.peek() {
+                      if c == ' ' {
+                          self.reader.advance();
+                      } else if c == '\t' {
+                          // YAML §6.1: tabs must not be used for indentation.
+                          // In block context, tabs at the start of a line (before
+                          // any non-whitespace) are indentation — reject them.
+                          // Only when there's an active block structure (indent >= 0),
+                          // so tabs before the first block token (like `\t[`) are fine.
+                          // cref: fy_scan_to_next_token (fy-parse.c)
+                          // y[impl struct.indent.tab-forbidden]
+                          if at_line_start && self.flow_level == 0 && self.indent >= 0 {
+                              self.error = Some(ScanError {
+                                  kind: ScanErrorKind::InvalidTab,
+                                  message: "tab character used for indentation".to_string(),
+                              });
+                              return;
+    evidence_lang: rust
+    evidence_markers:
+    - lines: 17-22
+      type: mark
+      label: rare diagnostic construction is embedded in the whitespace scan loop
+    mechanism: |
+      `scan_to_next_token` is entered for the whitespace boundary before ordinary tokens,
+      yet its rare invalid-tab diagnostic is lexically inline in the loop. The scanner repeats
+      this pattern across token-fetch functions with no explicit `#[cold]` boundary. Source
+      placement alone does not establish generated instruction layout or a measurable scanner
+      cost, so this is a possible code-layout optimization rather than a demonstrated hot-path
+      regression.
+    remediation: |
+      Benchmark representative scanning or inspect optimized codegen before changing the
+      layout. If the diagnostic blocks remain in hot code and the cost is measurable, route
+      scanner failures through a small `#[cold]` and `#[inline(never)]` helper.
+    temporal:
+      introduced: '2026-03-06'
+      last_modified: '2026-08-04'
+      commit_count: 37
+      monthly_commits:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 35
+      - 0
+      - 0
+      - 1
+      - 0
+      - 1
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: small
+    effort_notes: Measure first; if justified, introduce one cold helper and route
+      existing scanner error assignments through it.
+- slug: supply-chain
+  title: The Supply Chain Surface
+  thesis: Dependency controls are explicit and passing, with one accepted benchmark-only
+    advisory edge and two unused xtask declarations.
+  verdict: 'The shipped graph has no active RustSec vulnerability. The remaining work
+    is housekeeping: remove unused xtask dependencies and decide whether the optional
+    yamlstar comparison still justifies compiling an unmaintained proc macro in all-feature
+    builds.'
+  findings:
+  - slug: xtask-unused-serde-and-toml
+    title: xtask retains two unused direct dependencies
+    criterion: '7.4'
+    surface: 7 (Supply Chain)
+    concern: note
+    locations:
+    - path: xtask/Cargo.toml
+      start_line: 14
+      end_line: 15
+    evidence: |
+      serde = { version = "1.0", features = ["derive"] }
+      toml = "1.1"
+    evidence_lang: toml
+    evidence_markers:
+    - lines: 1-2
+      type: del
+      label: Neither crate is referenced by xtask source
+    mechanism: cargo-machete reports both declarations unused, and a repository search
+      finds no serde or toml API use under xtask. They remain from the removed benchmark-code-generation
+      path, adding unnecessary direct dependency and feature edges even though both
+      crates already occur transitively elsewhere in the workspace.
+    remediation: Remove serde and toml from xtask/Cargo.toml, then run the xtask checks
+      and the workspace dependency checks.
+    temporal:
+      introduced: '2026-03-27'
+      last_modified: '2026-06-10'
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: trivial
+    effort_notes: Delete two manifest lines and refresh the lockfile only if Cargo
+      determines it changed.
+  - slug: yamlstar-pulls-unmaintained-dlopen-derive
+    title: Optional yamlstar benchmarks retain an unmaintained proc-macro dependency
+    criterion: 7.5 / 13.5
+    surface: 7 (Supply Chain) / 13 (Dependency Fitness)
+    concern: advisory
+    locations:
+    - path: ".config/deny.toml"
+      start_line: 55
+      end_line: 58
+    evidence: |2
+          # dlopen_derive 0.1.4 - via yamlstar (optional benchmark peer)
+          # Unmaintained, but yamlstar is only used for comparative benchmarks
+          # All Cargo Deny entry points use --all-features so this entry stays live
+          "RUSTSEC-2023-0051",
+    evidence_lang: toml
+    evidence_markers:
+    - lines: 1-4
+      type: mark
+      label: Explicitly accepted unmaintained dependency
+    mechanism: Enabling yamalgam-bench's optional yamlstar feature resolves yamlstar
+      0.1.18 through dlopen 0.1.8 to the unmaintained dlopen_derive 0.1.4 proc macro.
+      Cargo Audit reports RUSTSEC-2023-0051. The edge is isolated from the shipped
+      yg graph and explicitly monitored, so it is maintenance and build-host exposure
+      rather than a production-runtime vulnerability.
+    remediation: Remove yamlstar from the comparative peer set unless the GraalVM
+      comparison remains valuable; otherwise replace or fork its dlopen integration
+      so all-features builds no longer compile dlopen_derive 0.1.4.
+    temporal:
+      introduced: '2026-03-08'
+      last_modified: '2026-08-04'
+    chains:
+      enables: []
+      enabled_by: []
+      related: []
+    effort: small
+    effort_notes: Removing the optional peer is small; repairing or replacing yamlstar's
+      dlopen integration is medium.
+summary:
+  counts:
+    critical: 0
+    significant: 8
+    moderate: 4
+    advisory: 7
+    note: 8

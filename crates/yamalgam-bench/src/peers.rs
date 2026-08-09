@@ -60,12 +60,3 @@ pub fn rust_yaml_parse(input: &str) {
     let yaml = rust_yaml::Yaml::new();
     let _ = yaml.load(input.as_bytes());
 }
-
-/// Parse with `yamlstar` (GraalVM-backed serde deserialization).
-///
-/// Requires `libyamlstar.dylib` at runtime. Enable with `--features yamlstar`.
-/// The `YAMLStar` instance must be created once and reused — pass it in.
-#[cfg(feature = "yamlstar")]
-pub fn yamlstar_parse(ys: &yamlstar::YAMLStar, input: &str) {
-    let _: Result<serde_json::Value, _> = ys.load(input);
-}

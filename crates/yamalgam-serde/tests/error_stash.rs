@@ -8,7 +8,9 @@
 //! instead of parsing message text.
 
 use serde::Deserialize;
-use yamalgam_core::{LoaderConfig, ResourceLimits};
+use std::error::Error as _;
+
+use yamalgam_core::{LimitExceeded, LoaderConfig, ResourceLimit, ResourceLimits};
 use yamalgam_serde::{Deserializer, Error, from_str, from_str_with_config};
 
 /// Build a config carrying only the given limits.
@@ -61,7 +63,17 @@ fn from_str_with_config_preserves_limit_exceeded() {
         &config_with(limits),
     )
     .unwrap_err();
-    assert!(matches!(err, Error::LimitExceeded(_)), "got {err:?}");
+    let Error::LimitExceeded(limit) = &err else {
+        panic!("expected Error::LimitExceeded, got {err:?}");
+    };
+    assert_eq!(limit.limit, ResourceLimit::AliasExpansions);
+    assert_eq!(limit.observed, 2);
+    assert_eq!(limit.maximum, 1);
+    assert_eq!(
+        err.source()
+            .and_then(|source| source.downcast_ref::<LimitExceeded>()),
+        Some(limit)
+    );
 }
 
 #[test]

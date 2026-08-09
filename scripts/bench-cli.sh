@@ -20,7 +20,8 @@
 set -euo pipefail
 
 # Configuration
-BINARY_NAME="yamalgam"
+PACKAGE_NAME="yamalgam"
+BINARY_NAME="yg"
 RESULTS_DIR="./bench-reports"
 
 # Parse arguments
@@ -34,7 +35,7 @@ fi
 
 # Build release binary first
 echo "Building release binary..."
-cargo build --release --package "$BINARY_NAME"
+cargo build --release --package "$PACKAGE_NAME" --bin "$BINARY_NAME"
 
 BINARY="./target/release/$BINARY_NAME"
 

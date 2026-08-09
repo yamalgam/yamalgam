@@ -1,0 +1,71 @@
+status: DONE
+findings:
+  - slug: composer-default-path-has-unbounded-recursion
+    verdict: confirmed
+  - slug: serde-default-disables-loader-limits
+    verdict: adjusted
+    notes: "The finding stands, but the loading flow must branch: yamalgam_serde::from_str constructs and consumes Deserializer directly at crates/yamalgam-serde/src/lib.rs:31-44 and never enters Composer, so the serde branch must not continue to compose."
+  - slug: cst-recursive-traversals-have-no-depth-bound
+    verdict: adjusted
+    notes: "The finding stands, but the loading flow must terminate in a CST path: parse_to_cst passes Parser directly to CstBuilder at crates/yamalgam-cst/src/lib.rs:560-564 and never enters Composer."
+  - slug: composer-mapping-insertion-is-quadratic
+    verdict: confirmed
+  - slug: composer-alias-deep-clone-is-size-unbudgeted
+    verdict: confirmed
+  - slug: flow-pair-finalization-swallows-scanner-errors
+    verdict: confirmed
+  - slug: cst-discards-parse-error
+    verdict: adjusted
+    notes: "The finding stands, but remove flow-pair-finalization-swallows-scanner-errors from enabled_by. That parser path suppresses the error and returns MappingEnd successfully at crates/yamalgam-parser/src/parser.rs:1170-1179, whereas CstBuilder only invokes handle_error for an Err it actually receives at crates/yamalgam-cst/src/lib.rs:243-249."
+  - slug: from-reader-erases-io-errors
+    verdict: adjusted
+    notes: "The typed-error finding stands, but its flow placement is wrong: read_to_string can fail before from_str and therefore before scanning or parsing at crates/yamalgam-serde/src/lib.rs:87-91. Move this branch ahead of the scan step."
+  - slug: borrowed-value-get-allocates-key
+    verdict: adjusted
+    notes: "Lower concern to advisory and frame this as a per-lookup allocation cost, not a moderate robustness issue. The API already accepts &str but allocates only inside the lookup at crates/yamalgam-core/src/value.rs:129-132."
+  - slug: serde-peek-clones-owned-event
+    verdict: confirmed
+  - slug: custom-tag-resolver-requires-static
+    verdict: confirmed
+  - slug: mapping-omits-intoiterator
+    verdict: adjusted
+    notes: "Lower concern to note. Existing iter, keys, and values provide complete borrowed traversal at crates/yamalgam-core/src/value.rs:86-99; missing IntoIterator is an additive ergonomics gap, not an advisory-level safety or behavioral limitation."
+  - slug: resource-limits-omits-copy
+    verdict: disputed
+    notes: "Nine Copy-capable fields do not establish that this public configuration type should itself be Copy. ResourceLimits contains nine Option<usize> fields at crates/yamalgam-core/src/loader.rs:177-197; keeping copies explicit is a valid API and evolution choice, so omission of Copy is not an actionable defect."
+  - slug: mapping-default-manually-matches-derive
+    verdict: confirmed
+  - slug: compare-streams-use-index-loops
+    verdict: adjusted
+    notes: "Keep this as a note-level style finding, but remove the claim that zip avoids repeated bounds checks; the loop is already bounded by the minimum slice length at crates/yamalgam-compare/src/compare.rs:66-77. The supported correction is only that zip plus enumerate expresses lockstep traversal more directly."
+  - slug: with-variables-collect-target-inferred
+    verdict: confirmed
+  - slug: resolver-middleware-cannot-reach-most-documented-consumers
+    verdict: confirmed
+  - slug: loader-resolution-policy-is-entirely-unwired
+    verdict: adjusted
+    notes: "Lower concern from critical to advisory and describe this as an intentionally deferred public API placeholder, not an active exploit or data-loss path. The accepted design explicitly says ResolutionPolicy will not be enforced until the resolver layer exists at docs/decisions/0006-loaderconfig-for-resource-limits-and-security-policy.md:152-156, and Milestone 11 remains not started at docs/plans/README.md:152-155. Rejecting enabled policies can be a small interim fix; full implementation remains large."
+  - slug: lossless-cst-corrupts-eight-valid-flow-documents
+    verdict: confirmed
+  - slug: config-template-advertises-silently-ignored-settings
+    verdict: confirmed
+  - slug: multidocument-rustdoc-example-is-never-compiled
+    verdict: confirmed
+  - slug: query-builder-rewalks-every-completed-node
+    verdict: confirmed
+  - slug: identity-inventory-allocates-path-node-per-map-key
+    verdict: adjusted
+    notes: "The allocation finding stands, but the runtime flow must make identity inventory conditional. IdentityInventory::collect is invoked only by alias_report and orphan_anchors at crates/yamalgam-query/src/value.rs:665-681, not by every query between value construction and filter evaluation."
+  - slug: string-range-retains-intermediate-string
+    verdict: adjusted
+    notes: "The finding stands, but the runtime flow must make slicing conditional, and the remediation should be described as a single-allocation path rather than allocation-free. The current double-copy path is at crates/yamalgam-query/src/valt.rs:145-149, while char_byte_range at crates/yamalgam-query/src/valt.rs:477-484 removes only the intermediate String; constructing Rc<str> still allocates."
+  - slug: parser-consumers-erase-concrete-hot-path-types
+    verdict: adjusted
+    notes: "Lower concern to note and require profiling before the proposed public generic refactor. The vtable calls are real, but the accepted architecture explicitly treats this indirection as noise unless profiling proves otherwise at docs/decisions/0007-resolver-trait-for-event-stream-middleware.md:106-110, and yamalgam-serde intentionally uses erasure to limit monomorphization at crates/yamalgam-serde/src/lib.rs:1-5."
+  - slug: scanner-error-branches-remain-in-hot-functions
+    verdict: adjusted
+    notes: "Lower concern to note and qualify the mechanism as a possible code-layout optimization. crates/yamalgam-scanner/src/scanner.rs:354-375 proves that error construction is lexically inline, but it does not establish generated instruction layout or measurable scanner cost; benchmark or inspect codegen before applying a broad cold-helper rewrite."
+  - slug: xtask-unused-serde-and-toml
+    verdict: confirmed
+  - slug: yamlstar-pulls-unmaintained-dlopen-derive
+    verdict: confirmed

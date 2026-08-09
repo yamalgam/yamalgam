@@ -1,10 +1,11 @@
 //! Parser error types.
 
-use yamalgam_core::Span;
+use yamalgam_core::{LimitExceeded, Span};
 use yamalgam_scanner::TokenKind;
 use yamalgam_scanner::scanner::ScanError;
 
 /// Errors produced by the YAML parser.
+#[non_exhaustive]
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ParseError {
     /// A scanner-level error propagated upward.
@@ -58,5 +59,21 @@ pub enum ParseError {
 
     /// A resource limit was exceeded (depth, size, etc.).
     #[error("limit exceeded: {0}")]
-    LimitExceeded(String),
+    LimitExceeded(#[source] LimitExceeded),
+
+    /// Resource-accounting arithmetic overflowed before a configured limit
+    /// could be checked.
+    #[error("limit exceeded: {0} overflow")]
+    ResourceOverflow(&'static str),
+
+    /// External resolution was enabled without a resolver implementation.
+    #[error(
+        "enabled resolution policy is unsupported without a resolver (include: {include}, refs: {refs})"
+    )]
+    UnsupportedResolutionPolicy {
+        /// Whether include resolution was enabled.
+        include: bool,
+        /// Whether reference resolution was enabled.
+        refs: bool,
+    },
 }

@@ -278,6 +278,12 @@ fn tree_scalar_plain_style() {
 }
 
 #[test]
+fn tree_scalar_rejects_non_ascii_style() {
+    let events = parse_tree("=VALé\n");
+    assert!(events.is_empty());
+}
+
+#[test]
 fn tree_scalar_single_quoted() {
     let events = parse_tree("=VAL 'hello world\n");
     assert_eq!(events.len(), 1);
@@ -720,6 +726,14 @@ fn extract_yaml_block_scalar_with_indent_indicator() {
     assert!(cases[0].yaml.contains("foo: 1"));
     // tree: should NOT be consumed into yaml
     assert!(cases[0].tree.is_some());
+}
+
+#[test]
+fn extract_explicit_indent_rejects_split_unicode_whitespace() {
+    let content = "---\n- yaml: |2\n  \u{2003}value\n";
+    let cases = extract_test_cases(content);
+    assert_eq!(cases.len(), 1);
+    assert!(cases[0].yaml.is_empty());
 }
 
 #[test]

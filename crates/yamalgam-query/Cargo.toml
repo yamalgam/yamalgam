@@ -1,0 +1,30 @@
+[package]
+name = "yamalgam-query"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "YAML-native jq-style query engine for yamalgam (powers the yg CLI)"
+publish = false
+
+[dependencies]
+indexmap = "2"
+# YamlVal implements jaq traits directly: admit patch fixes, but review minor
+# releases that may move the ValT/DataT surface.
+jaq-core = "~3.1.0"
+# jaq-std 3.0.1 gates its public aggregate `funs()` registry behind this full
+# set. Keep `time` explicit until upstream exposes feature-composable registries.
+jaq-std = { version = "~3.0.1", default-features = false, features = ["std", "format", "log", "math", "regex", "time"] }
+thiserror = "2.0"
+yamalgam-core = { path = "../yamalgam-core" }
+yamalgam-parser = { path = "../yamalgam-parser" }
+yamalgam-scanner = { path = "../yamalgam-scanner" }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+yamalgam-serde = { path = "../yamalgam-serde" }
+
+[lints]
+workspace = true

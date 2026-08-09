@@ -207,11 +207,7 @@ fn parse_val(rest: &str) -> Option<EventSnapshot> {
     let (anchor, tag, after_props) = parse_val_properties(rest);
 
     // The next character is the style indicator, followed by the raw value.
-    if after_props.is_empty() {
-        return None;
-    }
-
-    let value = &after_props[1..]; // everything after the style char
+    let value = after_props.strip_prefix([':', '\'', '"', '|', '>'])?;
     let decoded = unescape_tree_value(value);
 
     Some(EventSnapshot {

@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
-use yamalgam_scanner::TokenKind;
 use yamalgam_scanner::scanner::Scanner;
+use yamalgam_scanner::{AtomFlags, Chomp, TokenKind};
 
 /// Collect all tokens from a scanner, unwrapping each Result.
 fn scan(input: &str) -> Vec<(TokenKind, String)> {
@@ -16,6 +16,16 @@ fn scan(input: &str) -> Vec<(TokenKind, String)> {
 /// Extract just the token kinds from a scan.
 fn kinds(input: &str) -> Vec<TokenKind> {
     scan(input).into_iter().map(|(k, _)| k).collect()
+}
+
+fn scalar_atom(input: &str) -> yamalgam_scanner::Atom<'_> {
+    Scanner::new(input)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .find(|token| token.kind == TokenKind::Scalar)
+        .unwrap()
+        .atom
 }
 
 // === Stream markers (from PR #9) ===
@@ -729,6 +739,26 @@ fn double_quoted_unicode_escape() {
 }
 
 #[test]
+fn double_quoted_surrogate_pair_escape() {
+    let tokens = scan("\"\\uD834\\uDD1E\"\n");
+    assert_eq!(tokens[1].1, "𝄞");
+}
+
+#[test]
+fn double_quoted_unpaired_surrogate_errors() {
+    assert!(
+        Scanner::new("\"\\uD834\"")
+            .collect::<Result<Vec<_>, _>>()
+            .is_err()
+    );
+    assert!(
+        Scanner::new("\"\\uDD1E\"")
+            .collect::<Result<Vec<_>, _>>()
+            .is_err()
+    );
+}
+
+#[test]
 fn quoted_in_flow_sequence() {
     let tokens = scan("[\"a\", 'b']\n");
     assert_eq!(tokens[2].1, "a");
@@ -765,6 +795,64 @@ fn literal_keep_chomp() {
     let tokens = scan("text: |+\n  line1\n\n");
     let scalars: Vec<_> = tokens.iter().filter(|t| t.0 == TokenKind::Scalar).collect();
     assert_eq!(scalars[1].1, "line1\n\n");
+}
+
+#[test]
+fn block_scalar_atoms_preserve_chomp_metadata() {
+    for (source, expected_chomp, explicit) in [
+        ("|-\n  line\n", Chomp::Strip, true),
+        ("|\n  line\n", Chomp::Clip, false),
+        ("|+\n  line\n\n", Chomp::Keep, true),
+    ] {
+        let atom = scalar_atom(source);
+        assert_eq!(atom.chomp, expected_chomp, "source: {source:?}");
+        assert_eq!(
+            atom.flags.contains(AtomFlags::CHOMP_EXPLICIT),
+            explicit,
+            "source: {source:?}"
+        );
+        assert!(atom.flags.contains(AtomFlags::IS_MULTILINE));
+    }
+}
+
+#[test]
+fn scalar_atom_flags_describe_content_and_scan_context() {
+    let plain = scalar_atom("plain");
+    assert!(plain.flags.contains(AtomFlags::DIRECT_OUTPUT));
+    assert!(plain.flags.contains(AtomFlags::ENDS_WITH_EOF));
+
+    let whitespace = scalar_atom("' text '");
+    assert!(whitespace.flags.contains(AtomFlags::HAS_WS));
+    assert!(whitespace.flags.contains(AtomFlags::STARTS_WITH_WS));
+    assert!(whitespace.flags.contains(AtomFlags::ENDS_WITH_WS));
+    assert!(whitespace.flags.contains(AtomFlags::DIRECT_OUTPUT));
+
+    let escaped = scalar_atom("\"line\\nbreak\"");
+    assert!(escaped.flags.contains(AtomFlags::HAS_ESC));
+    assert!(escaped.flags.contains(AtomFlags::HAS_LB));
+    assert!(!escaped.flags.contains(AtomFlags::DIRECT_OUTPUT));
+
+    let doubled_single_quote = scalar_atom("'it''s'");
+    assert!(!doubled_single_quote.flags.contains(AtomFlags::HAS_ESC));
+    assert!(
+        !doubled_single_quote
+            .flags
+            .contains(AtomFlags::DIRECT_OUTPUT)
+    );
+
+    let multiline = scalar_atom("'one\n  two'");
+    assert!(multiline.flags.contains(AtomFlags::IS_MULTILINE));
+    assert!(!multiline.flags.contains(AtomFlags::DIRECT_OUTPUT));
+
+    let empty = scalar_atom("''");
+    assert!(empty.flags.contains(AtomFlags::SIZE0));
+    assert!(!empty.flags.contains(AtomFlags::EMPTY));
+
+    let merge = scalar_atom("<<");
+    assert!(merge.flags.contains(AtomFlags::IS_MERGE_KEY));
+
+    let unicode = scalar_atom("é");
+    assert!(unicode.flags.contains(AtomFlags::HIGH_ASCII));
 }
 
 #[test]

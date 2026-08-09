@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use yamalgam_core::Span;
-use yamalgam_scanner::ScalarStyle;
+use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle};
 
 /// Collection presentation style (block vs flow).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,6 +101,10 @@ pub enum Event<'input> {
         value: Cow<'input, str>,
         /// Presentation style.
         style: ScalarStyle,
+        /// Block scalar chomping mode.
+        chomp: Chomp,
+        /// Content and scanner-context presentation flags.
+        flags: AtomFlags,
         /// Source span.
         span: Span,
     },

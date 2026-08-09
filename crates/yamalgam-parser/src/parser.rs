@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use yamalgam_core::{LoaderConfig, ResourceLimits, Span};
 use yamalgam_scanner::scanner::{ScanError, Scanner};
-use yamalgam_scanner::{ScalarStyle, Token, TokenKind};
+use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle, Token, TokenKind};
 
 use crate::error::ParseError;
 use crate::event::{CollectionStyle, Event};
@@ -219,8 +219,8 @@ where
     // cref: fy-parse.c:5673-5686 (fy_parse_state_push)
     fn push_state(&mut self, state: ParserState) -> Result<(), ParseError> {
         self.state_stack.push(state);
-        if let Err(msg) = self.config.check_depth(self.state_stack.len()) {
-            return Err(ParseError::LimitExceeded(msg));
+        if let Err(error) = self.config.check_depth(self.state_stack.len()) {
+            return Err(ParseError::LimitExceeded(error));
         }
         Ok(())
     }
@@ -238,6 +238,8 @@ where
             tag: None,
             value: Cow::Borrowed(""),
             style: ScalarStyle::Plain,
+            chomp: Chomp::Clip,
+            flags: AtomFlags::SIZE0,
             span,
         }
     }
@@ -555,6 +557,8 @@ where
                     tag,
                     value: t.atom.data,
                     style: t.atom.style,
+                    chomp: t.atom.chomp,
+                    flags: t.atom.flags,
                     span: t.atom.span,
                 }))
             }
@@ -606,7 +610,8 @@ where
             Some(TokenKind::BlockEntry) => {
                 // Indentless sequence: BlockEntry in mapping value/key context.
                 // cref: fy-parse.c:5781-5812
-                let span = self.peeked_token()?.atom.span;
+                let visible_span = self.peeked_token()?.atom.span;
+                let start = visible_span.start;
                 let return_state = self.state_stack.last().copied();
                 let in_mapping_context = matches!(
                     return_state,
@@ -621,7 +626,7 @@ where
                         anchor,
                         tag,
                         style: CollectionStyle::Block,
-                        span,
+                        span: Span { start, end: start },
                     }))
                 } else if anchor.is_some() || tag.is_some() {
                     // cref: tag/anchor on empty scalar in block sequence —
@@ -634,13 +639,15 @@ where
                         tag,
                         value: Cow::Borrowed(""),
                         style: ScalarStyle::Plain,
+                        chomp: Chomp::Clip,
+                        flags: AtomFlags::SIZE0,
                         span,
                     }))
                 } else {
                     Err(ParseError::UnexpectedToken {
                         expected: "node content",
                         got: TokenKind::BlockEntry,
-                        span,
+                        span: visible_span,
                     })
                 }
             }
@@ -654,6 +661,8 @@ where
                     tag,
                     value: Cow::Borrowed(""),
                     style: ScalarStyle::Plain,
+                    chomp: Chomp::Clip,
+                    flags: AtomFlags::SIZE0,
                     span,
                 }))
             }
@@ -912,9 +921,7 @@ where
             _ => {
                 // No value indicator — implicit empty value.
                 let span = self
-                    .peek_token()
-                    .ok()
-                    .flatten()
+                    .peek_token()?
                     .map_or_else(Span::default, |t| t.atom.span);
                 self.state = ParserState::BlockMappingKey;
                 Ok(Some(Self::emit_empty_scalar(span)))
@@ -955,11 +962,10 @@ where
             }
             _ => {
                 // No more BlockEntry tokens — sequence is done.
-                let span = self
-                    .peek_token()
-                    .ok()
-                    .flatten()
-                    .map_or_else(Span::default, |t| t.atom.span);
+                let span = self.peek_token()?.map_or_else(Span::default, |t| Span {
+                    start: t.atom.span.start,
+                    end: t.atom.span.start,
+                });
                 self.state = self.pop_state();
                 Ok(Some(Event::SequenceEnd { span }))
             }
@@ -1104,9 +1110,7 @@ where
         // directly to BlockNode with FlowSequenceEntryMappingValue pushed.
         // But if we enter here, treat it as empty key.
         let span = self
-            .peek_token()
-            .ok()
-            .flatten()
+            .peek_token()?
             .map_or_else(Span::default, |t| t.atom.span);
         self.state = ParserState::FlowSequenceEntryMappingValue;
         Ok(Some(Self::emit_empty_scalar(span)))
@@ -1147,9 +1151,7 @@ where
             _ => {
                 // No `:` — empty value.
                 let span = self
-                    .peek_token()
-                    .ok()
-                    .flatten()
+                    .peek_token()?
                     .map_or_else(Span::default, |t| t.atom.span);
                 self.state = ParserState::FlowSequenceEntryMappingEnd;
                 Ok(Some(Self::emit_empty_scalar(span)))
@@ -1167,14 +1169,10 @@ where
     fn parse_flow_sequence_entry_mapping_end(
         &mut self,
     ) -> Result<Option<Event<'input>>, ParseError> {
-        let span = self
-            .peek_token()
-            .ok()
-            .flatten()
-            .map_or_else(Span::default, |t| Span {
-                start: t.atom.span.start,
-                end: t.atom.span.start,
-            });
+        let span = self.peek_token()?.map_or_else(Span::default, |t| Span {
+            start: t.atom.span.start,
+            end: t.atom.span.start,
+        });
         self.state = ParserState::FlowSequenceEntry;
         Ok(Some(Event::MappingEnd { span }))
     }
@@ -1319,9 +1317,7 @@ where
             _ => {
                 // No `:` — empty value.
                 let span = self
-                    .peek_token()
-                    .ok()
-                    .flatten()
+                    .peek_token()?
                     .map_or_else(Span::default, |t| t.atom.span);
                 self.state = ParserState::FlowMappingKey;
                 Ok(Some(Self::emit_empty_scalar(span)))
@@ -1335,9 +1331,7 @@ where
     // y[impl flow.e-scalar]
     fn parse_flow_mapping_empty_value(&mut self) -> Result<Option<Event<'input>>, ParseError> {
         let span = self
-            .peek_token()
-            .ok()
-            .flatten()
+            .peek_token()?
             .map_or_else(Span::default, |t| t.atom.span);
         self.state = ParserState::FlowMappingKey;
         Ok(Some(Self::emit_empty_scalar(span)))

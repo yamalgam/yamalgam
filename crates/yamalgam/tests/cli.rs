@@ -12,7 +12,7 @@ use predicates::prelude::*;
 /// cargo build directories, but works correctly for standard project layouts.
 #[allow(deprecated)]
 fn cmd() -> Command {
-    Command::cargo_bin(env!("CARGO_PKG_NAME")).unwrap()
+    Command::cargo_bin("yg").unwrap()
 }
 
 // =============================================================================
@@ -76,11 +76,29 @@ fn version_only_prints_bare_version() {
 #[test]
 fn info_shows_package_name_and_version() {
     cmd()
-        .arg("info")
+        .args(["info", "--format", "text"])
         .assert()
         .success()
         .stdout(predicate::str::contains(env!("CARGO_PKG_NAME")))
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn info_auto_outputs_json_when_piped() {
+    let output = cmd().arg("info").assert().success();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("piped info output should be valid JSON");
+    assert_eq!(json["name"], env!("CARGO_PKG_NAME"));
+}
+
+#[test]
+fn info_format_json_outputs_valid_json() {
+    let output = cmd().args(["info", "--format", "json"]).assert().success();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("info --format json should output valid JSON");
+    assert_eq!(json["name"], env!("CARGO_PKG_NAME"));
 }
 
 #[test]
@@ -112,7 +130,7 @@ fn info_help_shows_command_options() {
         .args(["info", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--json"));
+        .stdout(predicate::str::contains("--format"));
 }
 
 // =============================================================================
@@ -162,24 +180,6 @@ fn color_never_accepted() {
 // =============================================================================
 // Error Cases
 // =============================================================================
-
-#[test]
-fn no_subcommand_shows_help() {
-    // arg_required_else_help makes clap print help to stderr and exit 2
-    cmd()
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("Usage:"));
-}
-
-#[test]
-fn invalid_subcommand_shows_error() {
-    cmd()
-        .arg("not-a-command")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("error:"));
-}
 
 #[test]
 fn invalid_flag_shows_error() {

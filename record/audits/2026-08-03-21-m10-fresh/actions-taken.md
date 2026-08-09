@@ -1,0 +1,931 @@
+---
+audit: 2026-08-03-21-m10-fresh
+last_updated: 2026-08-04
+status:
+  fixed: 42
+  mitigated: 3
+  accepted: 1
+  disputed: 0
+  deferred: 1
+  open: 0
+---
+
+# Actions Taken: M10 milestone surface — 24 commits on branch m10 Yg Cli vs main (merge Base 6e3a646): the new yamalgam Query crate, the yg CLI, and M10's yamalgam Core tag Resolution additions
+
+Summary of remediation status for the [2026-08-03 M10 milestone surface — 24 commits on branch m10-yg-cli vs main (merge-base 6e3a646): the new yamalgam-query crate, the yg CLI, and M10's yamalgam-core tag-resolution additions audit](README.md).
+
+---
+
+## 2026-08-03 — Unsafe YAML tag replay rejected
+
+**Disposition:** fixed
+**Addresses:** [emitter-replays-tags-verbatim](README.md#emitter-replays-tags-verbatim)
+**Commit:** b7282b6c1d7f23199b756739d1cb18a576abba17
+**Author:** Codex
+
+Added a representation-aware tag validator in
+`crates/yamalgam-query/src/value.rs` and applied it at both metadata
+boundaries. `set_tag` now rejects tag strings that cannot be emitted safely,
+while the YAML emitter omits unsafe tag metadata decoded from hostile input
+instead of replaying it as YAML structure.
+
+Regression tests cover the percent-decoded newline injection path and invalid
+`set_tag` arguments. Existing local and core tag round trips remain covered by
+the emitter suite.
+
+---
+
+## 2026-08-03 — Alias materialization bounded
+
+**Disposition:** mitigated
+**Addresses:** [explode-aliases-unbounded-expansion](README.md#explode-aliases-unbounded-expansion)
+**Commit:** e95ce8b19b087d84a08ba63d77d587e799600608
+**Author:** Codex
+
+Threaded the active `ResourceLimits` into `explode_aliases` and made expansion
+fallible. A per-invocation budget now enforces logical alias expansions, total
+materialized collection entries, and recursion depth before copying the value
+tree. Focused tests exercise all three limits, and the complete
+`yamalgam-query` suite remains green.
+
+The finding is mitigated rather than fixed because `Display for YamlVal` still
+walks the logical alias tree without a rendering budget. A follow-up action
+must bound that error-formatting path before this finding can be closed.
+
+---
+
+## 2026-08-03 — Runtime value display bounded
+
+**Disposition:** fixed
+**Addresses:** [explode-aliases-unbounded-expansion](README.md#explode-aliases-unbounded-expansion)
+**Commit:** 133bf2cb994f50558919505d1452d895554637f3
+**Author:** Codex
+
+Superseded the earlier mitigation by routing `Display for YamlVal` through a
+bounded buffer using the active runtime limits. Error formatting now stops
+walking once `max_output_bytes` is reached and substitutes a truncation marker
+instead of descending beyond `max_depth`; unlimited profiles retain the prior
+behavior.
+
+Regression tests exercise both the logical alias-tree output cap and recursive
+depth truncation. Together with commit `e95ce8b`, this closes both amplification
+paths recorded by the finding.
+
+---
+
+## 2026-08-03 — Scalar text allocation shared
+
+**Disposition:** fixed
+**Addresses:**
+[build-raw-metadata-duplicates-every-scalar](README.md#build-raw-metadata-duplicates-every-scalar),
+[resolver-allocates-throwaway-string-per-scalar](README.md#resolver-allocates-throwaway-string-per-scalar)
+**Commit:** f236453974b937c6fb15e7a12774ba6f209db3f8
+**Author:** Codex
+
+The builder now allocates scalar source text once as `Rc<str>` and shares that
+allocation between `Data::Str` and `Meta::raw`. Typed scalars retain the single
+raw-text allocation while storing their resolved non-string value.
+
+Plain and explicitly typed scalar paths consult the allocation-free
+`resolves_as_string` predicate before full resolution, avoiding the temporary
+owned `Value::String` that was immediately copied and dropped. A pointer
+identity regression test covers plain, quoted, explicitly string-tagged, and
+failed typed-tag string paths.
+
+---
+
+## 2026-08-03 — Extended control characters escaped
+
+**Disposition:** fixed
+**Addresses:**
+[emitter-omits-c1-control-escapes](README.md#emitter-omits-c1-control-escapes)
+**Commit:** 26c243fcf8c045277e4dbb43c28034c8e93d96b2
+**Author:** Codex
+
+YAML double-quoted output now escapes DEL and the C1 control range as `\xNN`,
+and classifies U+2028/U+2029 for emission as `\L`/`\P`. JSON output mirrors the
+extended-control handling with `\u00NN` escapes.
+
+Regression tests cover both emitters at the control-range boundaries, NEL,
+and the Unicode line and paragraph separators. The full `yamalgam-query` suite
+and clippy gate remain green.
+
+---
+
+## 2026-08-03 — YAML document markers quoted
+
+**Disposition:** fixed
+**Addresses:**
+[emitter-plain-document-end-marker](README.md#emitter-plain-document-end-marker)
+**Commit:** ba9243024ad96c1d35d7a8aadf25ffedf09e728e
+**Author:** Codex
+
+The centralized scalar classifier now requires quoting for exact `...` and
+`---` strings and marker prefixes followed by whitespace. Root scalar output
+can no longer be reinterpreted as a YAML document boundary.
+
+A focused regression test asserts quoted output and parse/emit round trips for
+both document markers and their followed-by-text forms. All 94 query tests and
+the clippy gate pass.
+
+---
+
+## 2026-08-03 — Runtime value growth bounded
+
+**Disposition:** fixed
+**Addresses:**
+[growth-operators-bypass-runtime-limits](README.md#growth-operators-bypass-runtime-limits)
+**Commit:** ac28cf65681e061f5adbc672ff6fa49992b9908a
+**Author:** Codex
+
+String concatenation and sequence/mapping addition now check their prospective
+sizes before allocating or extending. Fallible mapping and `map_values`
+constructors enforce the same active collection cap incrementally.
+
+For jaq's infallible array-construction contract, the runtime now stops at the
+first over-limit item, records a scoped pending error, and makes the engine
+return that violation before accepting output. Tests cover all five growth
+paths under deliberately small limits; all 96 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — `tostring` failures propagated
+
+**Disposition:** fixed
+**Addresses:**
+[into-string-substitutes-error-text-as-data](README.md#into-string-substitutes-error-text-as-data)
+**Commit:** 9de9e1726507a664f9e5709a0f7a5bd5b618c5c0
+**Author:** Codex
+
+`ValT::into_string` now renders with the active invocation's limits and records
+conversion failures in the scoped runtime error channel. The engine rejects
+that pending error before visiting output, so error text can no longer flow
+through a successful filter as ordinary string data.
+
+Regression tests cover duplicate JSON key conversion and an invocation-specific
+depth cap, assert that no output reaches the visitor, and verify a runtime error
+is returned. All 98 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — Input error classes preserved
+
+**Disposition:** fixed
+**Addresses:**
+[input-error-class-flattened-through-string](README.md#input-error-class-flattened-through-string)
+**Commit:** 80fe53bbc81781ec3a3f50ec84990a29b592f876
+**Author:** Codex
+
+The jaq input adapter now pairs its required string error with the original
+typed `YgError` and restores that variant when the outer driver or native
+`input`/`inputs` path surfaces the matching failure. `InputRead` therefore
+retains its distinct CLI exit class instead of becoming parse/runtime failure.
+
+The generic `From<String> for YgError` conversion was removed so future call
+sites must choose a class explicitly. Tests cover driver and native-input
+paths plus a caught input error followed by an unrelated runtime error. All
+100 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — Resulting value depth enforced
+
+**Disposition:** fixed
+**Addresses:**
+[value-tree-recursion-has-no-depth-bound](README.md#value-tree-recursion-has-no-depth-bound)
+**Commit:** 288d13136722771894dace707ba6ae29eb434605
+**Author:** Codex
+
+An iterative `YamlVal` worklist now validates resulting tree depth. The builder
+applies it before anchor insertion, so syntactically shallow alias chains
+cannot create deeper values than the configured limit.
+
+Infallible jaq array construction records over-depth failures and substitutes
+a safe value before recursive operations can continue; mapping construction
+and every engine output are checked as well. Tests cover alias-expanded depth,
+deep filter construction before comparison, and visitor-boundary validation.
+All 103 query tests and clippy pass.
+
+---
+
+## 2026-08-03 — Strict depth CLI contract aligned
+
+**Disposition:** fixed
+**Addresses:**
+[value-tree-recursion-has-no-depth-bound](README.md#value-tree-recursion-has-no-depth-bound)
+**Commit:** b212751d5417339f308cf1ce5f747b90e3ad1cfc
+**Author:** Codex
+
+Updated the strict-mode CLI regression contract to require rejection when a
+filter constructs an over-depth value and later discards it. This pins the
+construction-time guard added by commit `288d131` and confirms that no partial
+placeholder reaches stdout.
+
+---
+
+## 2026-08-03 — CLI output buffered
+
+**Disposition:** fixed
+**Addresses:**
+[cli-output-is-unbuffered](README.md#cli-output-is-unbuffered)
+**Commit:** 6be2063a16b0d4fc43354b3f58866ed4aa011005
+**Author:** Codex
+
+Standard output now passes through `BufWriter` rather than relying on the
+line-buffered stdout lock. In-place output uses the same buffering around the
+temporary file and explicitly flushes before `sync_all`, preserving the
+durability boundary before replacement.
+
+All 40 `yg` CLI integration tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — JSON emitter allocations reduced
+
+**Disposition:** fixed
+**Addresses:**
+[json-emitter-allocates-indent-and-triple-allocates-keys](README.md#json-emitter-allocates-indent-and-triple-allocates-keys)
+**Commit:** ca7c2e8f28ae20d39449974af5266479bd682984
+**Author:** Codex
+
+JSON indentation, quoted strings, integers, and floats now append directly to
+the final output buffer instead of allocating intermediate strings. Duplicate
+object-name detection stores borrowed `Rc<str>` key text through `Cow<str>`;
+only non-string YAML keys allocate their required JSON name.
+
+The five focused JSON emitter tests, all 103 `yamalgam-query` tests, and the
+workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Uncolored YAML scalar copies removed
+
+**Disposition:** fixed
+**Addresses:**
+[yaml-emitter-paint-copies-every-scalar-when-color-is-off](README.md#yaml-emitter-paint-copies-every-scalar-when-color-is-off)
+**Commit:** 4246b2821012818c593616e24d3bd40b37f3137c
+**Author:** Codex
+
+Rendered YAML scalar text now flows through `Cow<str>`. With color disabled,
+plain strings and literal lines remain borrowed and already-formatted scalar
+text is reused; the paint step no longer allocates or copies it. ANSI-enabled
+output still creates the required wrapped value.
+
+All 14 focused YAML emitter tests, the CLI color regression, all 103
+`yamalgam-query` tests, and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — YAML boolean extraction distinguished
+
+**Disposition:** fixed
+**Addresses:**
+[as-bool-inherent-shadows-jaq-truthiness](README.md#as-bool-inherent-shadows-jaq-truthiness)
+**Commit:** b330d75ab54e5c8105b378dc3dff77723a6be39f
+**Author:** Codex
+
+The resolved YAML boolean extractor is now `as_boolean`, leaving natural
+`.as_bool()` syntax to select `jaq_core::ValT` truthiness when that trait is in
+scope. The `jaq_std::ValT::as_f64` implementation delegates to the inherent
+numeric accessor rather than maintaining a second match.
+
+A compile-failing RED test captured the original method shadow. Focused trait
+and accessor regressions, all 103 `yamalgam-query` tests, and the workspace
+Clippy gate pass after the rename.
+
+---
+
+## 2026-08-03 — Value storage representation sealed
+
+**Disposition:** fixed
+**Addresses:**
+[internal-value-representation-is-public](README.md#internal-value-representation-is-public)
+**Commit:** 7e9d425c13bf2cccbfa27f0e7bee575371ee2cef
+**Author:** Codex
+
+The `value` module is now crate-private, so `Data`, `YgSeq`, `YgMap`, and their
+storage choices cannot be named downstream. The supported `YamlVal`, `Meta`,
+and `NodeStyle` API remains available through the crate-root re-exports.
+
+A compile-fail doctest was RED while `value::Data` remained importable and now
+pins the sealed boundary. The doctest, all 103 `yamalgam-query` tests, and the
+workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Query execution state borrowed
+
+**Disposition:** fixed
+**Addresses:**
+[run-records-static-bound-forces-clones](README.md#run-records-static-bound-forces-clones)
+**Commit:** 3dddc26af8b0d3399d4b253a9892caa381e44b10
+**Author:** Codex
+
+`run_records` now accepts a borrowed `RunCtx` and an input iterator with its
+actual lifetime. Deferred inputs borrow the file list, arguments, and loader
+configuration instead of owning clones.
+
+`cmd_query` constructs one run context and reuses it for normal output and
+every in-place file, removing the per-file context allocation and repeated
+configuration and variable clones. All 40 `yg` CLI integration tests and the
+workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Query output options typed
+
+**Disposition:** fixed
+**Addresses:**
+[three-bool-parameters-at-command-boundary](README.md#three-bool-parameters-at-command-boundary)
+**Commit:** 34dd75cd5502bcdd483dd7b5472e132c47019066
+**Author:** Codex
+
+The query command boundary now accepts one named `RunOptions` value containing
+an `OutputMode`. JSON and YAML are distinct variants, and only the YAML variant
+can carry color state; quiet remains a named field.
+
+The typed output mode is resolved once in `main` and threaded through in-place
+and record execution, removing the repeated positional boolean pairs and the
+`color && !json_output` invariant. All 40 `yg` CLI integration tests and the
+workspace Clippy gate pass.
+
+---
+
+## 2026-08-03 — Librebar features explicitly scoped
+
+**Disposition:** fixed
+**Addresses:**
+[librebar-default-features-not-disabled](README.md#librebar-default-features-not-disabled)
+**Commit:** 57e207a2122d71b8982e6deb945d24c770033f48
+**Author:** Codex
+
+The librebar dependency now disables default features and explicitly enables
+only the four modules yamalgam uses: `cli`, `config`, `logging`, and
+`diagnostics`. The resolved graph no longer enables librebar `default`,
+`cache`, or `crash`; its unused `base64` and `tempfile` edges left the lockfile
+entry.
+
+All 86 `yamalgam` package tests and the workspace Clippy and Cargo-deny gates
+pass. Cargo-deny reports only its existing policy warnings.
+
+---
+
+## 2026-08-03 — Config parser swap bounded by publication
+
+**Disposition:** deferred
+**Addresses:**
+[yg-ships-competing-yaml-parser-for-its-own-config](README.md#yg-ships-competing-yaml-parser-for-its-own-config)
+**Commit:** 05587d99111d54aaa1d7940d8a7cac1a74e43d32
+**Author:** Codex
+
+ADR 0008 accepts the existing Librebar YAML backend only as an interim and ties
+its removal to the post-M10 yamalgam publication milestone. The chosen
+pluggable-backend swap remains unchanged; this remediation does not invent a
+second cross-repository integration.
+
+Mutating Just dependency updates now restore `serde-saphyr` and
+`granit-parser` to the audited 1.0.0 versions. Moving either pin requires an
+explicit edit and review. The ADR passes bito completeness and readability at
+grade 9.8, and Just and Cargo dry-runs confirm the update guard and pins.
+
+---
+
+## 2026-08-04 — Jaq time cost explicitly accepted
+
+**Disposition:** accepted
+**Addresses:**
+[jaq-std-time-feature-bundles-tzdb](README.md#jaq-std-time-feature-bundles-tzdb)
+**Commit:** 3d6eab9be30e026275a05726147429907846961b
+**Author:** Codex
+
+Disabling `jaq-std`'s `time` feature made `yamalgam-query` fail to compile:
+jaq-std 3.0.1 exposes its aggregate `funs()` registry only when all six
+supplementary features are active, and its non-time registries are private.
+Using only `base_funs()` would remove the format, log, math, and regex filters
+that yg already exposes and tests.
+
+The manifest now disables Cargo defaults and names the complete six-feature
+set explicitly. ADR 0009 records the measured `jiff` cost and the revisit
+condition rather than forking or copying upstream internals. All 103 query
+tests and the workspace Clippy and Cargo-deny gates pass; Cargo-deny reports
+only its existing policy warnings.
+
+---
+
+## 2026-08-04 — Native JSON parsing enforced
+
+**Disposition:** fixed
+**Addresses:**
+[serde-json-redundant-in-yaml-native-engine](README.md#serde-json-redundant-in-yaml-native-engine)
+**Commit:** c3f59d353bc26bf83e42232c8cbc67f12d4e8f7c
+**Author:** Codex
+
+`fromjson` now validates one strict JSON value without constructing a second
+DOM, then materializes it through yamalgam's scanner, parser, and event builder
+under `TagResolution::Json`. Depth, decoded scalar and key sizes, and
+per-collection entry counts are checked before the next child is built.
+
+The native scanner now decodes JSON-compatible UTF-16 surrogate pairs, and
+JSON number resolution preserves the former `i64`/finite-`f64` boundary.
+`serde_json` moved to dev-dependencies as a differential oracle; the normal
+`yamalgam-query` graph no longer contains it, and yg no longer enables its
+`preserve_order` feature. All 361 scanner, core, and query tests pass,
+including comparison across more than 500 jq-manual JSON texts, along with the
+workspace Clippy and Cargo-deny gates. Cargo-deny reports only its existing
+policy warnings.
+
+---
+
+## 2026-08-04 — Runtime constructor limits pinned
+
+**Disposition:** fixed
+**Addresses:**
+[runtime-limits-cover-three-call-sites](README.md#runtime-limits-cover-three-call-sites)
+**Commit:** 94c7bb0eb645313ae1145fb2960a8e6aaf9591ca
+**Author:** Codex
+
+The growth-limit implementation already extended active collection and scalar
+budgets beyond the three original call sites: fallible constructors now return
+errors directly, while jaq's infallible sequence constructor records its first
+violation in scoped runtime state. The engine drains that pending error before
+accepting output and after result exhaustion.
+
+A focused contract test now proves `[range(4)]` under a three-item limit
+returns a collection-size error and invokes the output visitor zero times, so
+the internally truncated placeholder cannot escape as successful data. All
+111 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Environment access made optional
+
+**Disposition:** fixed
+**Addresses:**
+[env-access-always-compiled-in](README.md#env-access-always-compiled-in)
+**Commit:** 5ce4cad5a95d30dfe8e6f89dbac89ed15c27414d
+**Author:** Codex
+
+The CLI now exposes `--no-env`, which selects the query engine's existing
+`CompileOptions::sandboxed()` capability policy before compiling the filter.
+Default invocations retain jq-compatible `env` behavior; restricted
+invocations omit the native entirely and fail at filter compilation rather
+than reading process state.
+
+The end-to-end test sets a sentinel environment variable, proves default
+access, then proves `--no-env` exits with the filter-compile code without
+printing the sentinel. All 87 `yamalgam` package tests and the workspace
+Clippy gate pass.
+
+---
+
+## 2026-08-04 — Halt exit-code wraparound removed
+
+**Disposition:** fixed
+**Addresses:**
+[halt-exit-code-truncated-to-u8](README.md#halt-exit-code-truncated-to-u8)
+**Commit:** ab1ce0ee026afdfa8377876f0e81d2876df70cbc
+**Author:** Codex
+
+Halt status conversion now preserves values in the POSIX byte range and maps
+every other out-of-range code to generic failure 255. This retains the
+existing `halt(-1)` behavior while preventing nonzero requests such as
+`halt(256)` from modulo-wrapping to silent shell success.
+
+The CLI regression test pins `halt`, `halt(-1)`, and `halt(256)`, including
+their intentionally empty diagnostics. All 87 `yamalgam` package tests and the
+workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Builder invariants typed separately
+
+**Disposition:** fixed
+**Addresses:**
+[build-invariant-errors-labeled-as-limit](README.md#build-invariant-errors-labeled-as-limit)
+**Commit:** 9def9495dc887f8775b4fbbbc1f769902d79064e
+**Author:** Codex
+
+`BuildError::Invariant` now represents an unexpected event within a node or a
+truncated parser event stream. `BuildError::Limit` is again reserved for
+configured resource-limit breaches, so library callers can distinguish a
+document that needs a different profile from a parser/builder contract bug.
+
+A focused variant test pins the invariant diagnostic and classification. All
+112 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — In-place ownership denial made nonfatal
+
+**Disposition:** fixed
+**Addresses:**
+[in-place-chown-failure-aborts-the-edit](README.md#in-place-chown-failure-aborts-the-edit)
+**Commit:** f398ce260a9b0dc1232f129a1c6f7673c2c4374d
+**Author:** Codex
+
+Unix in-place edits now classify `chown` failures. Permission denial emits a
+warning that the replacement will be owned by the current user and allows the
+already-staged atomic edit to continue; every other ownership I/O error remains
+fatal with the source path in its diagnostic.
+
+A focused unit test pins both policy branches. Permission preservation,
+multi-file staging, and atomic replacement remain unchanged. All 88
+`yamalgam` package tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Unreachable contracts documented
+
+**Disposition:** fixed
+**Addresses:**
+[unreachable-macros-guard-unstated-invariants](README.md#unreachable-macros-guard-unstated-invariants)
+**Commit:** f1ee264820ff8b17a8c033153e133a163204d129
+**Author:** Codex
+
+The four production `unreachable!` arms now state the caller or type contract
+that excludes them: block-collection classification, flow-position scalar
+rendering, collection routing before scalar emission, and the scalar-only
+`TagResolver::resolve_scalar` result contract.
+
+This is a documentation-only closure because the audit independently verified
+the paths are unreachable and did not require a correctness change. All 112
+`yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Unsorted mapping entries borrowed
+
+**Disposition:** fixed
+**Addresses:**
+[mapping-entries-collected-into-vec-per-emit](README.md#mapping-entries-collected-into-vec-per-emit)
+**Commit:** 706e502a93d69f8bff93c280163a00d7da7ce1a9
+**Author:** Codex
+
+Validation and both emitters now share a double-ended mapping-entry iterator
+that borrows `IndexMap` entries on the default unsorted path. Only the explicit
+`sort_keys` path collects and sorts a vector, preserving prior order semantics
+without the common-path allocation.
+
+A focused unit test pins borrowed-versus-sorted iterator selection, while the
+existing YAML and JSON sort tests pin output behavior. All 113
+`yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Emit validation anchor copies removed
+
+**Disposition:** mitigated
+**Addresses:**
+[emit-validation-walks-the-tree-a-second-time](README.md#emit-validation-walks-the-tree-a-second-time)
+**Commit:** bd1d8c7ad66d0567c97affa2f54b80e58f65d0be
+**Author:** Codex
+
+The shared validation walk now retains cloned `Rc<str>` anchor handles instead
+of allocating a new `String` for every anchor name. Alias membership checks
+remain borrowed, so the validation pass no longer copies anchor contents.
+
+The second traversal remains intentionally centralized so YAML and JSON share
+one resource-limit and alias-expansion policy instead of duplicating it across
+two recursive emitters. All 113 `yamalgam-query` tests and the workspace
+Clippy gate pass.
+
+---
+
+## 2026-08-04 — Shallow mappings dropped directly
+
+**Disposition:** fixed
+**Addresses:**
+[ygmap-drop-allocates-a-vec-per-mapping](README.md#ygmap-drop-allocates-a-vec-per-mapping)
+**Commit:** 14d48c002a0e445916b6b1692f3f94429b3310e1
+**Author:** Codex
+
+`YgMap::drop` now detects mappings whose keys and values are all scalars and
+lets their existing `IndexMap` storage drop directly. Mappings containing any
+sequence or mapping still use the iterative value stack, preserving the deep
+collection stack-safety contract.
+
+A focused unit test pins scalar, collection-key, and collection-value path
+selection. All 114 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Substring copies reduced
+
+**Disposition:** fixed
+**Addresses:**
+[substring-values-are-allocated-twice](README.md#substring-values-are-allocated-twice)
+**Commit:** 9eed0ed9f7db566101b89354e1d17f2a14e10b11
+**Author:** Codex
+
+The jaq substring and UTF-8 byte hooks now share a conversion that constructs
+the final `Rc<str>` from the lossy decoder's borrowed string view. Valid UTF-8
+therefore avoids the intermediate owned `String` allocation and copy while
+invalid input retains replacement-character semantics.
+
+A focused test pins both valid and invalid UTF-8 conversion. All 115
+`yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Slice-bound key allocation removed
+
+**Disposition:** fixed
+**Addresses:**
+[slice-bound-keys-allocated-on-every-index](README.md#slice-bound-keys-allocated-on-every-index)
+**Commit:** 46623d17342cd096845b0dc0bda309b6f16c55ef
+**Author:** Codex
+
+`YgMap` now supports an allocation-free borrowed string probe whose hash and
+equivalence match only string-valued `YamlVal` keys. Both slice read/update
+paths and the public `YamlVal::get_str` helper use it instead of constructing
+temporary reference-counted string keys.
+
+A focused test distinguishes borrowed string lookup from a numerically similar
+non-string key. All 116 `yamalgam-query` tests and the workspace Clippy gate
+pass.
+
+---
+
+## 2026-08-04 — Document-at-a-time parsing exposed
+
+**Disposition:** mitigated
+**Addresses:**
+[cli-materializes-every-document-in-a-file-before-emitting](README.md#cli-materializes-every-document-in-a-file-before-emitting)
+**Commit:** 75d86e9a3c9346563775d8468bdb95488919a14d
+**Author:** Codex
+
+The query library now exposes a borrowing `Documents` iterator that owns its
+builder state and yields one owned `YamlVal` per document. The compatible eager
+API is a thin collection over that iterator, so library consumers are no
+longer required to accumulate a whole stream before processing its first
+document.
+
+The CLI still collects each owned input's values because safely storing a
+parser that borrows the same owned `String` needs a separate owned-source
+iterator design. A regression proves a valid first document is delivered
+before a later parse error. All 117 `yamalgam-query` tests and the workspace
+Clippy gate pass.
+
+---
+
+## 2026-08-04 — Mapping keys iterator made concrete
+
+**Disposition:** fixed
+**Addresses:**
+[keys-returns-boxed-trait-object](README.md#keys-returns-boxed-trait-object)
+**Commit:** 15f232cfc6ca275ba9fd3b8fc3ebe081ca58f523
+**Author:** Codex
+
+`YamlVal::keys` now mirrors `entries()` with an optional concrete exact-size
+iterator. Mapping calls no longer allocate or dynamically dispatch, and
+non-mapping values are distinguishable from empty mappings through the return
+type.
+
+Focused assertions pin insertion order and the non-mapping `None` case. All
+117 `yamalgam-query` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Output format connected to emitter dispatch
+
+**Disposition:** fixed
+**Addresses:**
+[emit-opts-mixes-emitter-specific-options](README.md#emit-opts-mixes-emitter-specific-options)
+**Commit:** e1b50b813f2851716eb3e47232e7ec15f21918f3
+**Author:** Codex
+
+The public `EmitFormat` enum now selects a public `emit` dispatch entry point
+over the focused YAML and JSON functions. The CLI maps its resolved output
+mode to that enum once, making format and options part of one emission call
+instead of leaving the enum caller-invisible.
+
+A focused test pins both dispatch branches. All 206 `yamalgam-query` and
+`yamalgam` tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Public query API made non-exhaustive
+
+**Disposition:** fixed
+**Addresses:**
+[public-enums-lack-non-exhaustive](README.md#public-enums-lack-non-exhaustive)
+**Commit:** 9362fa058d9c7c9cb5fe4009819d58d7947df09a
+**Author:** Codex
+
+`BuildError`, `YgError`, `EmitError`, and `EmitOpts` are now non-exhaustive
+before publication. External option construction starts from the provided
+defaults, and the CLI assigns future unknown query errors the runtime failure
+exit class instead of requiring an exhaustive downstream match.
+
+All 206 `yamalgam-query` and `yamalgam` tests and the workspace Clippy gate
+pass.
+
+---
+
+## 2026-08-04 — Resolver string predicate contract defined
+
+**Disposition:** fixed
+**Addresses:**
+[resolves-as-string-overrides-restate-resolution](README.md#resolves-as-string-overrides-restate-resolution)
+**Commit:** 1648144f4dec416bdbc29b0fb2ad1a6e4bf75e89
+**Author:** Codex
+
+The `TagResolver` contract now requires optimized `resolves_as_string`
+overrides to remain observationally equivalent to full scalar resolution.
+The shared regression corpus covers empty and null values, every supported
+boolean and special-float spelling, signed and radix numbers, underscore
+separators, integer overflow, and malformed numeric lookalikes.
+
+The focused equivalence test and all 60 `yamalgam-core` tests pass, and the
+workspace Clippy gate is clean.
+
+---
+
+## 2026-08-04 — Canonical color CLI specified
+
+**Disposition:** fixed
+**Addresses:**
+[yg-color-flags-replaced-without-spec-amendment](README.md#yg-color-flags-replaced-without-spec-amendment)
+**Commit:** ff48ac36392d89e7f77c339c3b6c2998712dcc15
+**Author:** Codex
+
+Draft 01 now specifies the shipped librebar `--color auto|always|never`
+interface instead of the absent `-C`/`-M` pair. Root help explicitly warns
+that `-C` is the global `--chdir` option and points color users to `--color`.
+
+Focused tests cover both color behavior and the help warning. The updated
+specification passes Markdown lint, both focused CLI tests pass, and the
+workspace Clippy gate is clean.
+
+---
+
+## 2026-08-04 — Sandboxed compilation made discoverable
+
+**Disposition:** fixed
+**Addresses:**
+[sandboxed-compile-options-unreachable-from-cli](README.md#sandboxed-compile-options-unreachable-from-cli)
+**Commit:** 6ae38cd46d55d3b1f6637793181f0a2a9aa69f37
+**Author:** Codex
+
+Draft 01 now specifies the shipped `--no-env` path to
+`CompileOptions::sandboxed()` and distinguishes filter capabilities from the
+input resource limits selected by `--strict`. CLI help carries the same
+distinction, while jq-compatible environment access remains the default.
+
+The existing behavior test proves that `--no-env` removes the `env` filter;
+a focused help test now pins discoverability. Both tests, specification
+Markdown lint, and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Deferred M10 spec surfaces identified
+
+**Disposition:** fixed
+**Addresses:**
+[spec-features-deferred-while-spec-text-still-promises-them](README.md#spec-features-deferred-while-spec-text-still-promises-them)
+**Commit:** 4bc9c01ce259fb03c58f4abf087276269af9e8b7
+**Author:** Codex
+
+Draft 01 now exposes its M10 implementation boundary at the canonical entry
+point. Strict comparison is marked pending the draft-02 grammar decision,
+`chomping` is assigned to the Phase 3 CST milestone, and external-resolution
+flags are assigned to M11 / Phase 4.
+
+The section links the existing implementation notes for complete rationale,
+so the future requirements remain intact without appearing shipped. The
+updated specification passes focused Markdown lint.
+
+---
+
+## 2026-08-04 — Resolved type alias explained
+
+**Disposition:** fixed
+**Addresses:**
+[resolved-type-is-an-exact-alias-of-type](README.md#resolved-type-is-an-exact-alias-of-type)
+**Commit:** c72115ebd980e1d252c81f0d41bb2e8fffa6a223
+**Author:** Codex
+
+The `resolved_type` registration now documents that scalars are resolved while
+building `YamlVal`, making the filter an intentional alias of `type` in M10.
+The implementation notes direct draft 02 to remove the alias or define a value
+model capable of representing a distinct result.
+
+A focused regression covers every value kind and values produced by
+`resolve_as`. That test, implementation-notes Markdown lint, and the workspace
+Clippy gate pass.
+
+---
+
+## 2026-08-04 — In-place exclusions documented
+
+**Disposition:** fixed
+**Addresses:**
+[in-place-conflicts-diverge-from-plan-undocumented](README.md#in-place-conflicts-diverge-from-plan-undocumented)
+**Commit:** d56948ccc34f135f3bf52ef643dac52b81fdbb61
+**Author:** Codex
+
+CLI help and the implementation notes now state that `-i` is exclusive with
+null input, slurp, and JSON output. The notes reconcile the superseded plan:
+null/slurp lack coherent per-file replacement semantics, while JSON output
+would silently change a YAML file's format.
+
+The focused help assertion and all 11 in-place CLI tests pass. The updated
+implementation notes pass Markdown lint, and the workspace Clippy gate is
+clean.
+
+---
+
+## 2026-08-04 — Subcommand filter shadowing documented
+
+**Disposition:** fixed
+**Addresses:**
+[subcommand-name-shadowing-not-documented-in-help](README.md#subcommand-name-shadowing-not-documented-in-help)
+**Commit:** e5ef90079f15a25affe5db9c90bd1c194d28f0a9
+**Author:** Codex
+
+Root help now states that leading `doctor` and `info` tokens select
+subcommands. It documents `yg -- FILTER` as the positional escape hatch and
+`.doctor` / `.info` as the mapping-key forms.
+
+Focused regressions pin both the help text and `yg -- doctor` filter parsing.
+Both tests and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — jaq patch updates admitted
+
+**Disposition:** fixed
+**Addresses:**
+[jaq-exact-pins-block-patch-updates](README.md#jaq-exact-pins-block-patch-updates)
+**Commit:** 7abe27b359088e578587103627d277e322bef66d
+**Author:** Codex
+
+The exact jaq pins are now patch-compatible tilde requirements. Patch and
+security fixes can flow through `cargo update`, while minor releases remain
+review-gated because `YamlVal` directly implements jaq's `ValT` / `DataT`
+surface.
+
+Locked metadata still resolves jaq-core 3.1.0 and jaq-std 3.0.1. All 119
+`yamalgam-query` tests, workspace Clippy, and Cargo Deny pass; Cargo Deny emits
+only the repository's existing policy warnings.
+
+---
+
+## 2026-08-04 — Librebar trust boundary recorded
+
+**Disposition:** mitigated
+**Addresses:**
+[librebar-upgrade-expands-trust-boundary](README.md#librebar-upgrade-expands-trust-boundary)
+**Commit:** b47ae9036fb85bf9336a060559b5cb120092abd9
+**Author:** Codex
+
+The manifest and M10 implementation notes now identify `rust-zstd` 0.1.0 and
+`leakguard` 0.8.0 as transitive edges of librebar's explicitly scoped logging
+and diagnostics features. The locked sources contain no unsafe code, and
+neither crate has a Cargo Deny or RustSec advisory.
+
+Residual risk remains in both crates' limited 0.x maintenance history.
+Removing `rust-zstd` requires librebar to split compressed rotation from its
+logging feature; until then, defaults remain disabled, the feature set stays
+explicit, and changes to the locked transitives require review. Locked graph
+checks, Markdown lint, Cargo Deny, and Cargo Audit pass with only the existing
+allowed `dlopen_derive` warning and baseline policy warnings.
+
+---
+
+## 2026-08-04 — Compiler-derived unsafe census added
+
+**Disposition:** fixed
+**Addresses:**
+[geiger-census-produced-no-unsafe-data](README.md#geiger-census-produced-no-unsafe-data)
+**Commit:** 9b93bd5df70bf5d7012f64456f62cd9f5bda76d8
+**Author:** Codex
+
+The repository no longer treats cargo-geiger 0.13 as audit evidence because it
+can exit successfully after an I/O error with no report. `just unsafe-census`
+now applies rustc's syntax-aware `unsafe_code` lint to the locked, normal
+dependency graph shipped by `yg`, with one build job, no compiler wrapper, and
+an isolated target directory.
+
+The first completed census emitted 2,359 unsafe diagnostics across transitive
+dependencies and zero diagnostics in workspace sources. Focused documentation
+lint and the workspace Clippy gate pass.
+
+---
+
+## 2026-08-04 — Cargo Deny feature graph aligned
+
+**Disposition:** fixed
+**Addresses:**
+[deny-advisory-ignore-matches-only-under-all-features](README.md#deny-advisory-ignore-matches-only-under-all-features)
+**Commit:** e60427ec4b20dd21f0488817bfdb3370d5898fa2
+**Author:** Codex
+
+The GitHub Actions Cargo Deny job now resolves `--all-features`, matching both
+repository Just entry points. A policy comment beside `RUSTSEC-2023-0051`
+records why the optional benchmark dependency must remain in the resolved
+graph for the advisory ignore to be exercised.
+
+`actionlint` passes, and `just deny` reports advisories, bans, licenses, and
+sources as OK without an `advisory-not-detected` warning. Its remaining output
+is limited to the repository's existing dependency-policy warnings.

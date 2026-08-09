@@ -15,6 +15,37 @@ permissions:
   contents: read
 
 jobs:
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          cache-key-suffix: docs
+          toolchain: stable
+
+      - name: Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.21"
+          cache: false
+
+      - name: Install mdcode
+        run: go install github.com/szkiba/mdcode@v0.2.0
+
+      - name: Check executable documentation
+        run: scripts/check-yg-doc-examples
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -79,11 +110,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Check dependencies
+      - name: Check workspace dependencies
         uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
         with:
           command: check
-          command-arguments: --config .config/deny.toml
+          arguments: --all-features --locked --config .config/deny.toml
+
+      - name: Check fuzz dependencies
+        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        with:
+          command: check
+          manifest-path: fuzz/Cargo.toml
+          arguments: --all-features --locked --config .config/deny.toml
 
   msrv:
     name: msrv
@@ -137,4 +175,3 @@ jobs:
       - name: cargo check (MSRV)
         if: steps.msrv.outputs.found == 'true'
         run: cargo check --all-targets --all-features
-

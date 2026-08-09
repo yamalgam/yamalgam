@@ -1,41 +1,57 @@
 //! yamalgam CLI
 #![deny(unsafe_code)]
 
+use std::io::IsTerminal as _;
+use std::process::ExitCode;
+
 use anyhow::Context;
 use clap::FromArgMatches;
+use librebar::cli::{ColorChoice, ResolvedOutputFormat};
 use librebar::config::ConfigSources;
 use tracing::debug;
 use yamalgam::config::Config;
 use yamalgam::{Cli, Commands, commands};
 
-fn main() -> anyhow::Result<()> {
+struct MainError {
+    code: u8,
+    source: anyhow::Error,
+}
+
+impl MainError {
+    const fn usage(source: anyhow::Error) -> Self {
+        Self { code: 2, source }
+    }
+
+    const fn runtime(source: anyhow::Error) -> Self {
+        Self { code: 5, source }
+    }
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("yg: {:#}", error.source);
+            ExitCode::from(error.code)
+        }
+    }
+}
+
+fn run() -> Result<ExitCode, MainError> {
     let cli = Cli::from_arg_matches(&yamalgam::command().get_matches())
         .expect("clap mismatch between Cli derive and command()");
 
-    cli.common.apply_color();
-
-    if cli.common.version_only {
-        println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+    if cli
+        .common
+        .apply(env!("CARGO_PKG_VERSION"))
+        .context("failed to apply global CLI options")
+        .map_err(MainError::usage)?
+        .is_exit()
+    {
+        return Ok(ExitCode::SUCCESS);
     }
 
-    // arg_required_else_help ensures we have --version-only or a subcommand
-    let Some(command) = cli.command else {
-        return Ok(());
-    };
-
-    cli.common.apply_chdir().with_context(|| {
-        format!(
-            "failed to change directory to {}",
-            cli.common
-                .chdir
-                .as_deref()
-                .unwrap_or_else(|| std::path::Path::new("?"))
-                .display()
-        )
-    })?;
-
-    let (config, config_sources) = load_config(cli.config.as_deref())?;
+    let (config, config_sources) = load_config(cli.config.as_deref()).map_err(MainError::usage)?;
 
     let log_cfg = librebar::logging::LoggingConfig::from_app_name(env!("CARGO_PKG_NAME"))
         .with_log_dir(
@@ -50,30 +66,59 @@ fn main() -> anyhow::Result<()> {
         config.log_level.as_str(),
     );
     let _guard = librebar::logging::init(&log_cfg, filter)
-        .context("failed to initialize logging/tracing")?;
+        .context("failed to initialize logging/tracing")
+        .map_err(MainError::runtime)?;
+    let subcommand_json = matches!(cli.common.output_format(), ResolvedOutputFormat::Json);
 
     debug!(
         verbose = cli.common.verbose,
         quiet = cli.common.quiet,
-        json = cli.common.json,
+        json = subcommand_json,
         color = ?cli.common.color,
         chdir = ?cli.common.chdir,
         "CLI initialized"
     );
 
-    // Execute command
-    let result = match command {
-        Commands::Doctor(args) => {
-            commands::doctor::cmd_doctor(args, cli.common.json, &config_sources)
+    match cli.command {
+        Some(Commands::Doctor(args)) => {
+            commands::doctor::cmd_doctor(args, subcommand_json, &config_sources)
+                .map_err(MainError::runtime)?;
+            Ok(ExitCode::SUCCESS)
         }
-        Commands::Info(args) => {
-            commands::info::cmd_info(args, cli.common.json, &config, &config_sources)
+        Some(Commands::Info(args)) => {
+            commands::info::cmd_info(args, subcommand_json, &config, &config_sources)
+                .map_err(MainError::runtime)?;
+            Ok(ExitCode::SUCCESS)
         }
-    };
-    if let Err(ref err) = result {
-        tracing::error!(error = %err, "fatal error");
+        None => {
+            // Query output is YAML-native in auto mode, including in pipelines.
+            // r[impl cli.json-output]
+            let output = if cli.query.json_output
+                || matches!(
+                    cli.common.output_format_for(true),
+                    ResolvedOutputFormat::Json
+                ) {
+                commands::query::OutputMode::Json
+            } else {
+                // Librebar 0.4 exposes color as --color auto|always|never.
+                // r[impl cli.color]
+                let color = match cli.common.color {
+                    ColorChoice::Always => true,
+                    ColorChoice::Never => false,
+                    ColorChoice::Auto => std::io::stdout().is_terminal(),
+                };
+                commands::query::OutputMode::Yaml { color }
+            };
+            commands::query::cmd_query(
+                &cli.query,
+                commands::query::RunOptions {
+                    output,
+                    quiet: cli.common.quiet,
+                },
+            )
+            .map_err(MainError::runtime)
+        }
     }
-    result
 }
 
 /// Load configuration: project/user discovery, with `--config` layered on top.

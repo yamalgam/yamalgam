@@ -6,10 +6,33 @@ use std::iter::Peekable;
 
 use serde::de::{self, DeserializeSeed, Visitor};
 use yamalgam_core::value::Value;
-use yamalgam_core::{LoaderConfig, ResourceLimits, Span, TagResolver, Yaml12TagResolver};
-use yamalgam_parser::{Event, ParseError, Parser, ScalarStyle};
+use yamalgam_core::{LoaderConfig, ResourceLimits, Span, TagResolver};
+use yamalgam_parser::{
+    Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver, ScalarStyle,
+};
 
 use crate::error::Error;
+
+fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
+    result.map_err(ResolveError::Parse)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeekEventKind {
+    End,
+    Scalar,
+    Other,
+}
+
+impl From<&Event<'_>> for PeekEventKind {
+    fn from(event: &Event<'_>) -> Self {
+        match event {
+            Event::StreamEnd | Event::DocumentEnd { .. } => Self::End,
+            Event::Scalar { .. } => Self::Scalar,
+            _ => Self::Other,
+        }
+    }
+}
 
 /// A streaming serde `Deserializer` that consumes YAML parser events directly.
 ///
@@ -21,7 +44,7 @@ use crate::error::Error;
 /// defend against Billion Laughs and similar amplification attacks.
 pub struct Deserializer<'input> {
     /// Event source (parser or resolved events), wrapped in Peekable.
-    events: Peekable<Box<dyn Iterator<Item = Result<Event<'input>, ParseError>> + 'input>>,
+    events: Peekable<Box<dyn Iterator<Item = Result<Event<'input>, ResolveError>> + 'input>>,
     /// Tag resolver for plain scalar typing.
     tag_resolver: Box<dyn TagResolver>,
     /// Resource limits for anchor/alias caps and future extensions.
@@ -46,32 +69,56 @@ pub struct Deserializer<'input> {
 }
 
 impl<'input> Deserializer<'input> {
-    /// Create a `Deserializer` from a YAML input string.
+    /// Create a `Deserializer` from a YAML input string with
+    /// [`LoaderConfig::default`] resource limits.
     #[must_use]
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(input: &'input str) -> Self {
-        let parser = Parser::new(input);
-        Self {
-            events: (Box::new(parser) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
-            tag_resolver: Box::new(Yaml12TagResolver),
-            limits: ResourceLimits::none(),
-            finished: false,
-            at_document_start: false,
-            anchors: HashMap::new(),
-            anchor_count: 0,
-            alias_expansions: 0,
-            replay_buffer: VecDeque::new(),
-            stashed_error: None,
-        }
+        Self::from_str_with_config(input, &LoaderConfig::default())
+    }
+
+    /// Create a `Deserializer` from a YAML input string without resource
+    /// limits.
+    ///
+    /// Use only for trusted input. Prefer [`Self::from_str`] for ordinary
+    /// input.
+    #[must_use]
+    pub fn from_str_unchecked(input: &'input str) -> Self {
+        Self::from_str_with_config(input, &LoaderConfig::unchecked())
     }
 
     /// Create a `Deserializer` from a YAML input string with a full
     /// [`LoaderConfig`] (resource limits + tag resolution).
     #[must_use]
     pub fn from_str_with_config(input: &'input str, config: &LoaderConfig) -> Self {
+        Self::with_resolver_and_config(input, NoopResolver, config)
+    }
+
+    /// Create a deserializer with custom event resolver middleware and
+    /// [`LoaderConfig::default`] limits.
+    #[must_use]
+    pub fn with_resolver<R>(input: &'input str, resolver: R) -> Self
+    where
+        R: Resolver<'input> + 'input,
+    {
+        Self::with_resolver_and_config(input, resolver, &LoaderConfig::default())
+    }
+
+    /// Create a deserializer with custom event resolver middleware and a
+    /// caller-selected loader configuration.
+    #[must_use]
+    pub fn with_resolver_and_config<R>(
+        input: &'input str,
+        resolver: R,
+        config: &LoaderConfig,
+    ) -> Self
+    where
+        R: Resolver<'input> + 'input,
+    {
         let parser = Parser::with_config(input, config);
+        let events = ResolvedEvents::new_with_config(parser.map(map_parse_error), resolver, config);
         Self {
-            events: (Box::new(parser) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
+            events: (Box::new(events) as Box<dyn Iterator<Item = _> + 'input>).peekable(),
             tag_resolver: Box::new(config.tag_resolution),
             limits: config.limits.clone(),
             finished: false,
@@ -90,7 +137,9 @@ impl<'input> Deserializer<'input> {
     /// Each call to `Iterator::next()` deserializes one document into `T`.
     /// Iteration stops at `StreamEnd` or on the first error.
     ///
-    /// ```ignore
+    /// ```
+    /// use yamalgam_serde::Deserializer;
+    ///
     /// let docs: Vec<i64> = Deserializer::from_str("---\n42\n---\n99")
     ///     .documents::<i64>()
     ///     .collect::<Result<_, _>>()
@@ -125,7 +174,7 @@ impl<'input> Deserializer<'input> {
                             span: None,
                         })
                     })?
-                    .map_err(|e| self.stash(Error::Parse(e)))?
+                    .map_err(|error| self.stash(Error::from(error)))?
             };
 
             // Skip structural events that serde consumers ignore.
@@ -247,7 +296,10 @@ impl<'input> Deserializer<'input> {
                                     };
                                     self.stash(e)
                                 })?;
-                            self.alias_expansions += 1;
+                            self.alias_expansions =
+                                self.alias_expansions.checked_add(1).ok_or_else(|| {
+                                    self.stash(Error::ResourceOverflow("alias expansion count"))
+                                })?;
                             self.limits
                                 .check_alias_expansions(self.alias_expansions)
                                 .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
@@ -276,7 +328,10 @@ impl<'input> Deserializer<'input> {
                     self.stash(e)
                 })?;
 
-                self.alias_expansions += 1;
+                self.alias_expansions = self
+                    .alias_expansions
+                    .checked_add(1)
+                    .ok_or_else(|| self.stash(Error::ResourceOverflow("alias expansion count")))?;
                 self.limits
                     .check_alias_expansions(self.alias_expansions)
                     .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
@@ -296,7 +351,10 @@ impl<'input> Deserializer<'input> {
 
     /// Register an anchor, checking resource limits.
     fn register_anchor(&mut self, name: String, events: Vec<Event<'input>>) -> Result<(), Error> {
-        self.anchor_count += 1;
+        self.anchor_count = self
+            .anchor_count
+            .checked_add(1)
+            .ok_or_else(|| self.stash(Error::ResourceOverflow("anchor count")))?;
         self.limits
             .check_anchor_count(self.anchor_count)
             .map_err(|m| self.stash(Error::LimitExceeded(m)))?;
@@ -396,7 +454,7 @@ impl<'input> Deserializer<'input> {
             } else {
                 match self.events.next() {
                     Some(Ok(e)) => e,
-                    Some(Err(e)) => return Err(Error::Parse(e)),
+                    Some(Err(error)) => return Err(Error::from(error)),
                     None => return Ok(()),
                 }
             };
@@ -438,22 +496,21 @@ impl<'input> Deserializer<'input> {
     /// Returns `true` if the next event is a scalar that resolves to null,
     /// or if we've reached the end of the document/stream (empty doc = null).
     fn peek_is_null(&mut self) -> Result<bool, Error> {
-        let event = self.peek_event()?;
-        match event {
+        let event = self.next_event()?;
+        let is_null = match &event {
             Event::Scalar { value, style, .. } => {
                 if *style != ScalarStyle::Plain {
-                    return Ok(false);
+                    false
+                } else {
+                    matches!(self.tag_resolver.resolve_scalar(value), Value::Null)
                 }
-                let value = value.clone();
-                Ok(matches!(
-                    self.tag_resolver.resolve_scalar(&value),
-                    Value::Null
-                ))
             }
             // Empty document / stream → null.
-            Event::StreamEnd | Event::DocumentEnd { .. } => Ok(true),
-            _ => Ok(false),
-        }
+            Event::StreamEnd | Event::DocumentEnd { .. } => true,
+            _ => false,
+        };
+        self.replay_buffer.push_front(event);
+        Ok(is_null)
     }
 }
 
@@ -645,14 +702,13 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let event = self.peek_event()?.clone();
-        match event {
-            Event::StreamEnd | Event::DocumentEnd { .. } => {
+        match PeekEventKind::from(self.peek_event()?) {
+            PeekEventKind::End => {
                 // Empty document = null.
                 let _ = self.next_event()?;
                 visitor.visit_unit()
             }
-            Event::Scalar { .. } => {
+            PeekEventKind::Scalar => {
                 let (value, style, span) = self.expect_scalar()?;
                 if style == ScalarStyle::Plain {
                     match self.tag_resolver.resolve_scalar(&value) {
@@ -674,7 +730,8 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                     }))
                 }
             }
-            other => {
+            PeekEventKind::Other => {
+                let other = self.next_event()?;
                 let found = format!("{other:?}");
                 let span = other.span();
                 Err(self.stash(Error::Unexpected {
@@ -789,24 +846,19 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        let event = self.peek_event()?.clone();
-        match event {
+        match self.next_event()? {
             // Unit variant: bare scalar like `Red`
-            Event::Scalar { value, .. } => {
-                let _ = self.next_event()?;
-                visitor.visit_enum(EnumAccess {
-                    de: self,
-                    variant: value,
-                    in_mapping: false,
-                })
-            }
+            Event::Scalar { value, .. } => visitor.visit_enum(EnumAccess {
+                de: self,
+                variant: Some(value),
+                in_mapping: false,
+            }),
             // Newtype/tuple/struct variant: single-key mapping like `Circle: 5.0`
             Event::MappingStart { .. } => {
-                let _ = self.next_event()?; // consume MappingStart
                 let (variant_name, _style, _span) = self.expect_scalar()?;
                 visitor.visit_enum(EnumAccess {
                     de: self,
-                    variant: variant_name,
+                    variant: Some(variant_name),
                     in_mapping: true,
                 })
             }
@@ -936,12 +988,16 @@ fn strip_anchor(event: Event<'_>) -> Event<'_> {
             tag,
             value,
             style,
+            chomp,
+            flags,
             span,
         } => Event::Scalar {
             anchor: None,
             tag,
             value,
             style,
+            chomp,
+            flags,
             span,
         },
         Event::SequenceStart {
@@ -1123,7 +1179,7 @@ impl<'de> de::MapAccess<'de> for &mut MapAccess<'_, 'de> {
 struct EnumAccess<'a, 'de> {
     de: &'a mut Deserializer<'de>,
     /// Variant name, already consumed from the event stream.
-    variant: Cow<'de, str>,
+    variant: Option<Cow<'de, str>>,
     /// `true` if we consumed a `MappingStart` (non-unit variant).
     in_mapping: bool,
 }
@@ -1132,10 +1188,15 @@ impl<'de> de::EnumAccess<'de> for EnumAccess<'_, 'de> {
     type Error = Error;
     type Variant = Self;
 
-    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Error> {
-        let variant = seed.deserialize(VariantNameDeserializer {
-            value: self.variant.clone(),
-        })?;
+    fn variant_seed<V: DeserializeSeed<'de>>(mut self, seed: V) -> Result<(V::Value, Self), Error> {
+        let Some(name) = self.variant.take() else {
+            return Err(self.de.stash(Error::Unexpected {
+                expected: "enum variant name",
+                found: "variant name already consumed".into(),
+                span: None,
+            }));
+        };
+        let variant = seed.deserialize(VariantNameDeserializer { value: name })?;
         Ok((variant, self))
     }
 }
@@ -1262,5 +1323,18 @@ impl<'de> de::Deserializer<'de> for VariantNameDeserializer<'de> {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char bytes byte_buf
         option unit unit_struct newtype_struct seq tuple tuple_struct
         map struct enum ignored_any
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PeekEventKind;
+
+    #[test]
+    fn peek_event_kind_is_a_small_copy_discriminant() {
+        fn assert_copy<T: Copy>() {}
+
+        assert_copy::<PeekEventKind>();
+        assert_eq!(std::mem::size_of::<PeekEventKind>(), 1);
     }
 }
