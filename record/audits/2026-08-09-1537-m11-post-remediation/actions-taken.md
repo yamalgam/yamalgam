@@ -107,3 +107,21 @@ session assignment at 20,000 nested sequence levels on a 128 KiB thread stack.
 A focused mapping regression verifies key order, origin updates, and isolation
 of a shared pre-assignment clone. The M11 design and implementation plan now
 state the stack-safety guarantee.
+
+---
+
+## 2026-08-09 — Closure Verification
+
+All eleven findings are fixed with zero open findings at code-and-ledger commit
+`287d1cc4918ca5a28cd42be0b10323b855b404f9`.
+
+The final closure gates passed at that commit:
+
+- `just check`: formatting, strict all-target/all-feature Clippy, dependency
+  policy, all 2,120 workspace tests, and all doctests
+- `just test-compliance`: all 351 YAML Test Suite cases
+- `just unsafe-census`
+- `just docs-check`
+- `cargo hack check --workspace --each-feature --no-dev-deps`: all 12 workspace
+  packages
+- `cargo machete`: no unused dependencies

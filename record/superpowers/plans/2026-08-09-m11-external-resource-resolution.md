@@ -1726,9 +1726,13 @@ verified HEAD, commands, and results in the handoff instead.
 - [x] `just test-compliance`, `just docs-check`, `just unsafe-census`, and
   `just check` pass at the final HEAD.
 
-Completion evidence (2026-08-09): the final Cased audit ledger records 20 fixed
-findings and zero open findings. At code-and-ledger commit
-`8bae684994bd58e568abef68cb927fd821070454`, `just test-compliance` passed all
-351 cases; `just deny`, `just unsafe-census`, and `just docs-check` passed; and
-`just check` passed clippy, dependency policy, all 2,103 workspace tests, and
-all doctests.
+Completion evidence (2026-08-09): the initial final-review Cased ledger records
+20 fixed findings and zero open findings. The fresh post-remediation Cased
+ledger records another 11 fixed findings and zero open findings. At final
+code-and-ledger commit `287d1cc4918ca5a28cd42be0b10323b855b404f9`,
+`just test-compliance` passed all 351 cases; `just unsafe-census` and
+`just docs-check` passed; `cargo hack check --workspace --each-feature
+--no-dev-deps` passed all 12 workspace packages; `cargo machete` found no
+unused dependencies; and `just check` passed formatting, strict
+all-target/all-feature Clippy, dependency policy, all 2,120 workspace tests,
+and all doctests.
