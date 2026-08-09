@@ -2,12 +2,12 @@
 audit: 2026-08-09-13-m11-final-review
 last_updated: 2026-08-09
 status:
-  fixed: 4
+  fixed: 9
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 16
+  open: 11
 ---
 
 # Actions Taken: M11 External Resource Resolution
@@ -54,3 +54,30 @@ only through normalizing constructors and stored behind immutable `Arc`
 ownership, making every ordinary identity clone constant-time. A compile-fail
 doctest guards the public construction boundary, and unit coverage verifies
 that file and URI clones share their owned storage.
+
+---
+
+## 2026-08-09 — harden filesystem retrieval and discovery
+
+**Disposition:** fixed
+
+**Addresses:**
+[file-policy-checks-race-path-reopen](README.md#file-policy-checks-race-path-reopen),
+[symlink-discovery-skips-alias-policy](README.md#symlink-discovery-skips-alias-policy),
+[recursive-file-discovery-has-no-depth-bound](README.md#recursive-file-discovery-has-no-depth-bound),
+[symlink-aliases-make-glob-results-enumeration-dependent](README.md#symlink-aliases-make-glob-results-enumeration-dependent),
+[discovery-results-do-not-enforce-deterministic-order](README.md#discovery-results-do-not-enforce-deterministic-order)
+
+**Commit:** `ac64840f59559fb6b27c102086771683f85abb01`
+
+**Author:** Codex
+
+Filesystem reads now resolve the configured symlink policy once, open each
+canonical path component without following symlinks, validate the opened file,
+and read at most the configured ceiling plus one byte from that same handle.
+Discovery uses an explicit work stack, lexically sorted directory entries, and
+an active-path cycle set that permits distinct aliases without recursive stack
+growth. Both alias and canonical paths pass policy checks. The session contract
+also sorts and deduplicates results from custom retrievers before aggregation.
+Regression coverage exercises denied aliases, independently selected aliases,
+deep traversal, file-only allow patterns, and unsorted duplicate discoveries.
