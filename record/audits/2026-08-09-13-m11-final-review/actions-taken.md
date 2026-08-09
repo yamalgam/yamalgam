@@ -2,12 +2,12 @@
 audit: 2026-08-09-13-m11-final-review
 last_updated: 2026-08-09
 status:
-  fixed: 18
+  fixed: 19
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 2
+  open: 1
 ---
 
 # Actions Taken: M11 External Resource Resolution
@@ -154,3 +154,25 @@ materialization, and terminal outcome while retaining the per-resource fetch
 edges. Regression coverage exercises single- and multi-document failures,
 structured and rendered secret redaction, and successful and failed collection
 aggregation.
+
+---
+
+## 2026-08-09 — index include mapping merges
+
+**Disposition:** fixed
+
+**Addresses:**
+[include-mapping-merge-is-quadratic](README.md#include-mapping-merge-is-quadratic)
+
+**Commit:** `735fc3e605da71a719208bc23ddfbbd97eccecec`
+
+**Author:** Codex
+
+Mapping aggregation and explicit-parent overrides now use randomized semantic
+fingerprints to locate candidate YAML keys in constant expected time, with
+full semantic equality checks inside each hash bucket to preserve correctness
+under collisions. The implementation preserves first/last/error conflict
+policy, insertion order, duplicate-explicit-key behavior, tag resolution, and
+signed-zero equality. Fingerprint traversal is iterative, and regression
+coverage exercises 10,000 keys, forced collisions, every special semantic
+equality case, and explicit override ordering.
