@@ -2688,7 +2688,6 @@ dependencies = [
  "url",
  "yamalgam-core",
  "yamalgam-parser",
- "yamalgam-scanner",
 ]
 
 [[package]]

@@ -19,7 +19,6 @@ tokio = { version = "1.52", features = ["rt", "sync"] }
 url = "2.5"
 yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-parser = { path = "../yamalgam-parser" }
-yamalgam-scanner = { path = "../yamalgam-scanner" }
 
 [dev-dependencies]
 tempfile = "3.27"
