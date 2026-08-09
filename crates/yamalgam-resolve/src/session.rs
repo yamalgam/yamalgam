@@ -1,6 +1,6 @@
 //! Shared external-resolution session state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::Arc;
 
@@ -57,6 +57,7 @@ pub struct ResolutionSession<R> {
     raw_cache: HashMap<ResourceId, Arc<[u8]>>,
     text_cache: HashMap<ResourceId, Arc<str>>,
     aliases: HashMap<ResourceId, ResourceId>,
+    reserved_anchors: HashSet<String>,
     active: Vec<ResolutionTarget>,
     edges: usize,
     materialized_bytes: usize,
@@ -74,6 +75,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             raw_cache: HashMap::new(),
             text_cache: HashMap::new(),
             aliases: HashMap::new(),
+            reserved_anchors: HashSet::new(),
             active: Vec::new(),
             edges: 0,
             materialized_bytes: 0,
@@ -106,6 +108,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
     ///
     /// Returns a structured [`ResolveError`] on the first failed directive.
     pub fn resolve_root(&mut self, document: OwnedDocument) -> Result<OwnedDocument, ResolveError> {
+        anchors::reserve(&document.root, &mut self.reserved_anchors);
         let origin = document.root.origin.clone();
         self.prime_root(origin, document.clone());
         self.resolve_tree(document.root, ResolutionTrigger::Automatic)
@@ -136,6 +139,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                 None,
             ));
         }
+        anchors::reserve(&node, &mut self.reserved_anchors);
         self.resolve_tree(node, ResolutionTrigger::Explicit(capability))
     }
 
@@ -157,6 +161,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         self.raw_cache.clear();
         self.text_cache.clear();
         self.aliases.clear();
+        self.reserved_anchors.clear();
         self.active.clear();
         self.edges = 0;
         self.materialized_bytes = 0;
@@ -1072,15 +1077,17 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             )
         })?;
         let prefix = format!("yg_r{resource_ordinal}_e{edge_ordinal}_");
-        anchors::namespace(&mut selected, &prefix).map_err(|source| {
-            self.error(
-                ResolutionErrorCategory::NonSelfContainedFragment,
-                capability,
-                span,
-                target_label(&target),
-                Some(Box::new(source)),
-            )
-        })?;
+        anchors::namespace(&mut selected, &prefix, &mut self.reserved_anchors).map_err(
+            |source| {
+                self.error(
+                    ResolutionErrorCategory::NonSelfContainedFragment,
+                    capability,
+                    span,
+                    target_label(&target),
+                    Some(Box::new(source)),
+                )
+            },
+        )?;
 
         self.active.push(target);
         let resolved = self.resolve_tree(selected, trigger);

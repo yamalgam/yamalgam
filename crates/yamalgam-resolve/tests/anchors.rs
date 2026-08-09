@@ -151,6 +151,30 @@ fn two_resources_with_the_same_source_anchor_never_collide() {
 }
 
 #[test]
+fn imported_namespace_avoids_anchor_names_reserved_by_the_root() {
+    let retriever = AnchorRetriever::default();
+    let child = id("memory://shared/child.yaml");
+    retriever.insert(child, "&shared [imported, *shared]\n");
+    let input = concat!(
+        "root: &yg_r2_e1_shared original\n",
+        "imported: {$ref: 'memory://shared/child.yaml'}\n",
+        "root-copy: *yg_r2_e1_shared\n",
+    );
+
+    let output = resolve(retriever, input).unwrap();
+    let imported = mapping_value(&output.root, "imported");
+    let (anchors, aliases) = anchors_and_aliases(imported);
+
+    assert_eq!(anchors, aliases);
+    assert_eq!(anchors.len(), 1);
+    assert_ne!(anchors[0], "yg_r2_e1_shared");
+    assert!(matches!(
+        &mapping_value(&output.root, "root-copy").kind,
+        OwnedKind::Alias { name } if name == "yg_r2_e1_shared"
+    ));
+}
+
+#[test]
 fn selected_fragment_may_use_internal_anchors_but_not_external_ones() {
     let retriever = AnchorRetriever::default();
     let shared = id("memory://shared/fragments.yaml");
@@ -181,6 +205,30 @@ fn selected_fragment_may_use_internal_anchors_but_not_external_ones() {
     assert_eq!(category, ResolutionErrorCategory::NonSelfContainedFragment);
     assert!(target.contains("fragments.yaml#/bad"));
     assert!(reference_chain.is_empty());
+}
+
+#[test]
+fn selected_fragment_rejects_aliases_before_their_in_fragment_definition() {
+    let retriever = AnchorRetriever::default();
+    let shared = id("memory://shared/forward.yaml");
+    retriever.insert(shared, "fragment: [*later, &later retained]\n");
+
+    let error = resolve(
+        retriever,
+        "$ref: 'memory://shared/forward.yaml#/fragment'\n",
+    )
+    .unwrap_err();
+
+    let ResolveError::Resolution {
+        category,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected typed fragment error");
+    };
+    assert_eq!(category, ResolutionErrorCategory::NonSelfContainedFragment);
+    assert!(source.to_string().contains("external anchor later"));
 }
 
 #[test]
