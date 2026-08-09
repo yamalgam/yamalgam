@@ -1261,8 +1261,10 @@ production:
 
     #[test]
     fn configured_noop_composer_rejects_enabled_resolution_policy() {
+        use yamalgam_core::ResolutionMode;
+
         let mut config = LoaderConfig::moderate();
-        config.resolution.include.enabled = true;
+        config.resolution.include.mode = ResolutionMode::Explicit;
 
         assert!(matches!(
             Composer::from_str_with_config("value", &config),

@@ -1,15 +1,20 @@
 //! jaq filter compilation and execution.
 
-use std::cell::RefCell;
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use jaq_core::data::HasLut;
 use jaq_core::load::{self, Arena, File, Loader};
 use jaq_core::{Ctx, DataT, Filter, Lut, Vars, compile};
 use jaq_std::input::{HasInputs, Inputs, RcIter};
-use yamalgam_core::{LoaderConfig, TagResolution};
+use yamalgam_core::{LoaderConfig, ResolutionCapability, TagResolution};
+use yamalgam_parser::{ResolutionErrorCategory, ResolveError};
 
 use crate::error::YgError;
+use crate::resolution::{ResolutionHandle, ResolutionSessionKey, ResolvedInput};
 use crate::value::YamlVal;
 
 /// jaq data-kind marker for YAML values.
@@ -85,8 +90,15 @@ pub struct RunCtx {
     input_meta: RefCell<InputMeta>,
     /// Metadata associated with the most recently pulled input value.
     pending_input_meta: RefCell<InputMeta>,
+    input_resolution: Cell<Option<ResolutionSessionKey>>,
+    pending_input_resolution: Cell<Option<ResolutionSessionKey>>,
     variables: Vec<YamlVal>,
+    resolutions: RefCell<HashMap<ResolutionSessionKey, ResolutionHandle>>,
+    resolution_context: Option<u64>,
+    next_resolution_key: Cell<u64>,
 }
+
+static NEXT_RESOLUTION_CONTEXT: AtomicU64 = AtomicU64::new(1);
 
 impl RunCtx {
     /// Construct a run context.
@@ -96,7 +108,16 @@ impl RunCtx {
             config,
             input_meta: RefCell::new(InputMeta::default()),
             pending_input_meta: RefCell::new(InputMeta::default()),
+            input_resolution: Cell::new(None),
+            pending_input_resolution: Cell::new(None),
             variables: Vec::new(),
+            resolutions: RefCell::new(HashMap::new()),
+            resolution_context: NEXT_RESOLUTION_CONTEXT
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                })
+                .ok(),
+            next_resolution_key: Cell::new(1),
         }
     }
 
@@ -110,6 +131,106 @@ impl RunCtx {
     /// Stage metadata for the next input value yielded to the engine.
     pub fn stage_input_meta(&self, metadata: InputMeta) {
         *self.pending_input_meta.borrow_mut() = metadata;
+        self.pending_input_resolution.set(None);
+    }
+
+    /// Stage the resolution session for the next input value.
+    pub fn stage_input_resolution(&self, resolution: Option<ResolutionSessionKey>) {
+        self.pending_input_resolution.set(resolution);
+    }
+
+    /// Register a loaded value and its retained resolution session.
+    ///
+    /// Pass the returned key to [`Self::stage_input_resolution`] when this
+    /// value is staged for evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`YgError::ResourceOverflow`] if the context or local key space
+    /// is exhausted. Keys are never reused.
+    pub fn register_resolved_input(
+        &self,
+        mut input: ResolvedInput,
+    ) -> Result<(YamlVal, ResolutionSessionKey), YgError> {
+        let key = self.next_resolution_key()?;
+        crate::resolution::assign_session(&mut input.value, key);
+        self.resolutions.borrow_mut().insert(key, input.resolution);
+        Ok((input.value, key))
+    }
+
+    /// Register a retained resolution handle without rewriting value origins.
+    ///
+    /// This supports constructed aggregate roots whose existing children must
+    /// keep their source-specific sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`YgError::ResourceOverflow`] if the context or local key space
+    /// is exhausted. Keys are never reused.
+    pub fn register_resolution(
+        &self,
+        resolution: ResolutionHandle,
+    ) -> Result<ResolutionSessionKey, YgError> {
+        let key = self.next_resolution_key()?;
+        self.resolutions.borrow_mut().insert(key, resolution);
+        Ok(key)
+    }
+
+    fn next_resolution_key(&self) -> Result<ResolutionSessionKey, YgError> {
+        let context = self.resolution_context.ok_or_else(|| {
+            YgError::resource_overflow("resolution context key", "resolution context key overflow")
+        })?;
+        let raw = self.next_resolution_key.get();
+        let next = raw.checked_add(1).ok_or_else(|| {
+            YgError::resource_overflow("resolution session key", "resolution session key overflow")
+        })?;
+        let key = ResolutionSessionKey::registered(context, raw);
+        self.next_resolution_key.set(next);
+        Ok(key)
+    }
+
+    /// Return a clone of a registered resolution handle.
+    #[must_use]
+    pub fn resolution_handle(&self, key: ResolutionSessionKey) -> Option<ResolutionHandle> {
+        self.resolutions.borrow().get(&key).cloned()
+    }
+
+    #[allow(clippy::result_large_err)] // QueryResolver returns the shared typed error directly.
+    pub(crate) fn resolve_value(
+        &self,
+        capability: ResolutionCapability,
+        value: YamlVal,
+    ) -> Result<YamlVal, ResolveError> {
+        if !self.config.resolution.allows_explicit(capability) {
+            return Err(crate::runtime_resolution::resolution_error(
+                ResolutionErrorCategory::DisabledCapability,
+                capability,
+                "<query value>",
+            ));
+        }
+        let value_session = value
+            .meta()
+            .and_then(|metadata| metadata.origin.as_ref())
+            .map(|origin| origin.session)
+            .filter(|key| *key != ResolutionSessionKey::UNREGISTERED);
+        let active_session = self.input_resolution.get();
+        let key = value_session.or(active_session).ok_or_else(|| {
+            crate::runtime_resolution::resolution_error(
+                ResolutionErrorCategory::MissingBase,
+                capability,
+                "<query value>",
+            )
+        })?;
+        let handle = self.resolution_handle(key).ok_or_else(|| {
+            crate::runtime_resolution::resolution_error(
+                ResolutionErrorCategory::InvalidResource,
+                capability,
+                "<unknown query session>",
+            )
+        })?;
+        let mut resolved = handle.borrow_mut().resolve_value(capability, value)?;
+        crate::resolution::assign_session(&mut resolved, key);
+        Ok(resolved)
     }
 
     pub(crate) fn input_meta(&self) -> std::cell::Ref<'_, InputMeta> {
@@ -118,6 +239,8 @@ impl RunCtx {
 
     fn activate_pending_input_meta(&self) {
         *self.input_meta.borrow_mut() = self.pending_input_meta.borrow().clone();
+        self.input_resolution
+            .set(self.pending_input_resolution.get());
     }
 
     /// Return the active schema's CLI spelling.
@@ -171,12 +294,13 @@ pub fn compile_filter_with_options(
     let arena = Arena::default();
     let definitions = jaq_core::defs().chain(jaq_std::defs()).chain(yg_defs());
     let loader = Loader::new(definitions);
+    let code = alias_include_filter(code);
     let modules = loader
         .load(
             &arena,
             File {
                 path: "<filter>",
-                code,
+                code: code.as_ref(),
             },
         )
         .map_err(|errors| YgError::FilterSyntax(render_load_errors(errors)))?;
@@ -190,6 +314,105 @@ pub fn compile_filter_with_options(
         .with_global_vars(variables.iter().map(String::as_str))
         .compile(modules)
         .map_err(|errors| YgError::FilterCompile(render_compile_errors(errors)))
+}
+
+fn alias_include_filter(code: &str) -> Cow<'_, str> {
+    const FILTER: &str = "include";
+    const ALIAS: &str = "yginc__";
+    let bytes = code.as_bytes();
+    let mut output = None::<String>;
+    let mut index = 0;
+    let mut string = false;
+    let mut escaped = false;
+    let mut comment = false;
+    let mut interpolations = Vec::<usize>::new();
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if comment {
+            if byte == b'\n' {
+                comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' && bytes.get(index + 1) == Some(&b'(') {
+                interpolations.push(1);
+                string = false;
+                index += 2;
+                continue;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'#' {
+            comment = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            string = true;
+            index += 1;
+            continue;
+        }
+        if let Some(depth) = interpolations.last_mut() {
+            if byte == b'(' {
+                *depth = depth.saturating_add(1);
+                index += 1;
+                continue;
+            }
+            if byte == b')' {
+                if *depth == 1 {
+                    interpolations.pop();
+                    string = true;
+                } else {
+                    *depth -= 1;
+                }
+                index += 1;
+                continue;
+            }
+        }
+        if bytes[index..].starts_with(FILTER.as_bytes())
+            && is_identifier_boundary(bytes, index.wrapping_sub(1))
+            && is_identifier_boundary(bytes, index + FILTER.len())
+            && is_filter_position(bytes, index, index + FILTER.len())
+        {
+            let rewritten = output.get_or_insert_with(|| code.to_owned());
+            rewritten.replace_range(index..index + FILTER.len(), ALIAS);
+            index += ALIAS.len();
+            continue;
+        }
+        index += 1;
+    }
+    output.map_or(Cow::Borrowed(code), Cow::Owned)
+}
+
+fn is_identifier_boundary(bytes: &[u8], index: usize) -> bool {
+    bytes
+        .get(index)
+        .is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+}
+
+fn is_filter_position(bytes: &[u8], start: usize, end: usize) -> bool {
+    let previous = bytes[..start]
+        .iter()
+        .rfind(|byte| !byte.is_ascii_whitespace())
+        .copied();
+    if matches!(previous, Some(b'.' | b'$')) {
+        return false;
+    }
+    let next = bytes[end..]
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .copied();
+    !matches!(next, Some(b'"' | b':'))
 }
 
 /// Run a compiled filter over input values and visit every output.
@@ -267,8 +490,17 @@ where
             let output: YamlVal = output.map_err(|error| match error.get_err() {
                 Ok(error) => {
                     let message = error.to_string();
+                    let error_value = error.into_val();
                     E::from(
                         take_input_error(&pending_input_error, &message)
+                            .or_else(|| {
+                                crate::runtime_resolution::take_error(&error_value).map(|error| {
+                                    contextualize_runtime_error(
+                                        context,
+                                        YgError::runtime_resolution(error, message.clone()),
+                                    )
+                                })
+                            })
                             .or_else(|| {
                                 crate::runtime_limits::take_error().map(|error| {
                                     contextualize_runtime_error(context, pending_error(error))
@@ -390,6 +622,20 @@ fn contextualize_runtime_error(context: &RunCtx, error: YgError) -> YgError {
                 ),
             )
         }
+        YgError::RuntimeResolution { error, message } => {
+            let metadata = context.input_meta.borrow();
+            let source = metadata
+                .filename
+                .as_deref()
+                .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
+            YgError::runtime_resolution(
+                error,
+                format!(
+                    "{source} document {}: {message}",
+                    metadata.document_index + 1
+                ),
+            )
+        }
         error => error,
     }
 }
@@ -437,4 +683,55 @@ fn render_compile_errors(errors: compile::Errors<&str, &str>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ResolvedInput, resolution_handle};
+    use yamalgam_resolve::MemoryRetriever;
+
+    #[test]
+    fn include_alias_rewrites_only_filter_positions() {
+        assert_eq!(alias_include_filter("include"), "yginc__");
+        assert_eq!(alias_include_filter(".x | include"), ".x | yginc__");
+        assert_eq!(
+            alias_include_filter("include \"module\"; ."),
+            "include \"module\"; ."
+        );
+        assert_eq!(alias_include_filter(".include"), ".include");
+        assert_eq!(alias_include_filter("$include"), "$include");
+        assert_eq!(alias_include_filter("{include: .}"), "{include: .}");
+        assert_eq!(
+            alias_include_filter(r#""\(.x | include)""#),
+            r#""\(.x | yginc__)""#
+        );
+        assert_eq!(
+            alias_include_filter("\"include\" # include\n."),
+            "\"include\" # include\n."
+        );
+    }
+
+    #[test]
+    fn resolution_session_keys_fail_closed_on_overflow() {
+        let config = LoaderConfig::unchecked();
+        let context = RunCtx::new(config.clone());
+        context.next_resolution_key.set(u64::MAX);
+        let input = || ResolvedInput {
+            value: YamlVal::null(),
+            resolution: resolution_handle(MemoryRetriever::default(), None, config.clone()),
+        };
+
+        for _ in 0..2 {
+            assert!(matches!(
+                context.register_resolved_input(input()),
+                Err(YgError::ResourceOverflow {
+                    resource: "resolution session key",
+                    ..
+                })
+            ));
+        }
+        assert!(context.resolutions.borrow().is_empty());
+        assert_eq!(context.next_resolution_key.get(), u64::MAX);
+    }
 }

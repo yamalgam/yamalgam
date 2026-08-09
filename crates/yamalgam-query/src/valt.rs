@@ -448,7 +448,11 @@ impl YamlVal {
 }
 
 const fn yaml_value(data: Data) -> YamlVal {
-    YamlVal { data, meta: None }
+    YamlVal {
+        data,
+        meta: None,
+        runtime_resolution_error: None,
+    }
 }
 
 fn range_bounds(range: Range<&YamlVal>) -> ValR<(Option<i64>, Option<i64>), YamlVal> {

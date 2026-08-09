@@ -1,6 +1,9 @@
 //! Error types for the query engine.
 
+use std::sync::Arc;
+
 use yamalgam_core::{LimitExceeded, Span};
+use yamalgam_resolve::ResolutionReport;
 
 /// Error building a YAML value tree from parser events.
 #[derive(Debug, thiserror::Error)]
@@ -74,6 +77,28 @@ pub enum YgError {
         /// prefix.
         message: String,
     },
+    /// Automatic external resolution failed while loading an input document.
+    #[error("{message}")]
+    InputResolution {
+        /// Structured resolver failure.
+        #[source]
+        error: Box<yamalgam_parser::ResolveError>,
+        /// Reports completed before and during the failed document.
+        reports: Vec<ResolutionReport>,
+        /// Rendered diagnostic, including input context when available.
+        message: String,
+    },
+    /// Converting a successfully resolved document into a query value failed.
+    #[error("{message}")]
+    InputConversion {
+        /// Structured conversion failure.
+        #[source]
+        error: Box<Self>,
+        /// Reports completed before and during the failed conversion.
+        reports: Vec<ResolutionReport>,
+        /// Rendered diagnostic, including input context when available.
+        message: String,
+    },
     /// The filter failed while running.
     #[error("{0}")]
     Runtime(String),
@@ -83,6 +108,15 @@ pub enum YgError {
         /// Structured resource-limit failure.
         #[source]
         error: LimitExceeded,
+        /// Rendered diagnostic, including input context when available.
+        message: String,
+    },
+    /// An explicit `include` or `ref` filter failed.
+    #[error("{message}")]
+    RuntimeResolution {
+        /// Structured resolver failure.
+        #[source]
+        error: Arc<yamalgam_parser::ResolveError>,
         /// Rendered diagnostic, including input context when available.
         message: String,
     },
@@ -104,6 +138,93 @@ pub enum YgError {
 }
 
 impl YgError {
+    /// Prefix an input-side error with filename and document context while
+    /// retaining any structured source payload.
+    #[must_use]
+    pub fn with_input_context(self, source: &str, document_index: usize) -> Self {
+        self.with_document_context(document_index)
+            .with_input_source(source)
+    }
+
+    /// Prefix an input-side error with a filename while retaining structured
+    /// source payloads and any document context already present.
+    #[must_use]
+    pub fn with_input_source(self, source: &str) -> Self {
+        let contextualize = |message: String| {
+            if message.starts_with("document ") {
+                format!("{source} {message}")
+            } else {
+                format!("{source}: {message}")
+            }
+        };
+        match self {
+            Self::InputResolution {
+                error,
+                reports,
+                message,
+            } => Self::InputResolution {
+                error,
+                reports,
+                message: contextualize(message),
+            },
+            Self::InputConversion {
+                error,
+                reports,
+                message,
+            } => Self::InputConversion {
+                error,
+                reports,
+                message: contextualize(message),
+            },
+            Self::InputLimit { error, message } => Self::InputLimit {
+                error,
+                message: contextualize(message),
+            },
+            Self::ResourceOverflow { resource, message } => Self::ResourceOverflow {
+                resource,
+                message: contextualize(message),
+            },
+            Self::InputParse(message) => Self::InputParse(contextualize(message)),
+            Self::InputRead(message) => Self::InputRead(contextualize(message)),
+            error => error,
+        }
+    }
+
+    pub(crate) fn with_document_context(self, document_index: usize) -> Self {
+        let contextualize = |message: String| format!("document {}: {message}", document_index + 1);
+        match self {
+            Self::InputResolution {
+                error,
+                reports,
+                message,
+            } => Self::InputResolution {
+                error,
+                reports,
+                message: contextualize(message),
+            },
+            Self::InputConversion {
+                error,
+                reports,
+                message,
+            } => Self::InputConversion {
+                error,
+                reports,
+                message: contextualize(message),
+            },
+            Self::InputLimit { error, message } => Self::InputLimit {
+                error,
+                message: contextualize(message),
+            },
+            Self::ResourceOverflow { resource, message } => Self::ResourceOverflow {
+                resource,
+                message: contextualize(message),
+            },
+            Self::InputParse(message) => Self::InputParse(contextualize(message)),
+            Self::InputRead(message) => Self::InputRead(contextualize(message)),
+            error => error,
+        }
+    }
+
     pub(crate) fn runtime(exception: jaq_core::Exn<'_, crate::YamlVal>) -> Self {
         match exception.get_err() {
             Ok(error) => Self::Runtime(error.to_string()),
@@ -125,6 +246,37 @@ impl YgError {
         Self::RuntimeLimit {
             error,
             message: message.into(),
+        }
+    }
+
+    pub(crate) fn input_resolution(
+        error: yamalgam_parser::ResolveError,
+        message: impl Into<String>,
+        reports: Vec<ResolutionReport>,
+    ) -> Self {
+        Self::InputResolution {
+            error: Box::new(error),
+            reports,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn runtime_resolution(
+        error: Arc<yamalgam_parser::ResolveError>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::RuntimeResolution {
+            error,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn input_conversion(error: Self, reports: Vec<ResolutionReport>) -> Self {
+        let message = error.to_string();
+        Self::InputConversion {
+            error: Box::new(error),
+            reports,
+            message,
         }
     }
 
@@ -187,7 +339,7 @@ fn resolve_error(error: yamalgam_parser::ResolveError) -> YgError {
     match error {
         yamalgam_parser::ResolveError::LimitExceeded(error) => YgError::input_limit(error, message),
         yamalgam_parser::ResolveError::Parse(error) => parse_error(error),
-        _ => YgError::InputParse(message),
+        error => YgError::input_resolution(error, message, Vec::new()),
     }
 }
 

@@ -1,6 +1,6 @@
 //! Resolved-value and presentation-metadata semantics for `YamlVal`.
 
-use yamalgam_core::{LoaderConfig, ResourceLimit, TagResolution};
+use yamalgam_core::{LoaderConfig, ResolutionMode, ResourceLimit, TagResolution};
 use yamalgam_parser::resolve::smallvec;
 use yamalgam_parser::{Event, ResolveError, ResolvedEventBuf, Resolver};
 use yamalgam_query::{
@@ -59,6 +59,7 @@ fn meta_accessors_preserve_yaml_presentation() {
         raw: Some("x".into()),
         alias_of: None,
         scalar_presentation: None,
+        origin: None,
     });
 
     assert_eq!(v.meta().and_then(|m| m.anchor.as_deref()), Some("base"));
@@ -271,7 +272,7 @@ fn resolver_rewrite_reaches_query_builder() {
     assert_eq!(documents, vec![YamlVal::int(42)]);
 
     let mut config = LoaderConfig::moderate().with_tag_resolution(TagResolution::Failsafe);
-    config.resolution.include.enabled = true;
+    config.resolution.include.mode = ResolutionMode::Explicit;
     let documents = parse_str_with_resolver_and_config("magic", RewriteMagic, &config).unwrap();
     assert_eq!(documents, vec![YamlVal::str("42")]);
 }
@@ -302,7 +303,7 @@ fn resolver_failure_stays_typed_in_query_builder() {
 #[test]
 fn configured_noop_query_builder_rejects_enabled_resolution_policy() {
     let mut config = LoaderConfig::moderate();
-    config.resolution.include.enabled = true;
+    config.resolution.include.mode = ResolutionMode::Explicit;
 
     assert!(matches!(
         parse_str_with_config("value", &config),

@@ -19,7 +19,11 @@ fn int_op(
 }
 
 const fn value(data: Data) -> YamlVal {
-    YamlVal { data, meta: None }
+    YamlVal {
+        data,
+        meta: None,
+        runtime_resolution_error: None,
+    }
 }
 
 fn math_error(left: Data, op: Math, right: Data) -> Error<YamlVal> {

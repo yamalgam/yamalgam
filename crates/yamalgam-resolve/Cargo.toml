@@ -1,0 +1,27 @@
+[package]
+name = "yamalgam-resolve"
+description = "External resource resolution for yamalgam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+cap-fs-ext = "4"
+cap-std = "4"
+globset = { version = "0.4", default-features = false }
+librebar = { version = "0.6.0", default-features = false, features = ["http"] }
+percent-encoding = "2.3"
+thiserror = "2.0"
+tokio = { version = "1.52", features = ["rt", "sync"] }
+url = "2.5"
+yamalgam-core = { path = "../yamalgam-core" }
+yamalgam-parser = { path = "../yamalgam-parser" }
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true

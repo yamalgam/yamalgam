@@ -19,6 +19,7 @@ jaq-std = { version = "~3.0.1", default-features = false, features = ["std", "fo
 thiserror = "2.0"
 yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-parser = { path = "../yamalgam-parser" }
+yamalgam-resolve = { path = "../yamalgam-resolve" }
 yamalgam-scanner = { path = "../yamalgam-scanner" }
 
 [dev-dependencies]

@@ -51,7 +51,8 @@ fn run() -> Result<ExitCode, MainError> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let (config, config_sources) = load_config(cli.config.as_deref()).map_err(MainError::usage)?;
+    let (config, config_sources) =
+        load_config(cli.common.config.as_deref()).map_err(MainError::usage)?;
 
     let log_cfg = librebar::logging::LoggingConfig::from_app_name(env!("CARGO_PKG_NAME"))
         .with_log_dir(
@@ -122,7 +123,7 @@ fn run() -> Result<ExitCode, MainError> {
 }
 
 /// Load configuration: project/user discovery, with `--config` layered on top.
-fn load_config(explicit: Option<&camino::Utf8Path>) -> anyhow::Result<(Config, ConfigSources)> {
+fn load_config(explicit: Option<&std::path::Path>) -> anyhow::Result<(Config, ConfigSources)> {
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
     let cwd = camino::Utf8PathBuf::try_from(cwd).map_err(|e| {
         anyhow::anyhow!(
@@ -133,6 +134,9 @@ fn load_config(explicit: Option<&camino::Utf8Path>) -> anyhow::Result<(Config, C
     let mut loader =
         librebar::config::ConfigLoader::new(env!("CARGO_PKG_NAME")).with_project_search(&cwd);
     if let Some(path) = explicit {
+        let path = camino::Utf8Path::from_path(path).ok_or_else(|| {
+            anyhow::anyhow!("configuration path is not valid UTF-8: {}", path.display())
+        })?;
         loader = loader.with_file(path);
     }
     loader

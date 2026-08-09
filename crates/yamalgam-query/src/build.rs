@@ -233,7 +233,12 @@ impl<'config> Builder<'config> {
                 ..
             } => {
                 let raw: Rc<str> = Rc::from(value.as_ref());
-                let data = self.resolve_scalar(Rc::clone(&raw), style, tag.as_deref());
+                let data = resolve_scalar_data(
+                    Rc::clone(&raw),
+                    style,
+                    tag.as_deref(),
+                    self.config.tag_resolution,
+                );
                 self.finish(
                     data,
                     anchor,
@@ -364,20 +369,6 @@ impl<'config> Builder<'config> {
         }
     }
 
-    // r[impl datamodel.schema]
-    fn resolve_scalar(&self, text: Rc<str>, style: ScalarStyle, tag: Option<&str>) -> Data {
-        if let Some(tag) = tag {
-            return resolve_tagged(text, tag);
-        }
-        if style != ScalarStyle::Plain {
-            return Data::Str(text);
-        }
-        if self.config.tag_resolution.resolves_as_string(text.as_ref()) {
-            return Data::Str(text);
-        }
-        core_value_to_data(self.config.tag_resolution.resolve_scalar(text.as_ref()))
-    }
-
     fn finish(
         &mut self,
         data: Data,
@@ -393,11 +384,13 @@ impl<'config> Builder<'config> {
             style: Some(presentation.style),
             raw: presentation.raw,
             scalar_presentation: presentation.scalar,
+            origin: None,
         };
         let node = BuiltNode {
             value: YamlVal {
                 data,
                 meta: Some(Rc::new(meta)),
+                runtime_resolution_error: None,
             },
             subtree_height,
         };
@@ -430,6 +423,22 @@ impl<'config> Builder<'config> {
             key.meta_mut().tag = Some(Rc::from("tag:yaml.org,2002:merge"));
         }
     }
+}
+
+// r[impl datamodel.schema]
+pub(crate) fn resolve_scalar_data(
+    text: Rc<str>,
+    style: ScalarStyle,
+    tag: Option<&str>,
+    resolution: TagResolution,
+) -> Data {
+    if let Some(tag) = tag {
+        return resolve_tagged(text, tag);
+    }
+    if style != ScalarStyle::Plain || resolution.resolves_as_string(text.as_ref()) {
+        return Data::Str(text);
+    }
+    core_value_to_data(resolution.resolve_scalar(text.as_ref()))
 }
 
 fn child_depth(depth: usize) -> Result<usize, BuildError> {
@@ -634,5 +643,16 @@ mod tests {
                 "string data and raw metadata do not share storage for {source:?}"
             );
         }
+    }
+
+    #[test]
+    fn disabled_standard_builder_does_not_construct_a_resolution_session() {
+        crate::runtime_resolution::reset_session_creations();
+
+        let values = parse_str_with_config("value\n", &LoaderConfig::moderate()).unwrap();
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].as_str_content(), Some("value"));
+        assert_eq!(crate::runtime_resolution::session_creations(), 0);
     }
 }

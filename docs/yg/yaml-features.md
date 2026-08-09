@@ -106,6 +106,156 @@ returns an error instead of changing the data.
 The `filename`, `file_index`, and `document_index` filters report where the
 current input came from.
 
+## Load external YAML
+
+External loading is off until you choose a capability. This command resolves
+local `!include` tags while it loads the input:
+
+```yaml file=examples/includes/defaults.yaml
+image: ghcr.io/acme/api:1.4.0
+replicas: 2
+```
+
+```yaml file=examples/includes/routes-a.yaml
+- /health
+- /ready
+```
+
+```yaml file=examples/includes/routes-b.yaml
+- /metrics
+```
+
+```yaml file=examples/includes/profile-dev.yaml
+name: dev
+```
+
+```yaml file=examples/includes/profile-prod.yaml
+name: prod
+```
+
+```yaml file=examples/includes/settings/timeouts.yaml
+timeout: 30
+```
+
+```yaml file=examples/includes/settings/retries.yaml
+retries: 2
+```
+
+```text file=examples/includes/notice.txt
+deploy after approval
+keep this line too
+```
+
+```yaml file=examples/includes/app.yaml
+service:
+  <<: !include defaults.yaml
+  replicas: 4
+routes:
+  - !include
+      glob: routes-*.yaml
+      mode: splice
+profiles: !include
+  glob: profile-*.yaml
+  mode: list
+named_profiles: !include
+  glob: profile-*.yaml
+  mode: named
+  key: stem
+settings: !include
+  dir: settings
+  mode: merge
+notice: !include
+  path: notice.txt
+  format: text
+```
+
+```console
+$ yg --resolve-includes -j -c '.service' examples/includes/app.yaml
+{"image":"ghcr.io/acme/api:1.4.0","replicas":4}
+$ yg --resolve-includes -j -c '.routes' examples/includes/app.yaml
+["/health","/ready","/metrics"]
+```
+
+The scalar form substitutes one YAML document. Under `<<`, it merges a
+mapping and keeps explicit entries from the containing mapping. The structured
+form requires exactly one of `path`, `glob`, or `dir`. Every selector must be
+relative to the document that contains it.
+
+Structured includes support these modes:
+
+| Mode | Result |
+|------|--------|
+| `node` | One matched YAML root. This is the default. |
+| `list` | One sequence item per matched resource. |
+| `named` | A mapping keyed by filename stem or extensionless relative path. |
+| `merge` | Merged mappings or concatenated sequences. Input roots must agree. |
+| `splice` | Sequence items inserted at the directive's position. |
+
+`dir` matches `*.yaml` and `*.yml` filenames by default. It scans only that
+directory unless `recursive: true` enables descendants. Use `match` to replace
+the defaults with one filename glob or a sequence of filename globs. `named`
+accepts `key: stem` or `key: relative`. Mapping `merge` accepts
+`on_conflict: error`, `first`, or `last`. Matches always use deterministic
+root-relative ordering.
+
+Set `format: text` to load exact UTF-8 text as a YAML string. Text works with
+`node`, `list`, and `named`; it does not parse the file as YAML.
+
+## Resolve `$ref` mappings
+
+```yaml file=examples/refs/catalog.yaml
+defaults:
+  color: blue
+  enabled: true
+```
+
+```yaml file=examples/refs/app.yaml
+whole:
+  $ref: ./catalog.yaml
+selected:
+  $ref: ./catalog.yaml#/defaults/color
+```
+
+```console
+$ yg --resolve-refs=file -r '.selected' examples/refs/app.yaml
+blue
+$ yg --resolve-refs=file -j -c '.whole' examples/refs/app.yaml
+{"defaults":{"color":"blue","enabled":true}}
+```
+
+`$ref` uses a URI reference plus an optional RFC 6901 JSON Pointer fragment.
+No fragment—or an empty fragment—selects the complete document. The mapping
+must contain only `$ref`; sibling keys are errors. The selected node keeps its
+native YAML type.
+
+Relative targets start from the document that contains the directive. A file
+input uses its containing directory. Standard input needs `--base-uri` for
+relative refs and `--resolution-root` for includes:
+
+```sh
+yg --resolve-refs=file \
+  --base-uri="$PWD/config/app.yaml" \
+  --resolution-root="$PWD/config" \
+  '.' < config-from-stdin.yaml
+```
+
+The filesystem root is a hard boundary. Targets must be regular files;
+traversal outside the root and symbolic links fail. Without an explicit root,
+each input file's directory is its root.
+
+HTTP refs require an allowed scheme and exact host:
+
+```sh
+yg --resolve-refs=https \
+  --allow-ref-host=config.example.test \
+  '.' app.yaml
+```
+
+M11 does not follow redirects or send cookies or authentication. It has no
+persistent HTTP cache, dependency command, or lockfile. HTTP includes are not
+supported. Retrieved YAML must be valid UTF-8 and contain exactly one
+document.
+
 ## Understand what JSON output discards
 
 ```console
@@ -130,5 +280,23 @@ test "$("$YG_BIN" -r '.service | merge | .image' examples/native.yaml)" = 'ghcr.
 test "$("$YG_BIN" -j -c 'orphan_anchors' examples/native.yaml)" = '["unused"]'
 test "$("$YG_BIN" -r '.[42]' examples/native.yaml)" = 'integer key'
 test "$("$YG_BIN" -r 'explode_aliases | .copy | is_alias' examples/native.yaml)" = 'false'
+
+test "$("$YG_BIN" --resolve-includes -j -c '.service' examples/includes/app.yaml)" = \
+  '{"image":"ghcr.io/acme/api:1.4.0","replicas":4}'
+test "$("$YG_BIN" --resolve-includes -j -c '.routes' examples/includes/app.yaml)" = \
+  '["/health","/ready","/metrics"]'
+test "$("$YG_BIN" --resolve-includes -j -c '.profiles | map(.name)' examples/includes/app.yaml)" = \
+  '["dev","prod"]'
+test "$("$YG_BIN" --resolve-includes -j -c '.named_profiles | keys' examples/includes/app.yaml)" = \
+  '["profile-dev","profile-prod"]'
+test "$("$YG_BIN" --resolve-includes -j -c '.settings' examples/includes/app.yaml)" = \
+  '{"retries":2,"timeout":30}'
+expected='deploy after approval
+keep this line too'
+test "$("$YG_BIN" --resolve-includes -r '.notice' examples/includes/app.yaml)" = "$expected"
+
+test "$("$YG_BIN" --resolve-refs=file -r '.selected' examples/refs/app.yaml)" = 'blue'
+test "$("$YG_BIN" --resolve-refs=file -j -c '.whole' examples/refs/app.yaml)" = \
+  '{"defaults":{"color":"blue","enabled":true}}'
 ```
 </script>-->

@@ -110,7 +110,9 @@ filesystem directory. The caller must use `$ref` for URL composition.
 The session caches retrieval and parsing by canonical fragmentless
 `ResourceId`. A reference fragment selects from the cached document after
 parsing. Cache hits avoid repeated I/O and parsing but do not bypass logical
-resolution counts or materialized-byte budgets.
+resolution counts or materialized-byte budgets. Unique retrievals also charge
+one cumulative fetched-byte budget before parsing, so selecting small
+fragments cannot grow the session cache without bound.
 
 ### Resolution policy
 
@@ -182,7 +184,12 @@ Includes accept relative paths only. File references accept relative paths or
 
 Glob and directory discovery follows the same boundary before reading any
 matched file. Sorting uses normalized root-relative path bytes, not locale or
-filesystem enumeration order.
+filesystem enumeration order. Discovery charges every directory and entry it
+visits, including non-matches, against one session budget. Glob traversal
+starts at the pattern's static directory prefix and descends only to its
+required depth unless the pattern contains `**`. Canonical resources count
+once toward the match ceiling even when multiple approved symlink paths reach
+them; every alias path still passes policy independently.
 
 ### Network boundary
 
@@ -326,6 +333,11 @@ explicit `include` or `ref` filter to resolve relative to the node's actual
 resource. Constructed values without source metadata require an explicit base
 when they contain a relative directive.
 
+Owned-tree/query-value conversion and query-session annotation use explicit
+work stacks. Unchecked loading therefore removes policy depth ceilings without
+turning input depth into Rust call-stack depth; mapping order, anchors,
+metadata, and copy-on-write value sharing remain intact.
+
 ### Resolution report
 
 Every session builds a `ResolutionReport` on success or failure. The report is
@@ -345,6 +357,10 @@ The session exposes the current report by reference and can return the finished
 report when resolution ends. High-level integrations can attach the report to
 diagnostics without changing the event representation. M11 does not add a
 `yg deps` command or persist reports to disk.
+
+High-level input adapters retain all completed and current reports when either
+resolution or the subsequent owned-tree conversion fails. Every attempted
+direct or discovered include records an edge before fallible preflight work.
 
 Reports never contain response bodies, credentials, cookies, or authorization
 data. Public rendering uses a sanitized resource identity; the session keeps
@@ -389,6 +405,10 @@ chain when one exists. The report records the same failure without reducing it
 to display text. A resolver stops after its first terminal error, matching the
 current `ResolvedEvents` contract.
 
+Explicit query-filter failures carry their typed error in a hidden
+reference-counted value payload. Catching an error therefore releases its
+payload normally; no run-long token map retains caught failures.
+
 ## Data flow
 
 For each root input, resolution follows one pipeline:
@@ -405,8 +425,8 @@ For each root input, resolution follows one pipeline:
 7. The resolver selects a fragment or aggregates include matches, validates
    the insertion context, namespaces anchors, and emits owned replacement
    events.
-8. The session charges logical edges and materialized bytes and records the
-   outcome in `ResolutionReport`.
+8. The session charges logical edges, fetched bytes, discovery visits, and
+   materialized bytes and records the outcome in `ResolutionReport`.
 9. The existing consumer builds values, serde output, CST classification, or
    query values from the resolved event stream.
 
@@ -429,7 +449,7 @@ change. The test matrix covers:
 - scalar and structured include modes, deterministic aggregation, conflicts,
   text loading, zero matches, and context/type errors.
 - recursive cross-capability mode behavior for explicit and automatic policy.
-- cache reuse with per-edge budget charging.
+- cache reuse with per-edge, fetched-byte, and discovery-work budget charging.
 - anchor namespaces and non-self-contained fragment rejection.
 - deterministic success and failure reports, sanitized rendering, and optional
   integrity metadata.

@@ -42,10 +42,11 @@ pkg-fmt = "zip"
 [dependencies]
 yamalgam-core = { version = "0.1", path = "../yamalgam-core" }
 yamalgam-query = { path = "../yamalgam-query" }
+yamalgam-resolve = { path = "../yamalgam-resolve" }
 yamalgam-serde = { path = "../yamalgam-serde" }
 # Trust boundary: logging/diagnostics add rust-zstd and leakguard; see the M10
 # implementation notes. Keep defaults off and this feature list explicit.
-librebar = { version = "0.4", default-features = false, features = ["cli", "config", "logging", "diagnostics"] }
+librebar = { version = "0.6.0", default-features = false, features = ["cli", "config", "logging", "diagnostics"] }
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"
 tracing = "0.1"

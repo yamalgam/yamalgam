@@ -1,0 +1,765 @@
+---
+audit_date: 2026-08-09
+scope: "M11 external-resolution changes from c85f7e0 through 246f707"
+commit: 246f707890c9bc42bd41b5af128905be104bf354
+assessment: |
+  The remediation closes every item from the first M11 review and leaves the
+  architecture intact, but the fresh pass found eleven remaining boundary gaps.
+  Policy ownership is still ambiguous in the built-in adapter, explicit-only
+  sessions miss part of the anchor namespace, and relative includes can inherit
+  non-file schemes. Session memory and discovery work are not fully budgeted.
+  Query conversion and session annotation retain recursive paths, while several
+  error paths still lose reports or retain caught errors for the life of a run.
+  The implementation is close, but these are shipping blockers for adversarial
+  or very large inputs rather than polish items.
+
+narratives:
+  - slug: resolution-policy-and-graph-integrity
+    title: "The Resolution Policy and Graph Integrity Surface"
+    thesis: "The central resolver is disciplined, but three public entry paths do not share one authoritative policy and anchor boundary."
+    verdict: "The URI, filesystem, and imported-anchor remediations are sound on their primary paths. The remaining gaps are entry-point inconsistencies: include scheme enforcement is narrower than the documented contract, explicit sessions seed roots differently from automatic sessions, and the built-in adapter can mix two policies."
+    flow:
+      - id: input
+        label: "Receive root document"
+        type: start
+      - id: seed
+        label: "Seed resolution session"
+        type: process
+        findings:
+          - slug: explicit-only-sessions-skip-root-anchor-reservation
+            label: "Anchors not reserved"
+      - id: policy
+        label: "Select active policy"
+        type: decision
+        findings:
+          - slug: builtin-resolver-mixes-caller-and-session-configs
+            label: "Two configs"
+      - id: route
+        label: "Route include target"
+        type: process
+        findings:
+          - slug: relative-includes-can-retrieve-non-file-schemes
+            label: "Non-file include"
+      - id: resolve
+        label: "Resolve graph"
+        type: end
+    findings:
+      - slug: relative-includes-can-retrieve-non-file-schemes
+        title: "Relative includes can retrieve non-filesystem resources"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 1277
+            end_line: 1292
+        evidence: |
+              if capability == ResolutionCapability::Include
+                  && matches!(reference.resource.scheme(), "http" | "https")
+              {
+                  return Err(self.error(
+                      ResolutionErrorCategory::PolicyDenied,
+                      capability,
+                      span,
+                      target_name(reference),
+                      Some(Box::new(RetrieveError::PolicyDenied {
+                          id: reference.resource.clone(),
+                      })),
+                  ));
+              }
+              if capability != ResolutionCapability::Ref || reference.resource == *parent {
+                  return Ok(());
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-2"
+            type: del
+            label: "Only HTTP schemes are denied"
+          - lines: "14-16"
+            type: del
+            label: "Every other include scheme bypasses reference policy"
+        mechanism: |
+          The M11 specification requires includes to address filesystem resources,
+          but policy enforcement rejects only HTTP and HTTPS. A relative include
+          under a memory or custom-scheme document inherits that scheme, returns
+          through the early-success branch, and is dispatched to the registered
+          backend without the reference scheme allowlist.
+        remediation: |
+          Require every resolved include target and discovery base to use the file
+          scheme, returning PolicyDenied otherwise. Replace memory-backed include
+          integration fixtures with filesystem fixtures or explicit rejection tests.
+        effort: small
+        effort_notes: "One centralized policy check plus focused retriever and consumer tests."
+
+      - slug: explicit-only-sessions-skip-root-anchor-reservation
+        title: "Explicit-only sessions do not reserve anchors from the complete root"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 99
+            end_line: 120
+        evidence: |
+          /// Seed the raw-document cache with the containing root document.
+          pub fn prime_root(&mut self, id: ResourceId, document: OwnedDocument) {
+              if self.cache.insert(id.clone(), Arc::new(document)).is_none() {
+                  self.report.record_resource(ResourceRecord {
+                      kind: resource_kind(&id),
+                      id,
+                      fetched_bytes: 0,
+                      cache_hits: 0,
+                      provenance: ResourceProvenance::default(),
+                  });
+              }
+          }
+
+          /// Resolve automatic directives in one root document.
+          ///
+          /// # Errors
+          ///
+          /// Returns a structured [`ResolveError`] on the first failed directive.
+          pub fn resolve_root(&mut self, document: OwnedDocument) -> Result<OwnedDocument, ResolveError> {
+              anchors::reserve(&document.root, &mut self.reserved_anchors);
+              let origin = document.root.origin.clone();
+              self.prime_root(origin, document.clone());
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2-12"
+            type: del
+            label: "Priming does not reserve root anchors"
+          - lines: "20"
+            type: mark
+            label: "Reservation occurs only on the automatic path"
+        mechanism: |
+          Query sessions with both capabilities in explicit mode prime the root
+          without calling resolve_root. Later resolve_explicit reserves only the
+          selected value, so imported anchor namespaces are chosen without anchors
+          elsewhere in the output root. A generated imported name can collide with
+          a sibling root anchor and rebind a later alias.
+        remediation: |
+          Reserve document.root inside prime_root before caching it, and remove the
+          duplicate reservation from resolve_root. Add an explicit-only subtree
+          resolution test whose root sibling already uses the predicted generated
+          anchor name and whose later alias must retain its original binding.
+        effort: small
+        effort_notes: "Move the existing reservation into the shared root-seeding path."
+
+      - slug: builtin-resolver-mixes-caller-and-session-configs
+        title: "BuiltinResolver enforces two different loader configurations"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/builtin.rs
+            start_line: 58
+            end_line: 90
+          - path: crates/yamalgam-resolve/src/builtin.rs
+            start_line: 28
+            end_line: 33
+        evidence: |
+          fn process<'input>(
+              &mut self,
+              event: Event<'input>,
+              config: &LoaderConfig,
+          ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
+              if !automatically_resolves(config) {
+                  return Ok(yamalgam_parser::resolve::smallvec![event]);
+              }
+              if matches!(self.state, ResolverState::Failed) {
+                  return Ok(ResolvedEventBuf::new());
+              }
+              if matches!(event, Event::StreamStart | Event::StreamEnd) {
+                  return Ok(yamalgam_parser::resolve::smallvec![event]);
+              }
+
+              let is_document_end = matches!(event, Event::DocumentEnd { .. });
+              let owned = event.into_owned();
+              match &mut self.state {
+                  ResolverState::Idle => self.state = ResolverState::Buffering(vec![owned]),
+                  ResolverState::Buffering(events) => events.push(owned),
+                  ResolverState::Failed => unreachable!("failed state returned above"),
+              }
+              if !is_document_end {
+                  return Ok(ResolvedEventBuf::new());
+              }
+
+              let ResolverState::Buffering(events) = mem::replace(&mut self.state, ResolverState::Idle)
+              else {
+                  unreachable!("document end always has a buffer")
+              };
+              let result = OwnedDocument::from_events(self.root.clone(), events.iter().cloned())
+                  .map_err(document_error)
+                  .and_then(|document| self.session.resolve_root(document));
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4-7"
+            type: del
+            label: "Caller configuration selects whether resolution runs"
+          - lines: "31-33"
+            type: del
+            label: "Session configuration performs policy enforcement"
+        mechanism: |
+          on_event_with_config supplies the downstream consumer's LoaderConfig to
+          process, but the retained ResolutionSession owns the independently supplied
+          constructor configuration. The caller configuration gates buffering while
+          the session configuration controls modes, schemes, hosts, roots, parsing,
+          and limits. Mismatched public inputs can bypass the caller's stricter policy
+          or silently leave requested directives unresolved.
+        remediation: |
+          Make one configuration authoritative. Minimally reject any
+          on_event_with_config configuration unequal to session.config before
+          buffering; preferably bind the consumer and built-in resolver to one shared
+          configuration so the API cannot represent a mismatch. Test differing modes,
+          roots, hosts, and limits.
+        effort: medium
+        effort_notes: "The comparison is small; choosing and documenting configuration ownership is the larger part."
+
+  - slug: session-budgets-and-discovery
+    title: "The Session Budgets and Discovery Surface"
+    thesis: "Edge and materialization limits are enforced, but retained cache memory and filesystem traversal work can grow beyond those counters."
+    verdict: "The descriptor-centered filesystem implementation closes the race and determinism findings from the first audit. It still needs budgets for unique fetched bytes and visited directory entries, plus unique-resource accounting before the match ceiling, so attacker-controlled but authorized trees cannot turn bounded output into unbounded work."
+    flow:
+      - id: request
+        label: "Resolve resource edge"
+        type: start
+      - id: fetch
+        label: "Fetch complete resource"
+        type: process
+      - id: cache
+        label: "Retain raw and parsed data"
+        type: store
+        findings:
+          - slug: resolution-cache-bypasses-session-byte-budget
+            label: "Cache unbudgeted"
+      - id: discover
+        label: "Walk candidate tree"
+        type: process
+        findings:
+          - slug: glob-discovery-scans-entire-base
+            label: "Visits unbounded"
+      - id: deduplicate
+        label: "Deduplicate matches"
+        type: process
+        findings:
+          - slug: symlink-aliases-consume-match-limit-before-deduplication
+            label: "Aliases overcount"
+      - id: materialize
+        label: "Materialize result"
+        type: end
+    findings:
+      - slug: resolution-cache-bypasses-session-byte-budget
+        title: "Resolution caches bypass the session-wide byte budget"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 870
+            end_line: 899
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 60
+            end_line: 71
+          - path: crates/yamalgam-core/src/loader.rs
+            start_line: 455
+            end_line: 465
+        evidence: |
+          let retrieved = self
+              .retriever
+              .retrieve(&ResourceRequest {
+                  id: requested.clone(),
+                  max_bytes: self.config.limits.max_input_bytes,
+              })
+              .map_err(|source| {
+                  self.error(
+                      retrieve_category(&source),
+                      capability,
+                      span,
+                      requested.to_string(),
+                      Some(Box::new(source)),
+                  )
+              })?;
+          let fetched_bytes = retrieved.bytes.len();
+          let canonical = retrieved.id;
+          if &canonical != requested {
+              self.aliases.insert(requested.clone(), canonical.clone());
+          }
+          self.report.record_resource(ResourceRecord {
+              id: canonical.clone(),
+              kind: resource_kind(&canonical),
+              fetched_bytes,
+              cache_hits: 0,
+              provenance: retrieved.provenance,
+          });
+          let bytes: Arc<[u8]> = Arc::from(retrieved.bytes);
+          self.raw_cache.insert(canonical.clone(), Arc::clone(&bytes));
+          Ok((bytes, canonical, false, fetched_bytes))
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3-6"
+            type: mark
+            label: "Every resource receives the full per-input ceiling"
+          - lines: "28-30"
+            type: mark
+            label: "Fetched bytes are cached without a session-total charge"
+        mechanism: |
+          Edge and materialized-byte counters do not account for retained transport
+          or parse-cache storage. Each unique resource may consume the complete
+          max_input_bytes allowance, after which raw bytes remain cached alongside an
+          OwnedDocument or Arc<str>. A reference can select a tiny fragment from a
+          large resource, so little is charged to max_materialized_bytes while the
+          complete resource remains resident. Under moderate defaults, 256 unique
+          edges may each fetch 256 MiB: about 64 GiB of raw cache before parsed data.
+        remediation: |
+          Add a session-wide fetched/cache byte limit and charge it before accepting
+          or parsing retrieved bytes. Avoid retaining raw bytes after building a typed
+          cache unless another format still needs them, or conservatively account raw,
+          text, and parsed representations. Test many large resources that expose only
+          small selected fragments.
+        effort: medium
+        effort_notes: "Requires checked accounting, cache-lifetime changes, presets, and documentation."
+
+      - slug: glob-discovery-scans-entire-base
+        title: "Filesystem discovery visits and buffers unbounded entries"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 373
+            end_line: 388
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 230
+            end_line: 241
+          - path: crates/yamalgam-resolve/src/retriever/mod.rs
+            start_line: 58
+            end_line: 67
+        evidence: |
+          match &request.selector {
+              DiscoverySelector::Glob { pattern } => {
+                  reject_escaping_pattern(pattern, &request.base)?;
+                  let glob = compile_globs(std::slice::from_ref(pattern))?;
+                  let matcher = |candidate: &Path, _name: &OsStr| {
+                      candidate
+                          .strip_prefix(parent)
+                          .is_ok_and(|relative| glob.is_match(relative))
+                  };
+                  let mut state = WalkState {
+                      recursive: true,
+                      matcher: &matcher,
+                      maximum: request.max_matches,
+                      matches: &mut matches,
+                  };
+                  self.walk(&canonical_parent, parent, &mut state)?;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "10-16"
+            type: del
+            label: "Every glob enables a full recursive walk"
+        mechanism: |
+          Glob discovery always begins at the containing directory and recurses even
+          for patterns that cannot match below it. max_matches limits only approved
+          matches; it does not limit visited directories or non-matching entries. The
+          walker also collects and sorts every entry in each directory before matching.
+          Untrusted YAML with filesystem capability can therefore force traversal and
+          buffering of an arbitrarily large allowed tree without consuming edge budget.
+        remediation: |
+          Derive the static directory prefix and required recursion depth from the glob.
+          Add a discovery visit budget that counts directories and entries, including
+          non-matches, and enforce it while iterating. Preserve deterministic ordering
+          within the bounded search.
+        effort: medium
+        effort_notes: "Requires bounded traversal accounting, glob-prefix analysis, and focused tests."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [symlink-aliases-consume-match-limit-before-deduplication]
+
+      - slug: symlink-aliases-consume-match-limit-before-deduplication
+        title: "Symlink aliases can falsely exceed the discovery match ceiling"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 179
+            end_line: 197
+          - path: crates/yamalgam-resolve/src/retriever/file.rs
+            start_line: 419
+            end_line: 420
+        evidence: |
+          fn record_match(
+              &self,
+              requested: &Path,
+              canonical: PathBuf,
+              maximum: Option<usize>,
+              matches: &mut Vec<PathBuf>,
+          ) -> Result<(), RetrieveError> {
+              self.approved(requested)?;
+              self.approved(&canonical)?;
+              matches.push(canonical);
+              if let Some(maximum) = maximum
+                  && matches.len() > maximum
+              {
+                  return Err(RetrieveError::TooManyMatches {
+                      observed: maximum.saturating_add(1),
+                      maximum,
+                  });
+              }
+              Ok(())
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "10-17"
+            type: del
+            label: "Canonical duplicates are counted before final deduplication"
+        mechanism: |
+          With symlink following enabled, one canonical file can be reached through
+          its real directory and multiple alias directories. Each occurrence pushes
+          the same path and checks matches.len(); sorting and deduplication happen only
+          after the walk. A ceiling of one can reject two aliases to one unique resource
+          although the returned match set would contain one ResourceId.
+        remediation: |
+          Track approved canonical matches in an ordered set during traversal and apply
+          max_matches only to newly inserted unique identities. Continue evaluating
+          every alias path independently for policy checks.
+        effort: small
+        effort_notes: "Add canonical membership accounting and a multi-alias ceiling regression."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [glob-discovery-scans-entire-base]
+
+  - slug: query-runtime-and-reporting
+    title: "The Query Runtime and Reporting Surface"
+    thesis: "Typed errors and reports survive the main paths, but deep unchecked values and several post-resolution branches still escape those guarantees."
+    verdict: "The tokenized jaq error path correctly restores catch semantics, and automatic resolution now returns reports on resolver failures. The remaining work is to make both conversion directions and session annotation stack-safe, bound caught-error retention, and preserve report edges across preflight and post-resolution failures."
+    flow:
+      - id: resolve
+        label: "Resolve input tree"
+        type: start
+      - id: convert
+        label: "Convert resolved tree"
+        type: process
+        findings:
+          - slug: resolved-owned-tree-conversion-remains-recursive
+            label: "Recursive output"
+          - slug: post-resolution-conversion-drops-session-report
+            label: "Report dropped"
+      - id: assign
+        label: "Assign query session"
+        type: process
+        findings:
+          - slug: query-session-assignment-recurses-without-a-bound
+            label: "Recursive session"
+      - id: execute
+        label: "Execute resolution filter"
+        type: process
+      - id: catch
+        label: "Catch runtime error?"
+        type: decision
+        findings:
+          - slug: caught-resolution-errors-accumulate-until-run-end
+            label: "Errors retained"
+      - id: report
+        label: "Return value or report"
+        type: end
+        findings:
+          - slug: direct-include-preflight-can-omit-the-failed-report-edge
+            label: "Edge omitted"
+    findings:
+      - slug: caught-resolution-errors-accumulate-until-run-end
+        title: "Caught resolution errors accumulate in thread-local storage"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/runtime_resolution.rs
+            start_line: 142
+            end_line: 185
+        evidence: |
+          pub struct Guard {
+              pending: HashMap<u64, ResolveError>,
+          }
+
+          pub fn activate() -> Guard {
+              ACTIVE_GUARDS.with(|guards| guards.set(guards.get().saturating_add(1)));
+              Guard {
+                  pending: PENDING_ERRORS.with(|errors| errors.replace(HashMap::new())),
+              }
+          }
+
+          pub fn jaq_error(error: ResolveError) -> jaq_core::Error<YamlVal> {
+              let message = error.to_string();
+              let mut value = YamlVal::str(format!("external resolution failed: {message}"));
+              let token = ACTIVE_GUARDS.with(|guards| guards.get() > 0).then(|| {
+                  NEXT_ERROR_TOKEN
+                      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                          current.checked_add(1)
+                      })
+                      .ok()
+              });
+              let token = token.flatten();
+              if let Some(token) = token {
+                  value.runtime_error_token = Some(token);
+                  PENDING_ERRORS.with(|errors| {
+                      errors.borrow_mut().insert(token, error);
+                  });
+              }
+              jaq_core::Error::new(value)
+          }
+
+          pub fn take_error(value: &YamlVal) -> Option<ResolveError> {
+              let token = value.runtime_error_token?;
+              PENDING_ERRORS.with(|errors| errors.borrow_mut().remove(&token))
+          }
+
+          impl Drop for Guard {
+              fn drop(&mut self) {
+                  PENDING_ERRORS.with(|errors| {
+                      errors.replace(std::mem::take(&mut self.pending));
+                  });
+                  ACTIVE_GUARDS.with(|guards| guards.set(guards.get().saturating_sub(1)));
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "23-27"
+            type: del
+            label: "Every failure inserts a retained structured error"
+          - lines: "32-35"
+            type: mark
+            label: "Removal requires the error to escape the filter"
+          - lines: "37-43"
+            type: mark
+            label: "Caught errors clear only when the run ends"
+        mechanism: |
+          jaq catch can consume an error and produce a fallback without returning the
+          token-bearing value to the engine. The map entry is never removed by
+          take_error and remains until Guard drops. A filter that repeatedly catches
+          failed ref or include operations can retain one structured error per attempt
+          for the duration of the run.
+        remediation: |
+          Store the structured error directly in a hidden reference-counted YamlVal
+          payload excluded from equality and hashing. If the side channel remains, add
+          bounded storage and catch-aware reclamation. Add a stress regression with a
+          test-only pending-entry counter.
+        effort: medium
+        effort_notes: "The direct-payload design touches YamlVal cloning and error propagation semantics."
+
+      - slug: post-resolution-conversion-drops-session-report
+        title: "Post-resolution conversion failures discard the session report"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-query/src/resolution.rs
+            start_line: 119
+            end_line: 137
+        evidence: |
+          let document = OwnedDocument::from_events(root.clone(), events)
+              .map_err(|error| YgError::InputParse(error.to_string()))?;
+          let mut resolver = SessionQueryResolver::new(retriever, config.clone(), Some(root));
+          let document = match resolver.resolve_input(document) {
+              Ok(document) => document,
+              Err(error) => {
+                  let message = error.to_string();
+                  return Err(YgError::input_resolution(
+                      error,
+                      message,
+                      vec![resolver.into_report()],
+                  ));
+              }
+          };
+          let value = value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config)?;
+          Ok(ResolvedInput {
+              value,
+              resolution: Rc::new(RefCell::new(resolver)),
+          })
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4-13"
+            type: mark
+            label: "Resolver failures retain the report"
+          - lines: "15"
+            type: del
+            label: "Conversion failures drop the live resolver and report"
+        mechanism: |
+          Successful external resolution can produce a combined tree that fails later
+          value conversion, such as when an individually valid imported subtree exceeds
+          configured value depth after insertion into a nested root. The question-mark
+          return drops the resolver, making the accumulated report unavailable. The
+          multi-document variant has the same conversion path and can also lose prior
+          document reports.
+        remediation: |
+          Preserve reports on every error after session creation. Introduce an input
+          post-resolution error wrapper carrying the structured conversion error and all
+          completed/current ResolutionReports, and use it in both entry points. Test a
+          nested import whose combined output exceeds max_depth.
+        effort: medium
+        effort_notes: "Both resolution entry points and public error/report accessors must change consistently."
+
+      - slug: direct-include-preflight-can-omit-the-failed-report-edge
+        title: "Direct include preflight failures can disappear from ResolutionReport"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 408
+            end_line: 435
+          - path: crates/yamalgam-resolve/src/session.rs
+            start_line: 483
+            end_line: 501
+        evidence: |
+          let first_edge = self.report.edges().len();
+          let collection_edge = match &spec.selector {
+              IncludeSelector::Path(_) => None,
+              IncludeSelector::Glob(pattern) | IncludeSelector::Dir(pattern) => {
+                  Some(self.report.record_edge(ResolutionEdge {
+                      parent: directive.origin.clone(),
+                      child: None,
+                      capability: ResolutionCapability::Include,
+                      source_span: directive.span,
+                      requested: pattern.clone(),
+                      fragment: Fragment::Root,
+                      matches: Vec::new(),
+                      cache_hit: false,
+                      fetched_bytes: 0,
+                      materialized_bytes: 0,
+                      outcome: ResolutionOutcome::Resolved,
+                  }))
+              }
+          };
+          let result = self.resolve_include_inner(directive, spec, context, trigger, collection_edge);
+          if let Err(error) = &result {
+              let failed_edge = collection_edge.or_else(|| {
+                  (self.report.edges().len() > first_edge).then(|| self.report.edges().len() - 1)
+              });
+              if let Some(failed_edge) = failed_edge {
+                  self.report.edge_mut(failed_edge).outcome =
+                      ResolutionOutcome::Failed(error_category(error));
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2-3"
+            type: mark
+            label: "Path includes begin without an edge"
+          - lines: "20-28"
+            type: del
+            label: "Failure is recorded only if inner resolution added an edge"
+        mechanism: |
+          Path includes perform target-resource preflight before resolve_requested
+          records a resource edge. A relative path on an anonymous origin produces an
+          underlying ResourceError::MissingBase that this preflight wraps as
+          InvalidResource, leaving both collection_edge and the post-entry lookup empty.
+          The caller receives an error, but the failure report has no source edge for the
+          attempted directive.
+        remediation: |
+          Record a sanitized path edge before target-resource preflight and update that
+          exact edge on every failure. Route path identity creation through the shared
+          requested-reference helper so the stable MissingBase category is preserved.
+        effort: small
+        effort_notes: "Move direct-path edge creation before preflight and assert the anonymous-base report."
+
+      - slug: resolved-owned-tree-conversion-remains-recursive
+        title: "Resolved YAML output conversion can still overflow the thread stack"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/resolution.rs
+            start_line: 323
+            end_line: 342
+          - path: crates/yamalgam-query/src/resolution.rs
+            start_line: 272
+            end_line: 282
+          - path: crates/yamalgam-query/src/resolution.rs
+            start_line: 562
+            end_line: 565
+        evidence: |
+          OwnedKind::Sequence { style, items } => {
+              let child_depth = checked_child_depth(depth)?;
+              let mut values = Vec::with_capacity(items.len());
+              for item in items {
+                  values.push(owned_to_value(item, session, config, anchors, child_depth)?);
+              }
+              (
+                  Data::Seq(Rc::new(YgSeq(values))),
+                  NodeStyle::Collection(style),
+                  None,
+                  None,
+              )
+          }
+          OwnedKind::Mapping { style, entries } => {
+              let child_depth = checked_child_depth(depth)?;
+              let mut mapping = YgMap::default();
+              for (key, value) in entries {
+                  let key = owned_to_value(key, session, config, anchors, child_depth)?;
+                  let value = owned_to_value(value, session, config, anchors, child_depth)?;
+                  mapping.0.insert(key, value);
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-6"
+            type: del
+            label: "Sequence depth drives Rust recursion"
+          - lines: "14-19"
+            type: del
+            label: "Mapping keys and values also recurse"
+        mechanism: |
+          External YAML reaches owned_to_value through resolve_document and
+          resolve_documents. The configured depth check has no ceiling when max_depth
+          is None, and checked_child_depth protects only usize arithmetic. Unchecked
+          loading therefore permits nesting to drive unbounded Rust call-stack depth
+          and abort the process instead of returning a typed error.
+        remediation: |
+          Convert OwnedNode-to-YamlVal translation with an explicit work stack, or
+          impose a nonconfigurable implementation safety ceiling even when policy limits
+          are disabled. Preserve anchor visibility, mapping order, metadata, and typed
+          depth failures.
+        effort: medium
+        effort_notes: "Requires iterative reconstruction across mappings, sequences, anchors, and metadata."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [query-session-assignment-recurses-without-a-bound]
+
+      - slug: query-session-assignment-recurses-without-a-bound
+        title: "Query session annotation recursively traverses unbounded values"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-query/src/resolution.rs
+            start_line: 248
+            end_line: 268
+          - path: crates/yamalgam-query/src/engine.rs
+            start_line: 151
+            end_line: 158
+        evidence: |
+          pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey) {
+              if let Some(metadata) = &mut value.meta
+                  && let Some(origin) = &mut Rc::make_mut(metadata).origin
+              {
+                  origin.session = session;
+              }
+              match &mut value.data {
+                  Data::Seq(items) => {
+                      for item in &mut Rc::make_mut(items).0 {
+                          assign_session(item, session);
+                      }
+                  }
+                  Data::Map(mapping) => {
+                      let entries = std::mem::take(&mut Rc::make_mut(mapping).0);
+                      for (mut key, mut value) in entries {
+                          assign_session(&mut key, session);
+                          assign_session(&mut value, session);
+                          Rc::make_mut(mapping).0.insert(key, value);
+                      }
+                  }
+                  Data::Null | Data::Bool(_) | Data::Int(_) | Data::Float(_) | Data::Str(_) => {}
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "8-18"
+            type: del
+            label: "Value depth maps directly to recursive calls"
+        mechanism: |
+          Public register_resolved_input calls this helper without a depth argument or
+          limit. A deeply nested programmatic value, or a value produced under unchecked
+          loading, drives unbounded recursion while the engine assigns session identities.
+          Explicit resolution repeats the same traversal on returned values.
+        remediation: |
+          Rewrite session assignment as an explicit work-stack transformation while
+          preserving copy-on-write behavior for shared Rc collections. Alternatively,
+          enforce an immutable implementation depth ceiling before mutation.
+        effort: medium
+        effort_notes: "The iterative rewrite must retain mapping keys, values, metadata, and Rc copy-on-write semantics."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [resolved-owned-tree-conversion-remains-recursive]
+
+summary:
+  counts:
+    critical: 0
+    significant: 6
+    moderate: 5
+    advisory: 0
+    note: 0

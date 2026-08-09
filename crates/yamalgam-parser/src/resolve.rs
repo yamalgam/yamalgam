@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::{fmt, io};
 
 pub use smallvec::{SmallVec, smallvec};
-use yamalgam_core::{LimitExceeded, LoaderConfig};
+use yamalgam_core::{LimitExceeded, LoaderConfig, ResolutionCapability, ResolutionMode, Span};
 
 use crate::error::ParseError;
 use crate::event::Event;
@@ -55,6 +55,21 @@ pub enum ResolveError {
     },
     /// A resource limit was exceeded during resolution.
     LimitExceeded(LimitExceeded),
+    /// A typed failure from Yamalgam's built-in external resolver.
+    Resolution {
+        /// Stable machine-readable failure category.
+        category: ResolutionErrorCategory,
+        /// Resolution capability that failed.
+        capability: ResolutionCapability,
+        /// Source span of the directive.
+        span: Span,
+        /// Sanitized target identity.
+        target: String,
+        /// Sanitized reference chain leading to the failure.
+        reference_chain: Vec<String>,
+        /// Optional underlying failure.
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
     /// External resolution was enabled without a resolver implementation.
     UnsupportedResolutionPolicy {
         /// Whether include resolution was enabled.
@@ -87,6 +102,23 @@ impl ResolveError {
                 chain: chain.clone(),
             },
             Self::LimitExceeded(error) => Self::LimitExceeded(*error),
+            Self::Resolution {
+                category,
+                capability,
+                span,
+                target,
+                reference_chain,
+                source,
+            } => Self::Resolution {
+                category: *category,
+                capability: *capability,
+                span: *span,
+                target: target.clone(),
+                reference_chain: reference_chain.clone(),
+                source: source
+                    .as_ref()
+                    .map(|error| Box::new(ClonedError(error.to_string())) as Box<_>),
+            },
             Self::UnsupportedResolutionPolicy { include, refs } => {
                 Self::UnsupportedResolutionPolicy {
                     include: *include,
@@ -123,6 +155,23 @@ impl fmt::Display for ResolveError {
                 write!(f, "circular reference: {}", chain.join(" -> "))
             }
             Self::LimitExceeded(error) => write!(f, "limit exceeded: {error}"),
+            Self::Resolution {
+                category,
+                capability,
+                target,
+                source,
+                ..
+            } => {
+                let capability = match capability {
+                    ResolutionCapability::Include => "include",
+                    ResolutionCapability::Ref => "ref",
+                };
+                write!(f, "{capability} resolution failed for {target}: {category}")?;
+                if let Some(source) = source {
+                    write!(f, ": {source}")?;
+                }
+                Ok(())
+            }
             Self::UnsupportedResolutionPolicy { include, refs } => write!(
                 f,
                 "enabled resolution policy is unsupported without a resolver (include: {include}, refs: {refs})"
@@ -140,8 +189,76 @@ impl std::error::Error for ResolveError {
             Self::Ref { source, .. } => Some(source.as_ref()),
             Self::Custom(e) => Some(e.as_ref()),
             Self::LimitExceeded(error) => Some(error),
+            Self::Resolution { source, .. } => source
+                .as_ref()
+                .map(|error| error.as_ref() as &(dyn std::error::Error + 'static)),
             Self::Cycle { .. } | Self::UnsupportedResolutionPolicy { .. } => None,
         }
+    }
+}
+
+/// Stable category for built-in external-resolution failures.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum ResolutionErrorCategory {
+    /// Directive syntax or shape is invalid.
+    MalformedDirective,
+    /// The directive cannot be inserted into its surrounding YAML context.
+    IncompatibleContext,
+    /// The required capability is disabled.
+    DisabledCapability,
+    /// Active policy denied the target.
+    PolicyDenied,
+    /// A relative target has no base.
+    MissingBase,
+    /// A resource identity or fragment is malformed.
+    InvalidResource,
+    /// Transport or filesystem retrieval failed.
+    Retrieval,
+    /// Retrieved bytes are not valid UTF-8.
+    InvalidUtf8,
+    /// Retrieved YAML is invalid.
+    InvalidYaml,
+    /// A resource did not contain exactly one YAML document.
+    DocumentCount,
+    /// The selected fragment does not exist.
+    MissingFragment,
+    /// A selected fragment depends on anchors outside its subtree.
+    NonSelfContainedFragment,
+    /// Mapping aggregation encountered a key conflict.
+    Conflict,
+    /// Aggregate inputs have incompatible YAML types.
+    AggregateType,
+    /// Resolution would create a cycle.
+    Cycle,
+    /// A configured resource limit was exceeded.
+    Limit,
+    /// Resource accounting overflowed.
+    ResourceOverflow,
+}
+
+impl fmt::Display for ResolutionErrorCategory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::MalformedDirective => "malformed directive",
+            Self::IncompatibleContext => "incompatible context",
+            Self::DisabledCapability => "disabled capability",
+            Self::PolicyDenied => "policy denied",
+            Self::MissingBase => "missing base",
+            Self::InvalidResource => "invalid resource",
+            Self::Retrieval => "retrieval failed",
+            Self::InvalidUtf8 => "invalid UTF-8",
+            Self::InvalidYaml => "invalid YAML",
+            Self::DocumentCount => "invalid document count",
+            Self::MissingFragment => "missing fragment",
+            Self::NonSelfContainedFragment => "non-self-contained fragment",
+            Self::Conflict => "aggregation conflict",
+            Self::AggregateType => "invalid aggregate type",
+            Self::Cycle => "resolution cycle",
+            Self::Limit => "resolution limit exceeded",
+            Self::ResourceOverflow => "resource accounting overflow",
+        };
+        formatter.write_str(name)
     }
 }
 
@@ -208,8 +325,8 @@ impl<'input> Resolver<'input> for NoopResolver {
     ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
         if config.resolution.is_enabled() {
             return Err(ResolveError::UnsupportedResolutionPolicy {
-                include: config.resolution.include.enabled,
-                refs: config.resolution.refs.enabled,
+                include: config.resolution.include.mode != ResolutionMode::Disabled,
+                refs: config.resolution.refs.mode != ResolutionMode::Disabled,
             });
         }
         self.on_event(event)
@@ -311,8 +428,7 @@ mod tests {
 
     use super::*;
     use crate::Parser;
-    use yamalgam_core::LoaderConfig;
-    use yamalgam_core::ResourceLimit;
+    use yamalgam_core::{LoaderConfig, ResolutionCapability, ResolutionMode, ResourceLimit, Span};
 
     fn map_parse_error<'input>(
         result: Result<Event<'input>, ParseError>,
@@ -377,8 +493,8 @@ mod tests {
     #[test]
     fn noop_resolver_rejects_enabled_resolution_policy_once() {
         let mut config = LoaderConfig::moderate();
-        config.resolution.include.enabled = true;
-        config.resolution.refs.enabled = true;
+        config.resolution.include.mode = ResolutionMode::Explicit;
+        config.resolution.refs.mode = ResolutionMode::Automatic;
         let parser = Parser::with_config("value", &config);
         let mut events = ResolvedEvents::new_with_config(
             Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
@@ -465,6 +581,55 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn resolve_error_clone_preserves_every_resolution_category_and_prefix() {
+        let categories = [
+            ResolutionErrorCategory::MalformedDirective,
+            ResolutionErrorCategory::IncompatibleContext,
+            ResolutionErrorCategory::DisabledCapability,
+            ResolutionErrorCategory::PolicyDenied,
+            ResolutionErrorCategory::MissingBase,
+            ResolutionErrorCategory::InvalidResource,
+            ResolutionErrorCategory::Retrieval,
+            ResolutionErrorCategory::InvalidUtf8,
+            ResolutionErrorCategory::InvalidYaml,
+            ResolutionErrorCategory::DocumentCount,
+            ResolutionErrorCategory::MissingFragment,
+            ResolutionErrorCategory::NonSelfContainedFragment,
+            ResolutionErrorCategory::Conflict,
+            ResolutionErrorCategory::AggregateType,
+            ResolutionErrorCategory::Cycle,
+            ResolutionErrorCategory::Limit,
+            ResolutionErrorCategory::ResourceOverflow,
+        ];
+
+        for category in categories {
+            let error = ResolveError::Resolution {
+                category,
+                capability: ResolutionCapability::Ref,
+                span: Span::default(),
+                target: "https://example.com/data.yaml".into(),
+                reference_chain: vec!["root.yaml".into(), "data.yaml".into()],
+                source: Some(Box::new(io::Error::other("transport failed"))),
+            };
+            let message = error.to_string();
+            let cloned = error.clone_structured();
+
+            assert_eq!(cloned.to_string(), message);
+            assert!(
+                message.starts_with("ref resolution failed for https://example.com/data.yaml:")
+            );
+            assert!(matches!(
+                cloned,
+                ResolveError::Resolution {
+                    category: cloned_category,
+                    capability: ResolutionCapability::Ref,
+                    ..
+                } if cloned_category == category
+            ));
+        }
+    }
+
     struct ConfigProbe {
         observed_depth: Rc<Cell<Option<usize>>>,
     }
@@ -511,7 +676,7 @@ mod tests {
     #[test]
     fn custom_resolver_accepts_enabled_resolution_policy() {
         let mut config = LoaderConfig::moderate();
-        config.resolution.include.enabled = true;
+        config.resolution.include.mode = ResolutionMode::Explicit;
         let observed_depth = Rc::new(Cell::new(None));
         let parser = Parser::with_config("value", &config);
 

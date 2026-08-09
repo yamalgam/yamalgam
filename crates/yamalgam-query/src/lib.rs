@@ -44,7 +44,9 @@ mod error;
 mod funs;
 pub(crate) mod json;
 mod ops;
+pub mod resolution;
 mod runtime_limits;
+mod runtime_resolution;
 mod valt;
 pub(crate) mod value;
 
@@ -54,6 +56,10 @@ pub use build::{
 };
 pub use emit::{EmitError, EmitFormat, EmitOpts};
 pub use error::{BuildError, YgError};
+pub use resolution::{
+    QueryResolver, ResolutionHandle, ResolutionSessionKey, ResolvedInput, ResourceOrigin,
+    resolution_handle, resolve_document, resolve_documents,
+};
 pub use value::{Meta, NodeStyle, ScalarPresentation, YamlVal};
 
 /// Parse one strict JSON value under the supplied resource limits.
