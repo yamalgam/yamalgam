@@ -13,5 +13,8 @@ yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-parser = { path = "../yamalgam-parser" }
 yamalgam-scanner = { path = "../yamalgam-scanner" }
 
+[dev-dependencies]
+yamalgam-resolve = { path = "../yamalgam-resolve" }
+
 [lints]
 workspace = true

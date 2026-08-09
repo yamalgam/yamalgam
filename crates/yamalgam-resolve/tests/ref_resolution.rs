@@ -97,6 +97,23 @@ fn mapping_value<'a>(node: &'a OwnedNode, name: &str) -> &'a OwnedNode {
         .unwrap_or_else(|| panic!("missing mapping key {name}"))
 }
 
+fn clear_spans(root: &mut OwnedNode) {
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        node.span = Default::default();
+        match &mut node.kind {
+            OwnedKind::Sequence { items, .. } => pending.extend(items),
+            OwnedKind::Mapping { entries, .. } => {
+                for (key, value) in entries {
+                    pending.push(key);
+                    pending.push(value);
+                }
+            }
+            OwnedKind::Scalar(_) | OwnedKind::Alias { .. } => {}
+        }
+    }
+}
+
 fn category(error: &ResolveError) -> ResolutionErrorCategory {
     match error {
         ResolveError::Resolution { category, .. } => *category,
@@ -124,7 +141,11 @@ fn absent_and_empty_fragments_replace_with_the_whole_native_document() {
     let OwnedKind::Sequence { items, .. } = &output.root.kind else {
         panic!("expected sequence root");
     };
-    assert_eq!(items[0], items[1]);
+    let mut first = items[0].clone();
+    let mut second = items[1].clone();
+    clear_spans(&mut first);
+    clear_spans(&mut second);
+    assert_eq!(first, second);
     assert_eq!(scalar(mapping_value(&items[0], "null")), "null");
     assert_eq!(scalar(mapping_value(&items[0], "bool")), "true");
     assert_eq!(scalar(mapping_value(&items[0], "integer")), "42");

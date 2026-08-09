@@ -2609,6 +2609,7 @@ version = "0.1.0"
 dependencies = [
  "yamalgam-core",
  "yamalgam-parser",
+ "yamalgam-resolve",
  "yamalgam-scanner",
 ]
 
@@ -2627,6 +2628,7 @@ version = "0.1.0"
 dependencies = [
  "yamalgam-core",
  "yamalgam-parser",
+ "yamalgam-resolve",
  "yamalgam-scanner",
 ]
 
@@ -2696,6 +2698,7 @@ dependencies = [
  "yamalgam-compose",
  "yamalgam-core",
  "yamalgam-parser",
+ "yamalgam-resolve",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@
 #![deny(unsafe_code)]
 
 mod anchors;
+mod builtin;
 pub mod document;
 pub mod error;
 mod include;
@@ -16,6 +17,7 @@ pub mod resource;
 pub mod retriever;
 pub mod session;
 
+pub use builtin::BuiltinResolver;
 pub use document::{DocumentError, OwnedDocument, OwnedKind, OwnedNode, OwnedScalar};
 pub use error::{RetrieveError, SessionError};
 pub use pointer::{JsonPointer, PointerError};

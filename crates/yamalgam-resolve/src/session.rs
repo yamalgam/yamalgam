@@ -74,6 +74,12 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         }
     }
 
+    /// Inspect the loader policy used by this session.
+    #[must_use]
+    pub const fn config(&self) -> &LoaderConfig {
+        &self.config
+    }
+
     /// Seed the raw-document cache with the containing root document.
     pub fn prime_root(&mut self, id: ResourceId, document: OwnedDocument) {
         if self.cache.insert(id.clone(), Arc::new(document)).is_none() {
@@ -506,7 +512,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             resources.push((resource, node));
         }
 
-        let expansion = include::aggregate(
+        let mut expansion = include::aggregate(
             &spec,
             context,
             directive,
@@ -516,6 +522,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         .map_err(|source| {
             self.include_error(&source, directive.span, directive.origin.to_string())
         })?;
+        syntheticize_expansion(&mut expansion, directive.span);
         let additional_weight = match &expansion {
             IncludeExpansion::Node {
                 additional_weight, ..
@@ -1043,7 +1050,8 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         self.active.push(target);
         let resolved = self.resolve_tree(selected, trigger);
         self.active.pop();
-        let resolved = resolved?;
+        let mut resolved = resolved?;
+        syntheticize_node(&mut resolved, span);
 
         let weight = resolved.materialized_weight().map_err(|source| {
             self.error(
@@ -1266,6 +1274,42 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             target,
             reference_chain: self.active.iter().map(target_label).collect(),
             source,
+        }
+    }
+}
+
+fn syntheticize_expansion(expansion: &mut IncludeExpansion, span: Span) {
+    match expansion {
+        IncludeExpansion::Node { node, .. } => syntheticize_node(node, span),
+        IncludeExpansion::Splice { items, .. } => {
+            for item in items {
+                syntheticize_node(item, span);
+            }
+        }
+        IncludeExpansion::MappingMerge { entries, .. } => {
+            for (key, value) in entries {
+                syntheticize_node(key, span);
+                syntheticize_node(value, span);
+            }
+        }
+    }
+}
+
+fn syntheticize_node(root: &mut OwnedNode, span: Span) {
+    let mut zero_width = span;
+    zero_width.end = zero_width.start;
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        node.span = zero_width;
+        match &mut node.kind {
+            OwnedKind::Sequence { items, .. } => pending.extend(items),
+            OwnedKind::Mapping { entries, .. } => {
+                for (key, value) in entries {
+                    pending.push(key);
+                    pending.push(value);
+                }
+            }
+            OwnedKind::Scalar(_) | OwnedKind::Alias { .. } => {}
         }
     }
 }
