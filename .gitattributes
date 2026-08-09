@@ -21,6 +21,7 @@
 # Documentation
 *.md text eol=lf
 *.txt text eol=lf
+*.ygq text eol=lf linguist-language=jq
 LICENSE* text eol=lf
 
 # Graphics

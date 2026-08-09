@@ -77,7 +77,8 @@ and `orphan_anchors`. Mutation filters such as `set_tag`, `set_anchor`,
 > but they reserialize the document and therefore **lose comments and exact
 > formatting**. Milestone 13 adds CST-spliced editing.
 
-See the [draft-01 implementation notes](docs/spec/yg-spec-draft-01-implementation-notes.md)
+Start with the [`yg` user guide](docs/yg/README.md). See the
+[draft-01 implementation notes](docs/spec/yg-spec-draft-01-implementation-notes.md)
 for compatibility counts and deliberate deviations.
 
 ## Using the library (pre-release)
