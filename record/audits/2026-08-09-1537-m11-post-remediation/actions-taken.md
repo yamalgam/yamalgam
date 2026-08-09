@@ -2,12 +2,12 @@
 audit: 2026-08-09-1537-m11-post-remediation
 last_updated: 2026-08-09
 status:
-  fixed: 6
+  fixed: 9
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 5
+  open: 2
 ---
 
 # Actions Taken: M11 External Resolution Changes from c85f7e0 through 246f707
@@ -60,3 +60,27 @@ unique resources toward the match ceiling. Regression coverage exercises
 cross-resource byte exhaustion, cumulative discovery work, bounded static
 prefix traversal, and duplicate symlink aliases. ADR 0016 and the M11 design
 and implementation plan now document the two session-wide budgets.
+
+---
+
+## 2026-08-09 — Preserve Reports and Caught Errors
+
+**Disposition:** fixed
+**Addresses:**
+[caught-resolution-errors-accumulate-until-run-end](README.md#caught-resolution-errors-accumulate-until-run-end),
+[post-resolution-conversion-drops-session-report](README.md#post-resolution-conversion-drops-session-report),
+[direct-include-preflight-can-omit-the-failed-report-edge](README.md#direct-include-preflight-can-omit-failed-report-edge)
+**Commit:** d40ded1b0f145718873899a01c1d7ab21931c294
+**Author:** Codex
+
+Explicit query failures now carry their typed resolver error in an immutable,
+reference-counted `YamlVal` payload that is excluded from value semantics.
+Caught failures are released with their jaq error value instead of accumulating
+in a run-scoped token map.
+
+The query adapter now wraps post-resolution conversion failures with their
+structured source and all completed/current resolution reports. It also checks
+the converted value's expanded depth, including alias expansion. Direct path
+includes reserve a sanitized report edge before resource preflight, so every
+failure has a terminal edge outcome. ADR 0019 and the M11 design and plan now
+record these report-lifecycle guarantees.
