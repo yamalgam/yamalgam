@@ -2,12 +2,12 @@
 audit: 2026-08-09-13-m11-final-review
 last_updated: 2026-08-09
 status:
-  fixed: 15
+  fixed: 18
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 5
+  open: 2
 ---
 
 # Actions Taken: M11 External Resource Resolution
@@ -129,3 +129,28 @@ resolution failures carry an opaque token on the jaq error value, so `catch`
 can consume the error while propagation and rethrow preserve its structured
 payload. Query-to-owned-node conversion is iterative and enforces the active
 configured depth bound. Regression coverage exercises all four boundaries.
+
+---
+
+## 2026-08-09 — make resolution reports complete and safe
+
+**Disposition:** fixed
+
+**Addresses:**
+[automatic-resolution-failure-discards-report](README.md#automatic-resolution-failure-discards-report),
+[resolution-report-retains-raw-secret-reference](README.md#resolution-report-retains-raw-secret-reference),
+[collection-report-never-records-matches](README.md#collection-report-never-records-matches)
+
+**Commit:** `b268c711fcc30795a75b2e925a1d3490885aacf4`
+
+**Author:** Codex
+
+`InputResolution` errors now carry ordered reports for every completed root and
+the failing root, without changing their rendered diagnostic. Resolver-owned
+edges and error targets sanitize URI user information and query data before
+they become public structured values. Glob and directory directives record a
+dedicated collection edge with their sorted, deduplicated matches, aggregate
+materialization, and terminal outcome while retaining the per-resource fetch
+edges. Regression coverage exercises single- and multi-document failures,
+structured and rendered secret redaction, and successful and failed collection
+aggregation.
