@@ -2,12 +2,12 @@
 audit: 2026-08-09-13-m11-final-review
 last_updated: 2026-08-09
 status:
-  fixed: 11
+  fixed: 15
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 9
+  open: 5
 ---
 
 # Actions Taken: M11 External Resource Resolution
@@ -104,3 +104,28 @@ earlier in-fragment definition; later same-named anchors no longer make an
 external dependency appear self-contained. Regression coverage preserves root
 alias binding across a formerly colliding import and rejects a forward alias in
 a selected fragment.
+
+---
+
+## 2026-08-09 — preserve query resolution semantics
+
+**Disposition:** fixed
+
+**Addresses:**
+[run-local-resolution-keys-collide-across-contexts](README.md#run-local-resolution-keys-collide-across-contexts),
+[slurp-drops-resolution-base](README.md#slurp-drops-resolution-base),
+[caught-resolution-error-remains-terminal](README.md#caught-resolution-error-remains-terminal),
+[query-resolution-conversion-recurses-without-configured-bound](README.md#query-resolution-conversion-recurses-without-configured-bound)
+
+**Commit:** `714054a8e3a59772cff93e82d154b4632428b04c`
+
+**Author:** Codex
+
+Resolution session keys now combine a process-unique context identity with a
+local allocation, preventing values from selecting a same-numbered session in
+another engine context. Slurped aggregates retain a constructed root session
+without overwriting their children's source-specific origins. Runtime
+resolution failures carry an opaque token on the jaq error value, so `catch`
+can consume the error while propagation and rethrow preserve its structured
+payload. Query-to-owned-node conversion is iterative and enforces the active
+configured depth bound. Regression coverage exercises all four boundaries.
