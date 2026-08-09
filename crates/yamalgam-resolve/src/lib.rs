@@ -8,6 +8,7 @@
 pub mod document;
 pub mod error;
 pub mod pointer;
+mod ref_resolver;
 pub mod report;
 pub mod resource;
 pub mod retriever;

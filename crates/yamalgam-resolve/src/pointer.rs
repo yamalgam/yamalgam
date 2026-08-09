@@ -46,6 +46,9 @@ pub enum PointerError {
     /// A token contained an escape other than `~0` or `~1`.
     #[error("JSON Pointer contains an invalid '~' escape")]
     InvalidEscape,
+    /// A token used for sequence selection was not a canonical index.
+    #[error("JSON Pointer token is not a canonical sequence index")]
+    InvalidIndex,
 }
 
 fn decode_token(token: &str) -> Result<String, PointerError> {
@@ -79,4 +82,20 @@ impl fmt::Display for JsonPointer {
         }
         Ok(())
     }
+}
+
+/// Parse one RFC 6901 token as a canonical sequence index.
+///
+/// JSON Pointer itself does not distinguish array and object tokens. This
+/// context-sensitive helper rejects the JSON Patch append token, leading
+/// zeroes, non-digits, and indices that do not fit in `usize`.
+pub(crate) fn sequence_index(token: &str) -> Result<usize, PointerError> {
+    if token == "-"
+        || token.is_empty()
+        || (token.len() > 1 && token.starts_with('0'))
+        || !token.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(PointerError::InvalidIndex);
+    }
+    token.parse().map_err(|_| PointerError::InvalidIndex)
 }

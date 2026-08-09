@@ -297,6 +297,7 @@ fn parse_fragment(fragment: Option<&str>) -> Result<Fragment, ResourceError> {
         .map_err(|error| match error {
             PointerError::NotAbsolute => ResourceError::InvalidPointer,
             PointerError::InvalidEscape => ResourceError::InvalidPointerEscape,
+            PointerError::InvalidIndex => unreachable!("resource parsing does not select arrays"),
         })
 }
 

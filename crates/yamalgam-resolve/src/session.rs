@@ -9,6 +9,7 @@ use yamalgam_parser::{Parser, ResolutionErrorCategory, ResolveError};
 
 use crate::document::{DocumentError, OwnedDocument, OwnedKind, OwnedNode};
 use crate::error::{RetrieveError, SessionError};
+use crate::ref_resolver;
 use crate::report::{
     ResolutionEdge, ResolutionOutcome, ResolutionReport, ResourceKind, ResourceRecord,
 };
@@ -144,18 +145,28 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         while let Some(work) = pending.pop() {
             match work {
                 TreeWork::Visit(node) => {
-                    if let Some((requested, span)) = ref_directive(&node)
-                        && self.should_resolve(ResolutionCapability::Ref, trigger)
-                    {
-                        let replacement = self.resolve_requested(
-                            ResolutionCapability::Ref,
-                            node.origin,
-                            span,
-                            requested,
-                            trigger,
-                        )?;
-                        resolved.push(replacement);
-                        continue;
+                    if self.should_resolve(ResolutionCapability::Ref, trigger) {
+                        let directive = ref_resolver::recognize(&node, self.config.tag_resolution)
+                            .map_err(|source| {
+                                self.error(
+                                    ResolutionErrorCategory::MalformedDirective,
+                                    ResolutionCapability::Ref,
+                                    node.span,
+                                    node.origin.to_string(),
+                                    Some(Box::new(source)),
+                                )
+                            })?;
+                        if let Some(directive) = directive {
+                            let replacement = self.resolve_requested(
+                                ResolutionCapability::Ref,
+                                node.origin,
+                                directive.span,
+                                directive.requested,
+                                trigger,
+                            )?;
+                            resolved.push(replacement);
+                            continue;
+                        }
                     }
                     if let Some(requested) = include_directive(&node)
                         && self.should_resolve(ResolutionCapability::Include, trigger)
@@ -391,15 +402,17 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             });
         }
 
-        let selected = select_fragment(&document.root, &target.fragment).map_err(|source| {
-            self.error(
-                ResolutionErrorCategory::MissingFragment,
-                capability,
-                span,
-                target_label(&target),
-                Some(Box::new(source)),
-            )
-        })?;
+        let selected =
+            ref_resolver::select(&document.root, &target.fragment, self.config.tag_resolution)
+                .map_err(|source| {
+                    self.error(
+                        ResolutionErrorCategory::MissingFragment,
+                        capability,
+                        span,
+                        target_label(&target),
+                        Some(Box::new(source)),
+                    )
+                })?;
 
         self.active.push(target);
         let resolved = self.resolve_tree(selected, trigger);
@@ -680,24 +693,6 @@ enum TreeWork {
     },
 }
 
-fn ref_directive(node: &OwnedNode) -> Option<(String, Span)> {
-    let OwnedKind::Mapping { entries, .. } = &node.kind else {
-        return None;
-    };
-    let ref_entries = entries
-        .iter()
-        .filter(|(key, _)| scalar_value(key) == Some("$ref"))
-        .collect::<Vec<_>>();
-    if ref_entries.is_empty() {
-        return None;
-    }
-    if entries.len() != 1 || ref_entries.len() != 1 {
-        return Some((String::new(), ref_entries[0].1.span));
-    }
-    let (_, value) = ref_entries[0];
-    scalar_value(value).map(|scalar| (scalar.into(), value.span))
-}
-
 fn include_directive(node: &OwnedNode) -> Option<String> {
     if node.tag.as_deref() != Some("!include") {
         return None;
@@ -710,29 +705,6 @@ fn scalar_value(node: &OwnedNode) -> Option<&str> {
         OwnedKind::Scalar(scalar) => Some(&scalar.value),
         _ => None,
     }
-}
-
-fn select_fragment(root: &OwnedNode, fragment: &Fragment) -> Result<OwnedNode, SessionError> {
-    let mut selected = root;
-    for token in fragment.pointer_tokens() {
-        selected = match &selected.kind {
-            OwnedKind::Mapping { entries, .. } => entries
-                .iter()
-                .find_map(|(key, value)| (scalar_value(key) == Some(token)).then_some(value))
-                .ok_or(SessionError::MissingFragment)?,
-            OwnedKind::Sequence { items, .. } => {
-                if token == "-" || (token.len() > 1 && token.starts_with('0')) {
-                    return Err(SessionError::InvalidSequenceIndex);
-                }
-                let index = token
-                    .parse::<usize>()
-                    .map_err(|_| SessionError::InvalidSequenceIndex)?;
-                items.get(index).ok_or(SessionError::MissingFragment)?
-            }
-            _ => return Err(SessionError::MissingFragment),
-        };
-    }
-    Ok(selected.clone())
 }
 
 const fn retrieve_category(error: &RetrieveError) -> ResolutionErrorCategory {

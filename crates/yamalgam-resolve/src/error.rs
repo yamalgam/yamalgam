@@ -15,6 +15,15 @@ pub enum SessionError {
     /// A sequence pointer token was not a canonical array index.
     #[error("JSON Pointer token is not a canonical sequence index")]
     InvalidSequenceIndex,
+    /// A mapping containing `$ref` also contained sibling entries.
+    #[error("$ref mappings must contain exactly one entry")]
+    RefSiblings,
+    /// A `$ref` value did not resolve to a YAML string.
+    #[error("$ref value must be a YAML string")]
+    RefValueNotString,
+    /// JSON Pointer cannot address a non-string YAML mapping key.
+    #[error("JSON Pointer cannot address a non-string YAML mapping key")]
+    NonStringMappingKey,
     /// Checked session accounting exceeded `usize`.
     #[error("resource accounting overflow for {0}")]
     ResourceOverflow(&'static str),
