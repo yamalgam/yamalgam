@@ -375,7 +375,7 @@ fn explicit_resolution_recurses_for_that_capability_only() {
     let include_id = id("memory://shared/include.yaml");
     retriever.insert(
         ref_id.clone(),
-        b"nested:\n  value: {$ref: 'memory://shared/ref.yaml#/leaf'}\n  other: !include memory://shared/include.yaml\nleaf: done\n".to_vec(),
+        b"nested:\n  value: {$ref: 'memory://shared/ref.yaml#/leaf'}\n  other: !include include.yaml\nleaf: done\n".to_vec(),
     );
     retriever.insert(include_id.clone(), b"included\n".to_vec());
     let node = document(&root_id, "$ref: 'memory://shared/ref.yaml#/nested'\n").root;

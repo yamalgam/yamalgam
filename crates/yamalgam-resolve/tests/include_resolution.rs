@@ -492,7 +492,7 @@ fn directory_options_become_one_typed_discovery_request() {
 }
 
 #[test]
-fn http_includes_are_denied_even_when_http_refs_are_enabled() {
+fn absolute_http_includes_are_malformed_even_when_http_refs_are_enabled() {
     let retriever = IncludeRetriever::default();
     let remote = ResourceId::new("http://example.com/data.yaml").unwrap();
     retriever.insert(remote, "remote\n");
@@ -501,8 +501,32 @@ fn http_includes_are_denied_even_when_http_refs_are_enabled() {
         .err()
         .unwrap();
 
-    assert_eq!(category(&error), ResolutionErrorCategory::PolicyDenied);
+    assert_eq!(
+        category(&error),
+        ResolutionErrorCategory::MalformedDirective
+    );
     assert!(retriever.retrieve_calls().is_empty());
+}
+
+#[test]
+fn absolute_uri_include_selectors_are_malformed_before_retrieval() {
+    let cases = [
+        "!include file:///workspace/data.yaml\n",
+        "!include\n  glob: 'memory://fixtures/*.yaml'\n  mode: list\n",
+        "!include\n  dir: 'custom://fixtures'\n  mode: list\n",
+    ];
+
+    for input in cases {
+        let retriever = IncludeRetriever::default();
+        let error = resolve(retriever.clone(), input).err().unwrap();
+
+        assert_eq!(
+            category(&error),
+            ResolutionErrorCategory::MalformedDirective
+        );
+        assert!(retriever.retrieve_calls().is_empty());
+        assert!(retriever.discovery_calls().is_empty());
+    }
 }
 
 // r[verify resolution.include.cycle]

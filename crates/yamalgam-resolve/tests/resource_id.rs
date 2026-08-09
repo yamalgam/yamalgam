@@ -39,6 +39,18 @@ fn http_references_join_and_normalize_hosts() {
 }
 
 #[test]
+fn network_path_references_inherit_the_uri_base_scheme() {
+    let base = ResourceId::new("https://origin.example/config/root.yaml").unwrap();
+    let resolved = base.resolve("//other.example/shared.yaml").unwrap();
+
+    assert_eq!(
+        resolved.resource.as_url().map(url::Url::as_str),
+        Some("https://other.example/shared.yaml")
+    );
+    assert!(resolved.resource.as_path().is_none());
+}
+
+#[test]
 fn absent_and_empty_fragments_select_the_root() {
     let base = ResourceId::new("https://example.com/document.yaml").unwrap();
 

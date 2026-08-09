@@ -276,6 +276,21 @@ fn resolve_resource(
         return ResourceId::from_url(url);
     }
 
+    if let Some(ResourceId::Uri(base_url)) = base
+        && (!Path::new(reference).is_absolute() || reference.starts_with("//"))
+    {
+        return base_url
+            .join(reference)
+            .map_err(ResourceError::InvalidUri)
+            .and_then(ResourceId::from_url);
+    }
+    resolve_file_resource(base, reference)
+}
+
+fn resolve_file_resource(
+    base: Option<&ResourceId>,
+    reference: &str,
+) -> Result<ResourceId, ResourceError> {
     let path = Path::new(reference);
     if path.is_absolute() {
         return Ok(ResourceId::from_file(path));
@@ -289,10 +304,7 @@ fn resolve_resource(
             let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
             Ok(ResourceId::from_file(parent.join(path)))
         }
-        ResourceId::Uri(base_url) => base_url
-            .join(reference)
-            .map_err(ResourceError::InvalidUri)
-            .and_then(ResourceId::from_url),
+        ResourceId::Uri(_) => unreachable!("URI bases are resolved before file semantics"),
     }
 }
 

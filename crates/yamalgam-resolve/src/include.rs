@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::mem;
 use std::path::{Component, Path, PathBuf};
 
+use url::Url;
 use yamalgam_core::{TagResolution, TagResolver, Value};
 use yamalgam_parser::{AtomFlags, Chomp, CollectionStyle, ScalarStyle};
 
@@ -249,9 +250,10 @@ fn require_relative_selector(selector: &IncludeSelector) -> Result<(), SessionEr
         | IncludeSelector::Glob(value)
         | IncludeSelector::Dir(value) => value,
     };
-    if Path::new(value)
-        .components()
-        .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+    if Url::parse(value).is_ok()
+        || Path::new(value)
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
     {
         return Err(SessionError::MalformedInclude(
             "include selector must be relative",
