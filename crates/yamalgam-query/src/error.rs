@@ -1,6 +1,7 @@
 //! Error types for the query engine.
 
 use yamalgam_core::{LimitExceeded, Span};
+use yamalgam_resolve::ResolutionReport;
 
 /// Error building a YAML value tree from parser events.
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +81,8 @@ pub enum YgError {
         /// Structured resolver failure.
         #[source]
         error: Box<yamalgam_parser::ResolveError>,
+        /// Reports completed before and during the failed document.
+        reports: Vec<ResolutionReport>,
         /// Rendered diagnostic, including input context when available.
         message: String,
     },
@@ -142,8 +145,13 @@ impl YgError {
             }
         };
         match self {
-            Self::InputResolution { error, message } => Self::InputResolution {
+            Self::InputResolution {
                 error,
+                reports,
+                message,
+            } => Self::InputResolution {
+                error,
+                reports,
                 message: contextualize(message),
             },
             Self::InputLimit { error, message } => Self::InputLimit {
@@ -163,8 +171,13 @@ impl YgError {
     pub(crate) fn with_document_context(self, document_index: usize) -> Self {
         let contextualize = |message: String| format!("document {}: {message}", document_index + 1);
         match self {
-            Self::InputResolution { error, message } => Self::InputResolution {
+            Self::InputResolution {
                 error,
+                reports,
+                message,
+            } => Self::InputResolution {
+                error,
+                reports,
                 message: contextualize(message),
             },
             Self::InputLimit { error, message } => Self::InputLimit {
@@ -208,9 +221,11 @@ impl YgError {
     pub(crate) fn input_resolution(
         error: yamalgam_parser::ResolveError,
         message: impl Into<String>,
+        reports: Vec<ResolutionReport>,
     ) -> Self {
         Self::InputResolution {
             error: Box::new(error),
+            reports,
             message: message.into(),
         }
     }
@@ -284,7 +299,7 @@ fn resolve_error(error: yamalgam_parser::ResolveError) -> YgError {
     match error {
         yamalgam_parser::ResolveError::LimitExceeded(error) => YgError::input_limit(error, message),
         yamalgam_parser::ResolveError::Parse(error) => parse_error(error),
-        error => YgError::input_resolution(error, message),
+        error => YgError::input_resolution(error, message, Vec::new()),
     }
 }
 

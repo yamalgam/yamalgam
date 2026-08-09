@@ -244,12 +244,25 @@ fn node_requires_one_match_while_list_normalizes_discovery_order() {
         panic!("expected synthesized list");
     };
     assert_eq!(items.iter().map(scalar).collect::<Vec<_>>(), ["a", "b"]);
-    assert_eq!(session.report().edges().len(), 2);
+    assert_eq!(session.report().edges().len(), 3);
+    let collection = &session.report().edges()[0];
+    assert_eq!(
+        collection.matches,
+        [
+            file("/workspace/parts/a.yaml"),
+            file("/workspace/parts/b.yaml")
+        ]
+    );
+    assert_eq!(
+        collection.outcome,
+        yamalgam_resolve::ResolutionOutcome::Resolved
+    );
     assert!(
         session
             .report()
             .edges()
             .iter()
+            .skip(1)
             .all(|edge| edge.materialized_bytes > 0)
     );
     assert_eq!(
@@ -257,9 +270,44 @@ fn node_requires_one_match_while_list_normalizes_discovery_order() {
             .report()
             .edges()
             .iter()
+            .skip(1)
             .map(|edge| edge.fetched_bytes)
             .collect::<Vec<_>>(),
         [2, 2]
+    );
+}
+
+#[test]
+fn collection_report_edges_keep_matches_and_terminal_failures() {
+    let retriever = IncludeRetriever::default();
+    let a = file("/workspace/parts/a.yaml");
+    let b = file("/workspace/parts/b.yaml");
+    retriever.insert(a.clone(), "a\n");
+    retriever.insert(b.clone(), "b\n");
+    retriever.set_discoveries(vec![b.clone(), a.clone(), b]);
+    let origin = file("/workspace/root.yaml");
+    let mut session = ResolutionSession::new(retriever, config());
+
+    let error = session
+        .resolve_root(document(
+            &origin,
+            "!include\n  glob: 'parts/*.yaml'\n  mode: node\n",
+        ))
+        .unwrap_err();
+
+    assert_eq!(category(&error), ResolutionErrorCategory::AggregateType);
+    let edges = session.report().edges();
+    assert_eq!(edges.len(), 3);
+    assert_eq!(edges[0].requested, "parts/*.yaml");
+    assert_eq!(edges[0].matches, [a, file("/workspace/parts/b.yaml")]);
+    assert_eq!(
+        edges[0].outcome,
+        yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::AggregateType)
+    );
+    assert!(
+        edges[1..]
+            .iter()
+            .all(|edge| { edge.outcome == yamalgam_resolve::ResolutionOutcome::Resolved })
     );
 }
 
@@ -638,7 +686,7 @@ fn synthesized_aggregate_storage_cannot_evade_the_materialized_budget() {
     assert!(exceeded.observed > child_total);
     assert_eq!(exceeded.maximum, child_total);
     assert_eq!(
-        session.report().edges()[1].outcome,
+        session.report().edges()[0].outcome,
         yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::Limit)
     );
 }

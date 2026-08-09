@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::Arc;
 
+use url::Url;
 use yamalgam_core::{LimitExceeded, LoaderConfig, ResolutionCapability, ResourceLimit, Span};
 use yamalgam_parser::{
     AtomFlags, Chomp, Parser, ResolutionErrorCategory, ResolveError, ScalarStyle,
@@ -42,6 +43,12 @@ struct ResolutionTarget {
 
 struct ReferenceContext<'a> {
     requested: &'a str,
+    parent: &'a ResourceId,
+}
+
+struct RequestedReference<'a> {
+    raw: &'a str,
+    public: &'a str,
     parent: &'a ResourceId,
 }
 
@@ -400,13 +407,33 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         trigger: ResolutionTrigger,
     ) -> Result<IncludeExpansion, ResolveError> {
         let first_edge = self.report.edges().len();
-        let result = self.resolve_include_inner(directive, spec, context, trigger);
-        if let Err(error) = &result
-            && self.report.edges().len() > first_edge
-        {
-            let last_edge = self.report.edges().len() - 1;
-            self.report.edge_mut(last_edge).outcome =
-                ResolutionOutcome::Failed(error_category(error));
+        let collection_edge = match &spec.selector {
+            IncludeSelector::Path(_) => None,
+            IncludeSelector::Glob(pattern) | IncludeSelector::Dir(pattern) => {
+                Some(self.report.record_edge(ResolutionEdge {
+                    parent: directive.origin.clone(),
+                    child: None,
+                    capability: ResolutionCapability::Include,
+                    source_span: directive.span,
+                    requested: pattern.clone(),
+                    fragment: Fragment::Root,
+                    matches: Vec::new(),
+                    cache_hit: false,
+                    fetched_bytes: 0,
+                    materialized_bytes: 0,
+                    outcome: ResolutionOutcome::Resolved,
+                }))
+            }
+        };
+        let result = self.resolve_include_inner(directive, spec, context, trigger, collection_edge);
+        if let Err(error) = &result {
+            let failed_edge = collection_edge.or_else(|| {
+                (self.report.edges().len() > first_edge).then(|| self.report.edges().len() - 1)
+            });
+            if let Some(failed_edge) = failed_edge {
+                self.report.edge_mut(failed_edge).outcome =
+                    ResolutionOutcome::Failed(error_category(error));
+            }
         }
         result
     }
@@ -417,6 +444,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         spec: IncludeSpec,
         context: IncludeContext,
         trigger: ResolutionTrigger,
+        collection_edge: Option<usize>,
     ) -> Result<IncludeExpansion, ResolveError> {
         let targets = match &spec.selector {
             IncludeSelector::Path(path) => vec![IncludeTarget::Requested(path.clone())],
@@ -443,6 +471,15 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                 .map(IncludeTarget::Discovered)
                 .collect(),
         };
+        if let Some(collection_edge) = collection_edge {
+            self.report.edge_mut(collection_edge).matches = targets
+                .iter()
+                .filter_map(|target| match target {
+                    IncludeTarget::Discovered(resource) => Some(resource.clone()),
+                    IncludeTarget::Requested(_) => None,
+                })
+                .collect();
+        }
 
         let target_resources = targets
             .iter()
@@ -546,6 +583,9 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                 additional_weight, ..
             } => *additional_weight,
         };
+        if let Some(collection_edge) = collection_edge {
+            self.report.edge_mut(collection_edge).materialized_bytes = additional_weight;
+        }
         self.charge_materialized(
             ResolutionCapability::Include,
             directive.span,
@@ -664,6 +704,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         reference: ResolvedReference,
         requested: String,
     ) -> Result<OwnedNode, ResolveError> {
+        let requested = sanitize_reference(&requested);
         let edge_index = self.report.record_edge(ResolutionEdge {
             parent: directive.origin.clone(),
             child: Some(reference.resource.clone()),
@@ -927,12 +968,13 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         requested: String,
         trigger: ResolutionTrigger,
     ) -> Result<OwnedNode, ResolveError> {
+        let public_requested = sanitize_reference(&requested);
         let edge_index = self.report.record_edge(ResolutionEdge {
             parent: parent.clone(),
             child: None,
             capability,
             source_span: span,
-            requested: requested.clone(),
+            requested: public_requested.clone(),
             fragment: Fragment::Root,
             matches: Vec::new(),
             cache_hit: false,
@@ -941,8 +983,17 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             outcome: ResolutionOutcome::Resolved,
         });
 
-        let result = self
-            .resolve_requested_inner(edge_index, capability, &parent, span, &requested, trigger);
+        let result = self.resolve_requested_inner(
+            edge_index,
+            capability,
+            span,
+            RequestedReference {
+                raw: &requested,
+                public: &public_requested,
+                parent: &parent,
+            },
+            trigger,
+        );
         if let Err(error) = &result {
             self.report.edge_mut(edge_index).outcome =
                 ResolutionOutcome::Failed(error_category(error));
@@ -954,13 +1005,12 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         &mut self,
         edge_index: usize,
         capability: ResolutionCapability,
-        parent: &ResourceId,
         span: Span,
-        requested: &str,
+        requested: RequestedReference<'_>,
         trigger: ResolutionTrigger,
     ) -> Result<OwnedNode, ResolveError> {
-        self.charge_edge(capability, span, requested)?;
-        let reference = parent.resolve(requested).map_err(|source| {
+        self.charge_edge(capability, span, requested.public)?;
+        let reference = requested.parent.resolve(requested.raw).map_err(|source| {
             let category = match source {
                 ResourceError::MissingBase => ResolutionErrorCategory::MissingBase,
                 _ => ResolutionErrorCategory::InvalidResource,
@@ -969,7 +1019,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                 category,
                 capability,
                 span,
-                parent.to_string(),
+                requested.parent.to_string(),
                 Some(Box::new(source)),
             )
         })?;
@@ -977,7 +1027,10 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             edge_index,
             capability,
             span,
-            ReferenceContext { requested, parent },
+            ReferenceContext {
+                requested: requested.public,
+                parent: requested.parent,
+            },
             reference,
             trigger,
         )
@@ -1491,6 +1544,47 @@ fn target_label(target: &ResolutionTarget) -> String {
             format!("{}#/{encoded}", target.resource)
         }
     }
+}
+
+fn sanitize_reference(reference: &str) -> String {
+    let (resource, fragment) = reference
+        .split_once('#')
+        .map_or((reference, None), |(resource, fragment)| {
+            (resource, Some(fragment))
+        });
+    let sanitized = if resource.starts_with("//") {
+        Url::parse(&format!("https:{resource}")).map_or_else(
+            |_| "<invalid reference>".into(),
+            |mut url| {
+                redact_url(&mut url);
+                url.to_string()
+                    .strip_prefix("https:")
+                    .unwrap_or("<invalid reference>")
+                    .to_owned()
+            },
+        )
+    } else if let Ok(mut url) = Url::parse(resource) {
+        redact_url(&mut url);
+        url.to_string()
+    } else if resource.contains("://") {
+        "<invalid reference>".into()
+    } else {
+        resource
+            .split_once('?')
+            .map_or(resource, |(path, _)| path)
+            .to_owned()
+    };
+    if let Some(fragment) = fragment {
+        format!("{sanitized}#{fragment}")
+    } else {
+        sanitized
+    }
+}
+
+fn redact_url(url: &mut Url) {
+    url.set_query(None);
+    let _ = url.set_password(None);
+    let _ = url.set_username("");
 }
 
 #[cfg(test)]

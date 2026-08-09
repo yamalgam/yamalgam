@@ -206,6 +206,40 @@ fn same_document_refs_bypass_transport_policy_but_external_files_do_not() {
 }
 
 #[test]
+fn reports_and_errors_sanitize_credential_bearing_references() {
+    let retriever = SpyRetriever::default();
+    let root_id = id("memory://root/document.yaml");
+    let input = document(
+        &root_id,
+        "$ref: 'https://alice:password@example.com/data.yaml?token=secret#/value'\n",
+    );
+    let mut selected = config(ResolutionMode::Automatic, ResolutionMode::Disabled);
+    selected.resolution.refs.allow_schemes = vec!["https".into()];
+    selected.resolution.refs.allow_hosts = vec!["example.com".into()];
+    let mut session = ResolutionSession::new(retriever.clone(), selected);
+
+    let error = session.resolve_root(input).unwrap_err();
+
+    let ResolveError::Resolution { target, .. } = &error else {
+        panic!("expected structured resolution error");
+    };
+    assert_eq!(target, "https://example.com/data.yaml#/value");
+    assert_eq!(
+        session.report().edges()[0].requested,
+        "https://example.com/data.yaml#/value"
+    );
+    for rendered in [format!("{error:?}"), format!("{:?}", session.report())] {
+        for secret in ["alice", "password", "token", "secret"] {
+            assert!(
+                !rendered.contains(secret),
+                "leaked {secret:?} in {rendered}"
+            );
+        }
+    }
+    assert!(retriever.retrieve_calls().is_empty());
+}
+
+#[test]
 fn cached_include_resources_do_not_bypass_ref_transport_policy() {
     let retriever = SpyRetriever::default();
     let root = ResourceId::from_file("/sandbox/root.yaml");

@@ -216,15 +216,49 @@ fn automatic_resolution_failures_remain_typed_input_errors() {
         panic!("missing resource unexpectedly resolved")
     };
 
+    let YgError::InputResolution { error, reports, .. } = error else {
+        panic!("expected typed input-resolution error");
+    };
     assert!(matches!(
-        error,
-        YgError::InputResolution {
-            error,
-            ..
-        } if matches!(error.as_ref(), ResolveError::Resolution {
+        error.as_ref(),
+        ResolveError::Resolution {
             category: ResolutionErrorCategory::Retrieval,
             ..
-        })
+        }
+    ));
+    assert_eq!(reports.len(), 1);
+    assert!(matches!(
+        reports[0].edges()[0].outcome,
+        yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::Retrieval)
+    ));
+}
+
+#[test]
+fn document_stream_failures_retain_prior_and_failed_reports() {
+    let root = id("memory://fixtures/root.yaml");
+    let retriever = CountingRetriever::default();
+    retriever.insert(id("memory://fixtures/first.yaml"), "first\n");
+
+    let error = resolve_documents(
+        "---\n$ref: ./first.yaml\n---\n$ref: ./missing.yaml\n",
+        root,
+        retriever,
+        &automatic_config(),
+    )
+    .err()
+    .expect("the second document must fail");
+
+    let YgError::InputResolution { reports, .. } = error else {
+        panic!("expected typed input-resolution error");
+    };
+    assert_eq!(reports.len(), 2);
+    assert_eq!(
+        reports[0].edges()[0].outcome,
+        yamalgam_resolve::ResolutionOutcome::Resolved
+    );
+    assert!(matches!(
+        reports[1].edges()[0].outcome,
+        yamalgam_resolve::ResolutionOutcome::Failed(ResolutionErrorCategory::Retrieval)
     ));
 }
 

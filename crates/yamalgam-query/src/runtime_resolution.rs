@@ -48,6 +48,12 @@ impl<R: ResourceRetriever> SessionQueryResolver<R> {
             Ok(document)
         }
     }
+
+    /// Consume the adapter and return the report accumulated by its session.
+    #[must_use]
+    pub fn into_report(self) -> ResolutionReport {
+        self.session.into_report()
+    }
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use crate::{Fragment, ResourceId, ResourceProvenance};
 /// Structured resource and edge records for one resolution session.
 // r[impl resolution.report]
 // r[impl resolution.integrity]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ResolutionReport {
     resources: Vec<ResourceRecord>,
     edges: Vec<ResolutionEdge>,
@@ -126,7 +126,7 @@ pub struct ResolutionEdge {
     pub capability: ResolutionCapability,
     /// Directive location in the containing resource.
     pub source_span: Span,
-    /// Original directive reference retained as structured data.
+    /// Sanitized directive reference retained as structured data.
     pub requested: String,
     /// Selected document fragment.
     pub fragment: Fragment,

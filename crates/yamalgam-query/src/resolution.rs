@@ -119,10 +119,17 @@ where
     let document = OwnedDocument::from_events(root.clone(), events)
         .map_err(|error| YgError::InputParse(error.to_string()))?;
     let mut resolver = SessionQueryResolver::new(retriever, config.clone(), Some(root));
-    let document = resolver.resolve_input(document).map_err(|error| {
-        let message = error.to_string();
-        YgError::input_resolution(error, message)
-    })?;
+    let document = match resolver.resolve_input(document) {
+        Ok(document) => document,
+        Err(error) => {
+            let message = error.to_string();
+            return Err(YgError::input_resolution(
+                error,
+                message,
+                vec![resolver.into_report()],
+            ));
+        }
+    };
     let value = value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config)?;
     Ok(ResolvedInput {
         value,
@@ -156,26 +163,30 @@ where
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| YgError::from(BuildError::Parse(error)))?;
     let documents = split_documents(root.clone(), events)?;
-    let mut inputs = Vec::with_capacity(documents.len());
+    let mut inputs: Vec<ResolvedInput> = Vec::with_capacity(documents.len());
     for (document_index, document) in documents.into_iter().enumerate() {
-        let result: Result<ResolvedInput, YgError> = (|| {
-            let mut resolver =
-                SessionQueryResolver::new(retriever.clone(), config.clone(), Some(root.clone()));
-            let document = resolver.resolve_input(document).map_err(|error| {
+        let mut resolver =
+            SessionQueryResolver::new(retriever.clone(), config.clone(), Some(root.clone()));
+        let document = match resolver.resolve_input(document) {
+            Ok(document) => document,
+            Err(error) => {
                 let message = error.to_string();
-                YgError::input_resolution(error, message)
-            })?;
-            let value =
-                value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config)?;
-            Ok(ResolvedInput {
-                value,
-                resolution: Rc::new(RefCell::new(resolver)),
-            })
-        })();
-        match result {
-            Ok(input) => inputs.push(input),
-            Err(error) => return Err(error.with_document_context(document_index)),
-        }
+                let mut reports = inputs
+                    .iter()
+                    .map(|input| input.resolution.borrow().report().clone())
+                    .collect::<Vec<_>>();
+                reports.push(resolver.into_report());
+                return Err(YgError::input_resolution(error, message, reports)
+                    .with_document_context(document_index));
+            }
+        };
+        let value =
+            value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config)
+                .map_err(|error| error.with_document_context(document_index))?;
+        inputs.push(ResolvedInput {
+            value,
+            resolution: Rc::new(RefCell::new(resolver)),
+        });
     }
     Ok(inputs)
 }
