@@ -1,8 +1,13 @@
 //! Typed `!include` directive parsing and aggregation.
 
+// r[impl resolution.include]
+// r[impl resolution.include.structured]
+// r[impl resolution.include.aggregation]
+// r[impl resolution.include.text]
+
 use std::collections::HashSet;
 use std::mem;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use yamalgam_core::{TagResolution, TagResolver, Value};
 use yamalgam_parser::{AtomFlags, Chomp, CollectionStyle, ScalarStyle};
@@ -94,8 +99,10 @@ pub fn recognize(
                     "scalar shorthand requires a string path",
                 ));
             }
+            let selector = IncludeSelector::Path(scalar.value.clone());
+            require_relative_selector(&selector)?;
             Ok(Some(IncludeSpec {
-                selector: IncludeSelector::Path(scalar.value.clone()),
+                selector,
                 format: IncludeFormat::Yaml,
                 mode: IncludeMode::Node,
                 recursive: false,
@@ -198,6 +205,7 @@ fn parse_mapping(
     }
 
     let selector = selector.ok_or(SessionError::MalformedInclude("missing selector"))?;
+    require_relative_selector(&selector)?;
     let is_dir = matches!(selector, IncludeSelector::Dir(_));
     if (recursive_set || matches_set) && !is_dir {
         return Err(SessionError::MalformedInclude(
@@ -233,6 +241,23 @@ fn parse_mapping(
         on_conflict,
         on_conflict_explicit,
     })
+}
+
+fn require_relative_selector(selector: &IncludeSelector) -> Result<(), SessionError> {
+    let value = match selector {
+        IncludeSelector::Path(value)
+        | IncludeSelector::Glob(value)
+        | IncludeSelector::Dir(value) => value,
+    };
+    if Path::new(value)
+        .components()
+        .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+    {
+        return Err(SessionError::MalformedInclude(
+            "include selector must be relative",
+        ));
+    }
+    Ok(())
 }
 
 fn set_selector(

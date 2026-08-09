@@ -123,6 +123,7 @@ fn category(error: &ResolveError) -> ResolutionErrorCategory {
     }
 }
 
+// r[verify resolution.include]
 #[test]
 fn scalar_shorthand_substitutes_one_yaml_node_and_recurses() {
     let retriever = IncludeRetriever::default();
@@ -142,6 +143,7 @@ fn scalar_shorthand_substitutes_one_yaml_node_and_recurses() {
     assert_eq!(retriever.retrieve_calls(), vec![child, grandchild]);
 }
 
+// r[verify resolution.include.structured]
 #[test]
 fn structured_shape_rejects_missing_conflicting_unknown_duplicate_and_wrong_options() {
     let cases = [
@@ -166,6 +168,28 @@ fn structured_shape_rejects_missing_conflicting_unknown_duplicate_and_wrong_opti
             ResolutionErrorCategory::MalformedDirective,
             "input {input:?}"
         );
+    }
+}
+
+#[test]
+fn include_selectors_must_be_relative_paths() {
+    let cases = [
+        "!include /workspace/a.yaml\n",
+        "!include\n  path: /workspace/a.yaml\n",
+        "!include\n  glob: '/workspace/*.yaml'\n  mode: list\n",
+        "!include\n  dir: /workspace\n  mode: list\n",
+    ];
+
+    for input in cases {
+        let retriever = IncludeRetriever::default();
+        let error = resolve(retriever.clone(), input).err().unwrap();
+        assert_eq!(
+            category(&error),
+            ResolutionErrorCategory::MalformedDirective,
+            "input {input:?}"
+        );
+        assert!(retriever.retrieve_calls().is_empty(), "input {input:?}");
+        assert!(retriever.discovery_calls().is_empty(), "input {input:?}");
     }
 }
 
@@ -291,6 +315,7 @@ fn named_uses_stem_or_extensionless_relative_keys_and_rejects_duplicates() {
     assert_eq!(category(&error), ResolutionErrorCategory::Conflict);
 }
 
+// r[verify resolution.include.aggregation]
 #[test]
 fn merge_combines_homogeneous_mappings_or_sequences_with_explicit_conflict_policy() {
     let retriever = IncludeRetriever::default();
@@ -396,6 +421,7 @@ fn merge_key_includes_mapping_and_explicit_parent_entries_win_in_any_order() {
     }
 }
 
+// r[verify resolution.include.text]
 #[test]
 fn text_node_list_and_named_preserve_exact_utf8_and_reject_invalid_bytes() {
     let retriever = IncludeRetriever::default();
@@ -479,6 +505,7 @@ fn http_includes_are_denied_even_when_http_refs_are_enabled() {
     assert!(retriever.retrieve_calls().is_empty());
 }
 
+// r[verify resolution.include.cycle]
 #[test]
 fn include_and_ref_recursion_share_one_cycle_stack() {
     let retriever = IncludeRetriever::default();
