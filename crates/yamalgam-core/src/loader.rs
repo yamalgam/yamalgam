@@ -72,7 +72,7 @@ impl LoaderConfig {
     pub const fn moderate() -> Self {
         Self {
             limits: ResourceLimits::moderate(),
-            resolution: ResolutionPolicy::disabled(),
+            resolution: ResolutionPolicy::moderate(),
             tag_resolution: TagResolution::Yaml12,
         }
     }
@@ -103,7 +103,7 @@ impl LoaderConfig {
                 max_collection_size: Some(100_000),
                 max_output_bytes: Some(10 * 1024 * 1024),
             },
-            resolution: ResolutionPolicy::disabled(),
+            resolution: ResolutionPolicy::strict(),
             tag_resolution: TagResolution::Yaml12,
         }
     }
@@ -134,7 +134,7 @@ impl LoaderConfig {
                 max_collection_size: None,
                 max_output_bytes: None,
             },
-            resolution: ResolutionPolicy::disabled(),
+            resolution: ResolutionPolicy::trusted(),
             tag_resolution: TagResolution::Yaml12,
         }
     }
@@ -144,7 +144,7 @@ impl LoaderConfig {
     pub const fn unchecked() -> Self {
         Self {
             limits: ResourceLimits::none(),
-            resolution: ResolutionPolicy::disabled(),
+            resolution: ResolutionPolicy::unchecked(),
             tag_resolution: TagResolution::Yaml12,
         }
     }
@@ -183,6 +183,12 @@ pub enum ResourceLimit {
     CollectionSize,
     /// Serialized output size in bytes.
     OutputBytes,
+    /// External-resolution recursion depth.
+    ResolutionDepth,
+    /// Number of attempted external-resolution edges.
+    ResolutionEdges,
+    /// Bytes materialized through external resolution.
+    MaterializedBytes,
 }
 
 impl std::fmt::Display for ResourceLimit {
@@ -197,6 +203,9 @@ impl std::fmt::Display for ResourceLimit {
             Self::MergeDepth => "merge depth",
             Self::CollectionSize => "collection size",
             Self::OutputBytes => "output size",
+            Self::ResolutionDepth => "resolution depth",
+            Self::ResolutionEdges => "resolution edges",
+            Self::MaterializedBytes => "materialized bytes",
         })
     }
 }
@@ -407,6 +416,52 @@ const fn check_limit(
 // ResolutionPolicy
 // ---------------------------------------------------------------------------
 
+/// Controls whether a resolution capability is available and automatic.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResolutionMode {
+    /// Reject explicit and automatic use of the capability.
+    #[default]
+    Disabled,
+    /// Permit explicit query actions without automatic loading.
+    Explicit,
+    /// Permit explicit query actions and resolve directives while loading.
+    Automatic,
+}
+
+impl ResolutionMode {
+    /// Returns `true` when an explicit action may use this capability.
+    #[must_use]
+    pub const fn allows_explicit(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    /// Returns `true` when ordinary loading resolves this capability.
+    #[must_use]
+    pub const fn resolves_automatically(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+}
+
+/// External-resolution capability selected by a caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionCapability {
+    /// `!include` resolution.
+    Include,
+    /// `$ref` resolution.
+    Ref,
+}
+
+/// Shared limits for one external-resolution session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolutionLimits {
+    /// Maximum external-resolution recursion depth.
+    pub max_depth: Option<usize>,
+    /// Maximum attempted resolution edges, including cache hits.
+    pub max_edges: Option<usize>,
+    /// Maximum bytes materialized into resolved output.
+    pub max_materialized_bytes: Option<usize>,
+}
+
 /// Policy governing `!include` and `$ref` resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolutionPolicy {
@@ -414,35 +469,111 @@ pub struct ResolutionPolicy {
     pub include: IncludePolicy,
     /// Policy for `$ref` references.
     pub refs: RefPolicy,
+    /// Shared filesystem boundary for includes and file references.
+    pub files: FilePolicy,
+    /// Shared session limits for all resolution capabilities.
+    pub limits: ResolutionLimits,
 }
 
 impl ResolutionPolicy {
-    /// Both `!include` and `$ref` disabled, empty allow/deny lists.
+    /// Balanced limits with both capabilities disabled.
     #[must_use]
-    pub const fn disabled() -> Self {
+    pub const fn moderate() -> Self {
         Self {
             include: IncludePolicy {
-                enabled: false,
-                root: None,
-                allow: Vec::new(),
-                deny: Vec::new(),
-                max_depth: 10,
-                max_total_bytes: None,
-                follow_symlinks: false,
+                mode: ResolutionMode::Disabled,
             },
             refs: RefPolicy {
-                enabled: false,
+                mode: ResolutionMode::Disabled,
                 allow_schemes: Vec::new(),
                 allow_hosts: Vec::new(),
                 timeout: Duration::from_secs(30),
             },
+            files: FilePolicy {
+                root: None,
+                allow: Vec::new(),
+                deny: Vec::new(),
+                follow_symlinks: false,
+            },
+            limits: ResolutionLimits {
+                max_depth: Some(10),
+                max_edges: Some(256),
+                max_materialized_bytes: Some(256 * 1024 * 1024),
+            },
         }
+    }
+
+    /// Tight limits with both capabilities disabled.
+    #[must_use]
+    pub const fn strict() -> Self {
+        let mut policy = Self::moderate();
+        policy.limits = ResolutionLimits {
+            max_depth: Some(5),
+            max_edges: Some(32),
+            max_materialized_bytes: Some(10 * 1024 * 1024),
+        };
+        policy
+    }
+
+    /// Generous limits with both capabilities disabled.
+    #[must_use]
+    pub const fn trusted() -> Self {
+        let mut policy = Self::moderate();
+        policy.limits = ResolutionLimits {
+            max_depth: Some(64),
+            max_edges: Some(4_096),
+            max_materialized_bytes: None,
+        };
+        policy
+    }
+
+    /// Unlimited resolution budgets with both capabilities disabled.
+    #[must_use]
+    pub const fn unchecked() -> Self {
+        let mut policy = Self::moderate();
+        policy.limits = ResolutionLimits {
+            max_depth: None,
+            max_edges: None,
+            max_materialized_bytes: None,
+        };
+        policy
+    }
+
+    /// Compatibility alias for balanced, disabled resolution.
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self::moderate()
     }
 
     /// Returns `true` when include or reference resolution is enabled.
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
-        self.include.enabled || self.refs.enabled
+        self.include.mode.allows_explicit() || self.refs.mode.allows_explicit()
+    }
+
+    /// Returns `true` when an explicit action may use `capability`.
+    #[must_use]
+    pub const fn allows_explicit(&self, capability: ResolutionCapability) -> bool {
+        self.mode(capability).allows_explicit()
+    }
+
+    /// Returns `true` when ordinary loading resolves `capability`.
+    #[must_use]
+    pub const fn resolves_automatically(&self, capability: ResolutionCapability) -> bool {
+        self.mode(capability).resolves_automatically()
+    }
+
+    const fn mode(&self, capability: ResolutionCapability) -> ResolutionMode {
+        match capability {
+            ResolutionCapability::Include => self.include.mode,
+            ResolutionCapability::Ref => self.refs.mode,
+        }
+    }
+}
+
+impl Default for ResolutionPolicy {
+    fn default() -> Self {
+        Self::moderate()
     }
 }
 
@@ -453,19 +584,24 @@ impl ResolutionPolicy {
 /// Controls how `!include` directives are resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncludePolicy {
-    /// Whether `!include` processing is enabled.
-    pub enabled: bool,
-    /// Root directory for resolving relative include paths.
+    /// Permission and automatic-loading mode.
+    pub mode: ResolutionMode,
+}
+
+// ---------------------------------------------------------------------------
+// FilePolicy
+// ---------------------------------------------------------------------------
+
+/// Shared filesystem boundary for includes and file references.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePolicy {
+    /// Root directory capability for resolving file targets.
     pub root: Option<PathBuf>,
-    /// Glob patterns for allowed include paths.
+    /// Glob patterns for allowed root-relative paths.
     pub allow: Vec<String>,
-    /// Glob patterns for denied include paths (checked before allow).
+    /// Glob patterns for denied root-relative paths (checked before allow).
     pub deny: Vec<String>,
-    /// Maximum include recursion depth.
-    pub max_depth: usize,
-    /// Maximum total bytes read across all includes.
-    pub max_total_bytes: Option<usize>,
-    /// Whether to follow symbolic links when resolving includes.
+    /// Whether to follow symbolic links that remain inside the root.
     pub follow_symlinks: bool,
 }
 
@@ -476,8 +612,8 @@ pub struct IncludePolicy {
 /// Controls how `$ref` references are resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefPolicy {
-    /// Whether `$ref` processing is enabled.
-    pub enabled: bool,
+    /// Permission and automatic-loading mode.
+    pub mode: ResolutionMode,
     /// Allowed URL schemes (e.g. `["https"]`).
     pub allow_schemes: Vec<String>,
     /// Allowed hostnames for remote refs.
@@ -498,8 +634,73 @@ mod tests {
     fn default_is_moderate() {
         let cfg = LoaderConfig::default();
         assert_eq!(cfg.limits.max_depth, Some(256));
-        assert!(!cfg.resolution.include.enabled);
-        assert!(!cfg.resolution.refs.enabled);
+        assert_eq!(cfg.resolution.include.mode, ResolutionMode::Disabled);
+        assert_eq!(cfg.resolution.refs.mode, ResolutionMode::Disabled);
+    }
+
+    #[test]
+    fn resolution_presets_match_adr_0016() {
+        let cases = [
+            (
+                LoaderConfig::moderate(),
+                Some(10),
+                Some(256),
+                Some(256 * 1024 * 1024),
+            ),
+            (
+                LoaderConfig::strict(),
+                Some(5),
+                Some(32),
+                Some(10 * 1024 * 1024),
+            ),
+            (LoaderConfig::trusted(), Some(64), Some(4_096), None),
+            (LoaderConfig::unchecked(), None, None, None),
+        ];
+
+        for (config, depth, edges, bytes) in cases {
+            assert_eq!(config.resolution.limits.max_depth, depth);
+            assert_eq!(config.resolution.limits.max_edges, edges);
+            assert_eq!(config.resolution.limits.max_materialized_bytes, bytes);
+            assert!(!config.resolution.is_enabled());
+        }
+    }
+
+    #[test]
+    fn explicit_and_automatic_modes_are_distinct() {
+        let mut policy = ResolutionPolicy::moderate();
+        policy.include.mode = ResolutionMode::Explicit;
+        policy.refs.mode = ResolutionMode::Automatic;
+
+        assert!(policy.allows_explicit(ResolutionCapability::Include));
+        assert!(!policy.resolves_automatically(ResolutionCapability::Include));
+        assert!(policy.allows_explicit(ResolutionCapability::Ref));
+        assert!(policy.resolves_automatically(ResolutionCapability::Ref));
+    }
+
+    #[test]
+    fn resolution_limit_errors_are_structured() {
+        let cases = [
+            (
+                ResourceLimit::ResolutionDepth,
+                "resolution depth 11 exceeds maximum of 10",
+            ),
+            (
+                ResourceLimit::ResolutionEdges,
+                "resolution edges 11 exceeds maximum of 10",
+            ),
+            (
+                ResourceLimit::MaterializedBytes,
+                "materialized bytes 11 exceeds maximum of 10",
+            ),
+        ];
+
+        for (limit, message) in cases {
+            let error = LimitExceeded::new(limit, 11, 10);
+            assert_eq!(error.limit, limit);
+            assert_eq!(error.observed, 11);
+            assert_eq!(error.maximum, 10);
+            assert_eq!(error.to_string(), message);
+        }
     }
 
     #[test]
@@ -533,10 +734,10 @@ mod tests {
     #[test]
     fn resolution_disabled_by_default() {
         let cfg = LoaderConfig::default();
-        assert!(!cfg.resolution.include.enabled);
-        assert!(!cfg.resolution.refs.enabled);
-        assert!(cfg.resolution.include.allow.is_empty());
-        assert!(cfg.resolution.include.deny.is_empty());
+        assert_eq!(cfg.resolution.include.mode, ResolutionMode::Disabled);
+        assert_eq!(cfg.resolution.refs.mode, ResolutionMode::Disabled);
+        assert!(cfg.resolution.files.allow.is_empty());
+        assert!(cfg.resolution.files.deny.is_empty());
         assert!(cfg.resolution.refs.allow_schemes.is_empty());
         assert!(cfg.resolution.refs.allow_hosts.is_empty());
     }
@@ -546,11 +747,11 @@ mod tests {
         let mut policy = ResolutionPolicy::disabled();
         assert!(!policy.is_enabled());
 
-        policy.include.enabled = true;
+        policy.include.mode = ResolutionMode::Explicit;
         assert!(policy.is_enabled());
 
-        policy.include.enabled = false;
-        policy.refs.enabled = true;
+        policy.include.mode = ResolutionMode::Disabled;
+        policy.refs.mode = ResolutionMode::Automatic;
         assert!(policy.is_enabled());
     }
 

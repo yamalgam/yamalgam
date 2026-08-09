@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use yamalgam_core::{LoaderConfig, TagResolution};
+use yamalgam_core::{LoaderConfig, ResolutionMode, TagResolution};
 use yamalgam_parser::{ParseError, ResolveError};
 use yamalgam_serde::{
     Deserializer, Error, from_reader, from_reader_unchecked, from_str, from_str_unchecked,
@@ -146,7 +146,7 @@ fn config_with_documents_iterator() {
 #[test]
 fn configured_noop_deserializer_rejects_enabled_resolution_policy() {
     let mut config = LoaderConfig::moderate();
-    config.resolution.refs.enabled = true;
+    config.resolution.refs.mode = ResolutionMode::Explicit;
 
     assert!(matches!(
         from_str_with_config::<String>("value", &config),

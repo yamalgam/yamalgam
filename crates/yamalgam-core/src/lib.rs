@@ -50,8 +50,8 @@ pub mod value;
 pub use diagnostic::{Diagnostic, Label, Mark, Severity, Span};
 
 pub use loader::{
-    IncludePolicy, LimitExceeded, LoaderConfig, RefPolicy, ResolutionPolicy, ResourceLimit,
-    ResourceLimits,
+    FilePolicy, IncludePolicy, LimitExceeded, LoaderConfig, RefPolicy, ResolutionCapability,
+    ResolutionLimits, ResolutionMode, ResolutionPolicy, ResourceLimit, ResourceLimits,
 };
 
 pub use tag::{Yaml12TagResolver, resolve_plain_scalar};

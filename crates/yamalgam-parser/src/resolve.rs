@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::{fmt, io};
 
 pub use smallvec::{SmallVec, smallvec};
-use yamalgam_core::{LimitExceeded, LoaderConfig};
+use yamalgam_core::{LimitExceeded, LoaderConfig, ResolutionMode};
 
 use crate::error::ParseError;
 use crate::event::Event;
@@ -208,8 +208,8 @@ impl<'input> Resolver<'input> for NoopResolver {
     ) -> Result<ResolvedEventBuf<'input>, ResolveError> {
         if config.resolution.is_enabled() {
             return Err(ResolveError::UnsupportedResolutionPolicy {
-                include: config.resolution.include.enabled,
-                refs: config.resolution.refs.enabled,
+                include: config.resolution.include.mode != ResolutionMode::Disabled,
+                refs: config.resolution.refs.mode != ResolutionMode::Disabled,
             });
         }
         self.on_event(event)
@@ -311,8 +311,7 @@ mod tests {
 
     use super::*;
     use crate::Parser;
-    use yamalgam_core::LoaderConfig;
-    use yamalgam_core::ResourceLimit;
+    use yamalgam_core::{LoaderConfig, ResolutionMode, ResourceLimit};
 
     fn map_parse_error<'input>(
         result: Result<Event<'input>, ParseError>,
@@ -377,8 +376,8 @@ mod tests {
     #[test]
     fn noop_resolver_rejects_enabled_resolution_policy_once() {
         let mut config = LoaderConfig::moderate();
-        config.resolution.include.enabled = true;
-        config.resolution.refs.enabled = true;
+        config.resolution.include.mode = ResolutionMode::Explicit;
+        config.resolution.refs.mode = ResolutionMode::Automatic;
         let parser = Parser::with_config("value", &config);
         let mut events = ResolvedEvents::new_with_config(
             Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
@@ -511,7 +510,7 @@ mod tests {
     #[test]
     fn custom_resolver_accepts_enabled_resolution_policy() {
         let mut config = LoaderConfig::moderate();
-        config.resolution.include.enabled = true;
+        config.resolution.include.mode = ResolutionMode::Explicit;
         let observed_depth = Rc::new(Cell::new(None));
         let parser = Parser::with_config("value", &config);
 

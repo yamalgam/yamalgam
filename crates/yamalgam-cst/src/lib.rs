@@ -1081,10 +1081,12 @@ mod tests {
 
     #[test]
     fn configured_noop_cst_rejects_enabled_resolution_policy_losslessly() {
+        use yamalgam_core::ResolutionMode;
+
         let input = "value";
         let mut config = LoaderConfig::moderate();
-        config.resolution.include.enabled = true;
-        config.resolution.refs.enabled = true;
+        config.resolution.include.mode = ResolutionMode::Explicit;
+        config.resolution.refs.mode = ResolutionMode::Automatic;
 
         let report = parse_to_cst_report_with_config(input, &config);
 
