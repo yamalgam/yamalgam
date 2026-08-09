@@ -80,7 +80,7 @@ fn config() -> LoaderConfig {
     let mut config = LoaderConfig::unchecked();
     config.resolution.include.mode = ResolutionMode::Automatic;
     config.resolution.refs.mode = ResolutionMode::Automatic;
-    config.resolution.refs.allow_schemes = vec!["memory".into(), "http".into()];
+    config.resolution.refs.allow_schemes = vec!["memory".into(), "file".into(), "http".into()];
     config.resolution.refs.allow_hosts = vec!["example.com".into()];
     config
 }

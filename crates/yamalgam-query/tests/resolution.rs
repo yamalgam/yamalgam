@@ -9,7 +9,9 @@ use yamalgam_parser::{ResolutionErrorCategory, ResolveError};
 use yamalgam_query::EmitOpts;
 use yamalgam_query::emit::to_yaml;
 use yamalgam_query::engine::{self, InputMeta, RunCtx};
-use yamalgam_query::{Meta, ResolvedInput, YamlVal, YgError, resolution_handle, resolve_document};
+use yamalgam_query::{
+    Meta, ResolvedInput, YamlVal, YgError, resolution_handle, resolve_document, resolve_documents,
+};
 use yamalgam_resolve::{
     DiscoveryRequest, ResourceId, ResourceProvenance, ResourceRequest, ResourceRetriever,
     RetrieveError, RetrievedResource,
@@ -222,6 +224,42 @@ fn automatic_resolution_failures_remain_typed_input_errors() {
             category: ResolutionErrorCategory::Retrieval,
             ..
         })
+    ));
+}
+
+#[test]
+fn document_streams_receive_independent_sessions_over_one_retriever() {
+    let root = id("memory://fixtures/root.yaml");
+    let retriever = CountingRetriever::default();
+    retriever.insert(id("memory://fixtures/first.yaml"), "value: first\n");
+    retriever.insert(id("memory://fixtures/second.yaml"), "value: second\n");
+
+    let inputs = resolve_documents(
+        "---\n$ref: ./first.yaml\n---\n$ref: ./second.yaml\n",
+        root,
+        retriever,
+        &automatic_config(),
+    )
+    .unwrap();
+
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(
+        inputs[0]
+            .value
+            .get_str("value")
+            .and_then(YamlVal::as_str_content),
+        Some("first")
+    );
+    assert_eq!(
+        inputs[1]
+            .value
+            .get_str("value")
+            .and_then(YamlVal::as_str_content),
+        Some("second")
+    );
+    assert!(!std::rc::Rc::ptr_eq(
+        &inputs[0].resolution,
+        &inputs[1].resolution
     ));
 }
 

@@ -55,10 +55,6 @@ pub struct Cli {
     #[command(flatten)]
     pub common: librebar::cli::CommonArgs,
 
-    /// Path to configuration file (overrides discovery)
-    #[arg(long, global = true, value_name = "FILE")]
-    pub config: Option<camino::Utf8PathBuf>,
-
     /// Query-mode arguments used when no subcommand is selected.
     #[command(flatten)]
     pub query: QueryArgs,
@@ -103,6 +99,46 @@ pub struct QueryArgs {
     /// Disable the `env` filter independently of input resource limits.
     #[arg(long)]
     pub no_env: bool,
+
+    /// Permit explicit `include` filter access to local files.
+    #[arg(long, conflicts_with = "resolve_includes")]
+    pub allow_includes: bool,
+
+    /// Resolve `!include` directives automatically while loading.
+    #[arg(long, conflicts_with = "allow_includes")]
+    pub resolve_includes: bool,
+
+    /// Permit explicit `ref` filter access through SCHEME.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_enum,
+        ignore_case = true,
+        conflicts_with = "resolve_refs"
+    )]
+    pub allow_refs: Vec<RefSchemeArg>,
+
+    /// Resolve `$ref` directives automatically through SCHEME.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_enum,
+        ignore_case = true,
+        conflicts_with = "allow_refs"
+    )]
+    pub resolve_refs: Vec<RefSchemeArg>,
+
+    /// Permit HTTP references to exactly this host (repeatable).
+    #[arg(long = "allow-ref-host")]
+    pub allow_ref_hosts: Vec<String>,
+
+    /// Confine file includes and references to this directory.
+    #[arg(long, value_name = "DIR")]
+    pub resolution_root: Option<camino::Utf8PathBuf>,
+
+    /// Base resource URI for standard input and anonymous values.
+    #[arg(long, value_name = "URI")]
+    pub base_uri: Option<String>,
 
     /// Bind VALUE to $NAME as a string without filter interpolation.
     #[arg(long = "arg", value_names = ["NAME", "VALUE"], num_args = 2)]
@@ -182,6 +218,29 @@ pub enum SchemaArg {
     Yaml11,
 }
 
+/// Resource schemes accepted by `--allow-refs` and `--resolve-refs`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefSchemeArg {
+    /// Capability-rooted local files.
+    File,
+    /// Unencrypted HTTP with an explicit host allowlist.
+    Http,
+    /// TLS-protected HTTP with an explicit host allowlist.
+    Https,
+}
+
+impl RefSchemeArg {
+    /// Return the normalized URI scheme spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+}
+
 /// Available subcommands for the CLI.
 #[derive(Subcommand)]
 pub enum Commands {
@@ -195,5 +254,6 @@ pub enum Commands {
 ///
 /// Wraps the derive output with librebar's compact `-h`/`--help` flag.
 pub fn command() -> clap::Command {
-    librebar::cli::with_help_short(Cli::command())
+    let command = Cli::command().mut_arg("config", |argument| argument.short(None));
+    librebar::cli::with_help_short(command)
 }

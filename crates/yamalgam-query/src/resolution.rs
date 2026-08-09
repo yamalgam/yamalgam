@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use yamalgam_core::{LoaderConfig, ResolutionCapability};
-use yamalgam_parser::{AtomFlags, Chomp, CollectionStyle, Parser, ResolveError, ScalarStyle};
+use yamalgam_parser::{
+    AtomFlags, Chomp, CollectionStyle, Event, Parser, ResolveError, ScalarStyle,
+};
 use yamalgam_resolve::{
     DocumentError, OwnedDocument, OwnedKind, OwnedNode, OwnedScalar, ResolutionReport, ResourceId,
     ResourceRetriever,
@@ -116,6 +118,101 @@ where
         value,
         resolution: Rc::new(RefCell::new(resolver)),
     })
+}
+
+/// Parse every YAML document and give each one an independent resolution session.
+///
+/// The retriever is cloned per document so callers can share one thread-safe
+/// router while keeping caches, budgets, and reports scoped to one root
+/// document.
+///
+/// # Errors
+///
+/// Returns a typed parse, document-conversion, or input-resolution failure.
+pub fn resolve_documents<R>(
+    input: &str,
+    root: ResourceId,
+    retriever: R,
+    config: &LoaderConfig,
+) -> Result<Vec<ResolvedInput>, YgError>
+where
+    R: ResourceRetriever + Clone + 'static,
+{
+    config
+        .limits
+        .check_input_size(input.len())
+        .map_err(|error| YgError::input_limit(error, error.to_string()))?;
+    let events = Parser::with_config(input, config)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| YgError::from(BuildError::Parse(error)))?;
+    let documents = split_documents(root.clone(), events)?;
+    let mut inputs = Vec::with_capacity(documents.len());
+    for (document_index, document) in documents.into_iter().enumerate() {
+        let result: Result<ResolvedInput, YgError> = (|| {
+            let mut resolver =
+                SessionQueryResolver::new(retriever.clone(), config.clone(), Some(root.clone()));
+            let document = resolver.resolve_input(document).map_err(|error| {
+                let message = error.to_string();
+                YgError::input_resolution(error, message)
+            })?;
+            let value =
+                value_from_owned_node(document.root, ResolutionSessionKey::UNREGISTERED, config)?;
+            Ok(ResolvedInput {
+                value,
+                resolution: Rc::new(RefCell::new(resolver)),
+            })
+        })();
+        match result {
+            Ok(input) => inputs.push(input),
+            Err(error) => return Err(error.with_document_context(document_index)),
+        }
+    }
+    Ok(inputs)
+}
+
+fn split_documents(
+    origin: ResourceId,
+    events: Vec<Event<'_>>,
+) -> Result<Vec<OwnedDocument>, YgError> {
+    let mut documents = Vec::new();
+    let mut current = None::<Vec<Event<'_>>>;
+    for event in events {
+        match event {
+            Event::DocumentStart { .. } => {
+                if current.replace(vec![event]).is_some() {
+                    return Err(YgError::InputParse(
+                        "unexpected document start in YAML document".into(),
+                    ));
+                }
+            }
+            Event::DocumentEnd { .. } => {
+                let mut document = current.take().ok_or_else(|| {
+                    YgError::InputParse("unexpected document end in YAML stream".into())
+                })?;
+                document.push(event);
+                let document_index = documents.len();
+                documents.push(
+                    OwnedDocument::from_events(origin.clone(), document)
+                        .map_err(|error| YgError::InputParse(error.to_string()))
+                        .map_err(|error| error.with_document_context(document_index))?,
+                );
+            }
+            Event::StreamStart
+            | Event::StreamEnd
+            | Event::VersionDirective { .. }
+            | Event::TagDirective { .. } => {}
+            event => current
+                .as_mut()
+                .ok_or_else(|| YgError::InputParse("YAML node appeared outside a document".into()))?
+                .push(event),
+        }
+    }
+    if current.is_some() {
+        return Err(YgError::InputParse(
+            "YAML stream contains a truncated document".into(),
+        ));
+    }
+    Ok(documents)
 }
 
 pub(crate) fn value_from_owned_node(

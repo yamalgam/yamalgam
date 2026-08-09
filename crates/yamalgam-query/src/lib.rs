@@ -58,7 +58,7 @@ pub use emit::{EmitError, EmitFormat, EmitOpts};
 pub use error::{BuildError, YgError};
 pub use resolution::{
     QueryResolver, ResolutionHandle, ResolutionSessionKey, ResolvedInput, ResourceOrigin,
-    resolution_handle, resolve_document,
+    resolution_handle, resolve_document, resolve_documents,
 };
 pub use value::{Meta, NodeStyle, ScalarPresentation, YamlVal};
 

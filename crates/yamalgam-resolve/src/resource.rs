@@ -12,6 +12,8 @@ use crate::pointer::{JsonPointer, PointerError};
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum ResourceId {
+    /// A non-retrievable root with no relative external-resource base.
+    Anonymous,
     /// A filesystem resource. Paths retain their platform-native encoding.
     File(PathBuf),
     /// A URL resource, including memory, HTTP, and application-defined schemes.
@@ -19,6 +21,12 @@ pub enum ResourceId {
 }
 
 impl ResourceId {
+    /// Construct an identity for standard input or another anonymous root.
+    #[must_use]
+    pub const fn anonymous() -> Self {
+        Self::Anonymous
+    }
+
     /// Parse a fragmentless URL or UTF-8 file identity.
     ///
     /// Use [`Self::from_file`] when a file path is not valid UTF-8 or when a
@@ -86,7 +94,7 @@ impl ResourceId {
     pub fn as_path(&self) -> Option<&Path> {
         match self {
             Self::File(path) => Some(path),
-            Self::Uri(_) => None,
+            Self::Anonymous | Self::Uri(_) => None,
         }
     }
 
@@ -98,7 +106,7 @@ impl ResourceId {
     #[must_use]
     pub const fn as_url(&self) -> Option<&Url> {
         match self {
-            Self::File(_) => None,
+            Self::Anonymous | Self::File(_) => None,
             Self::Uri(url) => Some(url),
         }
     }
@@ -107,6 +115,7 @@ impl ResourceId {
     #[must_use]
     pub fn scheme(&self) -> &str {
         match self {
+            Self::Anonymous => "anonymous",
             Self::File(_) => "file",
             Self::Uri(url) => url.scheme(),
         }
@@ -134,6 +143,7 @@ impl ResourceId {
 
     fn redacted(&self) -> String {
         match self {
+            Self::Anonymous => "<anonymous>".to_owned(),
             Self::File(path) => path.display().to_string(),
             Self::Uri(url) => {
                 let mut redacted = url.clone();
@@ -156,6 +166,7 @@ impl fmt::Display for ResourceId {
 impl fmt::Debug for ResourceId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Anonymous => formatter.write_str(&self.redacted()),
             Self::File(_) => formatter
                 .debug_tuple("File")
                 .field(&self.redacted())
@@ -270,6 +281,7 @@ fn resolve_resource(
     let base = base.ok_or(ResourceError::MissingBase)?;
     base.validate()?;
     match base {
+        ResourceId::Anonymous => Err(ResourceError::MissingBase),
         ResourceId::File(base_path) => {
             let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
             Ok(ResourceId::from_file(parent.join(path)))

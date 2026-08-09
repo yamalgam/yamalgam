@@ -174,6 +174,62 @@ fn root_is_primed_for_same_document_references() {
 }
 
 #[test]
+fn same_document_refs_bypass_transport_policy_but_external_files_do_not() {
+    let retriever = SpyRetriever::default();
+    let anonymous = ResourceId::anonymous();
+    let input = document(&anonymous, "value: retained\ncopy: {$ref: '#/value'}\n");
+    let mut selected = config(ResolutionMode::Automatic, ResolutionMode::Disabled);
+    selected.resolution.refs.allow_schemes = vec!["http".into()];
+    let output = ResolutionSession::new(retriever.clone(), selected)
+        .resolve_root(input)
+        .unwrap();
+    let OwnedKind::Mapping { entries, .. } = output.root.kind else {
+        panic!("expected mapping root");
+    };
+    assert!(matches!(
+        &entries[1].1.kind,
+        OwnedKind::Scalar(scalar) if scalar.value == "retained"
+    ));
+
+    let root = ResourceId::from_file("/sandbox/root.yaml");
+    let input = document(&root, "$ref: ./external.yaml\n");
+    let mut selected = config(ResolutionMode::Automatic, ResolutionMode::Disabled);
+    selected.resolution.refs.allow_schemes = vec!["http".into()];
+    let error = ResolutionSession::new(retriever.clone(), selected)
+        .resolve_root(input)
+        .unwrap_err();
+    assert_eq!(
+        resolution_error(&error).0,
+        ResolutionErrorCategory::PolicyDenied
+    );
+    assert!(retriever.retrieve_calls().is_empty());
+}
+
+#[test]
+fn cached_include_resources_do_not_bypass_ref_transport_policy() {
+    let retriever = SpyRetriever::default();
+    let root = ResourceId::from_file("/sandbox/root.yaml");
+    let shared = ResourceId::from_file("/sandbox/shared.yaml");
+    retriever.insert(shared.clone(), "retained\n");
+    let input = document(
+        &root,
+        "included: !include ./shared.yaml\nreferenced: {$ref: ./shared.yaml}\n",
+    );
+    let mut selected = config(ResolutionMode::Automatic, ResolutionMode::Automatic);
+    selected.resolution.refs.allow_schemes = vec!["http".into()];
+
+    let error = ResolutionSession::new(retriever.clone(), selected)
+        .resolve_root(input)
+        .unwrap_err();
+
+    assert_eq!(
+        resolution_error(&error).0,
+        ResolutionErrorCategory::PolicyDenied
+    );
+    assert_eq!(retriever.retrieve_calls(), vec![shared]);
+}
+
+#[test]
 fn invalid_utf8_yaml_and_document_count_remain_distinct() {
     let cases = [
         (

@@ -122,6 +122,65 @@ pub enum YgError {
 }
 
 impl YgError {
+    /// Prefix an input-side error with filename and document context while
+    /// retaining any structured source payload.
+    #[must_use]
+    pub fn with_input_context(self, source: &str, document_index: usize) -> Self {
+        self.with_document_context(document_index)
+            .with_input_source(source)
+    }
+
+    /// Prefix an input-side error with a filename while retaining structured
+    /// source payloads and any document context already present.
+    #[must_use]
+    pub fn with_input_source(self, source: &str) -> Self {
+        let contextualize = |message: String| {
+            if message.starts_with("document ") {
+                format!("{source} {message}")
+            } else {
+                format!("{source}: {message}")
+            }
+        };
+        match self {
+            Self::InputResolution { error, message } => Self::InputResolution {
+                error,
+                message: contextualize(message),
+            },
+            Self::InputLimit { error, message } => Self::InputLimit {
+                error,
+                message: contextualize(message),
+            },
+            Self::ResourceOverflow { resource, message } => Self::ResourceOverflow {
+                resource,
+                message: contextualize(message),
+            },
+            Self::InputParse(message) => Self::InputParse(contextualize(message)),
+            Self::InputRead(message) => Self::InputRead(contextualize(message)),
+            error => error,
+        }
+    }
+
+    pub(crate) fn with_document_context(self, document_index: usize) -> Self {
+        let contextualize = |message: String| format!("document {}: {message}", document_index + 1);
+        match self {
+            Self::InputResolution { error, message } => Self::InputResolution {
+                error,
+                message: contextualize(message),
+            },
+            Self::InputLimit { error, message } => Self::InputLimit {
+                error,
+                message: contextualize(message),
+            },
+            Self::ResourceOverflow { resource, message } => Self::ResourceOverflow {
+                resource,
+                message: contextualize(message),
+            },
+            Self::InputParse(message) => Self::InputParse(contextualize(message)),
+            Self::InputRead(message) => Self::InputRead(contextualize(message)),
+            error => error,
+        }
+    }
+
     pub(crate) fn runtime(exception: jaq_core::Exn<'_, crate::YamlVal>) -> Self {
         match exception.get_err() {
             Ok(error) => Self::Runtime(error.to_string()),

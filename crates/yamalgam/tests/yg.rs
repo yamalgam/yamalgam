@@ -2,8 +2,12 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 #[allow(deprecated)]
@@ -18,6 +22,117 @@ fn yg_process() -> std::process::Command {
     let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin("yg"));
     command.env("YAMALGAM_LOG_DIR", std::env::temp_dir());
     command
+}
+
+#[derive(Clone)]
+struct HttpReply {
+    status: &'static str,
+    headers: Vec<(&'static str, String)>,
+    body: Vec<u8>,
+}
+
+impl HttpReply {
+    fn ok(body: impl Into<Vec<u8>>) -> Self {
+        Self {
+            status: "200 OK",
+            headers: Vec::new(),
+            body: body.into(),
+        }
+    }
+}
+
+struct HttpFixture {
+    address: SocketAddr,
+    accepted: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl HttpFixture {
+    fn spawn(replies: Vec<HttpReply>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_accepted = Arc::clone(&accepted);
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if worker_stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        stream.set_nonblocking(false).unwrap();
+                        let index = worker_accepted.fetch_add(1, Ordering::AcqRel);
+                        let Some(reply) = replies.get(index) else {
+                            continue;
+                        };
+                        read_http_request(&mut stream);
+                        let _ = stream.write_all(&render_http_response(reply));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            address,
+            accepted,
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.address)
+    }
+
+    fn accepted(&self) -> usize {
+        self.accepted.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for HttpFixture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(worker) = self.worker.take() {
+            worker.join().unwrap();
+        }
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => request.extend_from_slice(&buffer[..count]),
+        }
+    }
+}
+
+fn render_http_response(reply: &HttpReply) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        reply.status,
+        reply.body.len()
+    )
+    .into_bytes();
+    for (name, value) in &reply.headers {
+        response.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    response.extend_from_slice(b"\r\n");
+    response.extend_from_slice(&reply.body);
+    response
 }
 
 #[test]
@@ -634,4 +749,478 @@ fn in_place_failure_leaves_current_file_unchanged() {
 
     yg().args(["-i", ".a + true"]).arg(&input).assert().code(5);
     assert_eq!(std::fs::read_to_string(input).unwrap(), "a: 1\n");
+}
+
+#[test]
+fn resolution_flags_are_documented() {
+    yg().arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--allow-includes"))
+        .stdout(predicate::str::contains("--resolve-includes"))
+        .stdout(predicate::str::contains("--allow-refs <ALLOW_REFS>"))
+        .stdout(predicate::str::contains("--resolve-refs <RESOLVE_REFS>"))
+        .stdout(predicate::str::contains(
+            "--allow-ref-host <ALLOW_REF_HOSTS>",
+        ))
+        .stdout(predicate::str::contains("--resolution-root <DIR>"))
+        .stdout(predicate::str::contains("--base-uri <URI>"));
+}
+
+#[test]
+fn resolution_modes_conflict_and_ref_schemes_are_validated() {
+    yg().args(["--allow-includes", "--resolve-includes", "."])
+        .assert()
+        .code(2);
+    yg().args(["--allow-refs=file", "--resolve-refs=file", "."])
+        .assert()
+        .code(2);
+    yg().args(["--allow-refs=file,file", "."])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("duplicate reference scheme file"));
+    yg().args(["--allow-refs=ftp", "."])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value 'ftp'"));
+}
+
+#[test]
+fn network_resolution_requires_matching_schemes_and_hosts() {
+    yg().args(["--allow-refs=http", "."])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("requires --allow-ref-host"));
+    yg().args(["--allow-refs=file", "--allow-ref-host=example.test", "."])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--allow-ref-host requires http or https",
+        ));
+
+    for host in ["https://example.test", "example.test:443", "bad host"] {
+        yg().arg("--allow-refs=https")
+            .arg(format!("--allow-ref-host={host}"))
+            .arg(".")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("invalid --allow-ref-host"));
+    }
+}
+
+#[test]
+fn base_uri_and_resolution_root_are_validated_before_input() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_base = outside.path().join("stdin.yaml");
+
+    yg().arg("--allow-refs=file")
+        .arg(format!("--resolution-root={}", root.path().display()))
+        .arg(format!("--base-uri={}", outside_base.display()))
+        .arg(".")
+        .write_stdin("null\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("outside --resolution-root"));
+    yg().args(["--allow-refs=file", "--base-uri=relative.yaml", "."])
+        .write_stdin("null\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("absolute URI"));
+    yg().args([
+        "--allow-refs=https",
+        "--allow-ref-host=example.test",
+        "--base-uri=https://example.test/root.yaml#node",
+        ".",
+    ])
+    .write_stdin("null\n")
+    .assert()
+    .code(2)
+    .stderr(predicate::str::contains("must not contain a fragment"));
+}
+
+#[test]
+fn resolution_is_disabled_by_default_and_file_refs_are_opt_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root.yaml");
+    let shared = dir.path().join("shared.yaml");
+    std::fs::write(&root, "$ref: ./shared.yaml\n").unwrap();
+    std::fs::write(&shared, "answer: 42\n").unwrap();
+
+    yg().arg(".")
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout("$ref: ./shared.yaml\n");
+    yg().args(["--resolve-refs=file", "."])
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout("answer: 42\n");
+    yg().args(["--allow-refs=file", "ref"])
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout("answer: 42\n");
+}
+
+#[test]
+fn file_includes_use_the_input_directory_or_explicit_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let root = nested.join("root.yaml");
+    std::fs::write(&root, "value: !include shared.yaml\n").unwrap();
+    std::fs::write(nested.join("shared.yaml"), "included: true\n").unwrap();
+
+    yg().args(["--resolve-includes", ".value"])
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout("included: true\n");
+    yg().arg("--allow-includes")
+        .arg(".value | include")
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout("included: true\n");
+
+    std::fs::write(&root, "$ref: ../outside.yaml\n").unwrap();
+    std::fs::write(dir.path().join("outside.yaml"), "escaped: true\n").unwrap();
+    yg().arg("--resolve-refs=file")
+        .arg(format!("--resolution-root={}", nested.display()))
+        .arg(".")
+        .arg(&root)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("escapes the configured root"));
+}
+
+#[test]
+fn resolution_tracks_per_file_bases_across_multiple_roots_and_slurp() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    for (directory, value) in [(&first, "first"), (&second, "second")] {
+        std::fs::write(directory.path().join("root.yaml"), "$ref: ./shared.yaml\n").unwrap();
+        std::fs::write(
+            directory.path().join("shared.yaml"),
+            format!("value: {value}\n"),
+        )
+        .unwrap();
+    }
+    let first_root = first.path().join("root.yaml");
+    let second_root = second.path().join("root.yaml");
+
+    yg().args(["--resolve-refs=file", ".value"])
+        .arg(&first_root)
+        .arg(&second_root)
+        .assert()
+        .success()
+        .stdout("first\n---\nsecond\n");
+    yg().args(["--allow-refs=file", "-s", "map(ref | .value)"])
+        .arg(&first_root)
+        .arg(&second_root)
+        .assert()
+        .success()
+        .stdout("- first\n- second\n");
+}
+
+#[test]
+fn stdin_resolution_uses_explicit_file_bases_and_roots() {
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().join("stdin.yaml");
+    std::fs::write(directory.path().join("shared.yaml"), "answer: 42\n").unwrap();
+
+    yg().arg("--resolve-refs=file")
+        .arg(format!("--resolution-root={}", directory.path().display()))
+        .arg(format!("--base-uri={}", base.display()))
+        .arg(".")
+        .write_stdin("$ref: ./shared.yaml\n")
+        .assert()
+        .success()
+        .stdout("answer: 42\n");
+    yg().arg("--resolve-includes")
+        .arg(format!("--resolution-root={}", directory.path().display()))
+        .arg(".value")
+        .write_stdin("value: !include shared.yaml\n")
+        .assert()
+        .success()
+        .stdout("answer: 42\n");
+
+    yg().args(["--allow-refs=file", "."])
+        .write_stdin("$ref: ./shared.yaml\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "relative filesystem access from standard input",
+        ));
+
+    yg().args(["--resolve-refs=http", "--allow-ref-host=example.test", "."])
+        .write_stdin("$ref: ./relative.yaml\n")
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("requires a base"));
+
+    yg().args([
+        "--resolve-refs=http",
+        "--allow-ref-host=example.test",
+        ".copy.answer",
+    ])
+    .write_stdin("root: {answer: 42}\ncopy: {$ref: '#/root'}\n")
+    .assert()
+    .success()
+    .stdout("42\n");
+}
+
+#[test]
+fn raw_and_null_inputs_can_resolve_constructed_refs_from_the_active_base() {
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().join("stdin.yaml");
+    std::fs::write(directory.path().join("shared.yaml"), "answer: 42\n").unwrap();
+    let root_arg = format!("--resolution-root={}", directory.path().display());
+    let base_arg = format!("--base-uri={}", base.display());
+
+    yg().args([
+        "--allow-refs=file",
+        &root_arg,
+        &base_arg,
+        "-R",
+        r#"{"$ref": .} | ref"#,
+    ])
+    .write_stdin("./shared.yaml\n")
+    .assert()
+    .success()
+    .stdout("answer: 42\n");
+    yg().args([
+        "--allow-refs=file",
+        &root_arg,
+        &base_arg,
+        "-n",
+        r#"{"$ref": "./shared.yaml"} | ref"#,
+    ])
+    .assert()
+    .success()
+    .stdout("answer: 42\n");
+}
+
+#[test]
+fn resolution_works_with_json_output_and_atomic_in_place_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root.yaml");
+    std::fs::write(&root, "value: !include shared.yaml\n").unwrap();
+    std::fs::write(directory.path().join("shared.yaml"), "answer: 42\n").unwrap();
+
+    yg().args(["--resolve-includes", "-j", ".value"])
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout("{\n  \"answer\": 42\n}\n");
+    yg().args(["--resolve-includes", "-i", "."])
+        .arg(&root)
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(root).unwrap(),
+        "value:\n  answer: 42\n"
+    );
+}
+
+#[test]
+fn resolution_failures_keep_input_context_and_exit_five() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root.yaml");
+    std::fs::write(&root, "$ref: ./missing.yaml\n").unwrap();
+
+    yg().args(["--resolve-refs=file", "."])
+        .arg(&root)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains(format!(
+            "{} document 1:",
+            root.display()
+        )))
+        .stderr(predicate::str::contains("resource not found"));
+    yg().args(["--allow-refs=file", "ref"])
+        .arg(&root)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains(format!(
+            "{} document 1:",
+            root.display()
+        )))
+        .stderr(predicate::str::contains("resource not found"));
+
+    std::fs::write(&root, "---\nvalue: ok\n---\n$ref: ./missing.yaml\n").unwrap();
+    yg().args(["--resolve-refs=file", "."])
+        .arg(&root)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains(format!(
+            "{} document 2:",
+            root.display()
+        )));
+
+    std::fs::write(&root, "value: [unterminated\n").unwrap();
+    yg().args(["--resolve-refs=file", "."])
+        .arg(&root)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains(root.display().to_string()));
+}
+
+#[test]
+fn explicit_resolution_root_must_contain_every_initial_file() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let input = outside.path().join("input.yaml");
+    std::fs::write(&input, "$ref: ./shared.yaml\n").unwrap();
+
+    yg().arg("--resolve-refs=file")
+        .arg(format!("--resolution-root={}", root.path().display()))
+        .arg(".")
+        .arg(&input)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("outside --resolution-root"));
+}
+
+#[test]
+fn url_shaped_top_level_inputs_remain_ordinary_file_paths() {
+    yg().args([
+        "--resolve-refs=https",
+        "--allow-ref-host=example.test",
+        ".",
+        "https://example.test/root.yaml",
+    ])
+    .assert()
+    .code(2)
+    .stderr(predicate::str::contains("failed to read"));
+}
+
+#[test]
+fn http_refs_resolve_whole_documents_and_nested_relative_urls() {
+    let server = HttpFixture::spawn(vec![
+        HttpReply::ok("$ref: ./child.yaml\n"),
+        HttpReply::ok("answer: 42\n"),
+    ]);
+    let input = format!("$ref: {}\n", server.url("/root.yaml"));
+
+    yg().args(["--resolve-refs=http", "--allow-ref-host=127.0.0.1", "."])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout("answer: 42\n");
+    assert_eq!(server.accepted(), 2);
+}
+
+#[test]
+fn explicit_http_ref_filter_uses_the_same_allowlisted_transport() {
+    let server = HttpFixture::spawn(vec![HttpReply::ok("answer: 42\n")]);
+    let input = format!("$ref: {}\n", server.url("/shared.yaml"));
+
+    yg().args(["--allow-refs=http", "--allow-ref-host=127.0.0.1", "ref"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout("answer: 42\n");
+    assert_eq!(server.accepted(), 1);
+}
+
+#[test]
+fn http_host_denial_happens_before_a_connection() {
+    let server = HttpFixture::spawn(Vec::new());
+    let input = format!("$ref: {}\n", server.url("/denied.yaml"));
+
+    yg().args(["--resolve-refs=http", "--allow-ref-host=localhost", "."])
+        .write_stdin(input)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("denied by policy"));
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(server.accepted(), 0);
+}
+
+#[test]
+fn http_redirects_and_non_success_statuses_are_hard_failures() {
+    let destination = HttpFixture::spawn(vec![HttpReply::ok("escaped: true\n")]);
+    let origin = HttpFixture::spawn(vec![HttpReply {
+        status: "302 Found",
+        headers: vec![("Location", destination.url("/escaped.yaml"))],
+        body: Vec::new(),
+    }]);
+    let input = format!("$ref: {}\n", origin.url("/redirect.yaml"));
+    yg().args(["--resolve-refs=http", "--allow-ref-host=127.0.0.1", "."])
+        .write_stdin(input)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("HTTP status 302"));
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(origin.accepted(), 1);
+    assert_eq!(destination.accepted(), 0);
+
+    let missing = HttpFixture::spawn(vec![HttpReply {
+        status: "404 Not Found",
+        headers: Vec::new(),
+        body: b"not YAML and not disclosed".to_vec(),
+    }]);
+    let input = format!("$ref: {}\n", missing.url("/missing.yaml"));
+    yg().args(["--resolve-refs=http", "--allow-ref-host=127.0.0.1", "."])
+        .write_stdin(input)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("HTTP status 404"))
+        .stderr(predicate::str::contains("not disclosed").not());
+}
+
+#[test]
+fn http_payloads_must_be_bounded_utf8_single_document_yaml() {
+    let invalid = HttpFixture::spawn(vec![
+        HttpReply::ok([0xff, 0xfe]),
+        HttpReply::ok("value: [unterminated\n"),
+        HttpReply::ok("---\none\n---\ntwo\n"),
+    ]);
+    for (path, diagnostic) in [
+        ("/binary.yaml", "not valid UTF-8"),
+        ("/invalid.yaml", "invalid YAML"),
+        ("/multiple.yaml", "multiple documents"),
+    ] {
+        let input = format!("$ref: {}\n", invalid.url(path));
+        yg().args(["--resolve-refs=http", "--allow-ref-host=127.0.0.1", "."])
+            .write_stdin(input)
+            .assert()
+            .code(5)
+            .stderr(predicate::str::contains(diagnostic));
+    }
+
+    let oversized = HttpFixture::spawn(vec![HttpReply::ok(vec![b'a'; 10 * 1024 * 1024 + 1])]);
+    let input = format!("$ref: {}\n", oversized.url("/oversized.yaml"));
+    yg().args([
+        "--strict",
+        "--resolve-refs=http",
+        "--allow-ref-host=127.0.0.1",
+        ".",
+    ])
+    .write_stdin(input)
+    .assert()
+    .code(5)
+    .stderr(predicate::str::contains("maximum of 10485760"));
+}
+
+#[test]
+fn includes_never_fetch_http_even_when_http_refs_are_enabled() {
+    let server = HttpFixture::spawn(Vec::new());
+    let root = tempfile::tempdir().unwrap();
+    let input = format!("value: !include {}\n", server.url("/forbidden.yaml"));
+
+    yg().arg("--resolve-includes")
+        .arg("--resolve-refs=http")
+        .arg("--allow-ref-host=127.0.0.1")
+        .arg(format!("--resolution-root={}", root.path().display()))
+        .arg(".")
+        .write_stdin(input)
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("include"));
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(server.accepted(), 0);
 }

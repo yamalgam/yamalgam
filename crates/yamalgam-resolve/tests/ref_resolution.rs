@@ -67,7 +67,12 @@ fn document(origin: &ResourceId, input: &str) -> OwnedDocument {
 fn config() -> LoaderConfig {
     let mut config = LoaderConfig::unchecked();
     config.resolution.refs.mode = ResolutionMode::Automatic;
-    config.resolution.refs.allow_schemes = vec!["memory".into(), "http".into(), "https".into()];
+    config.resolution.refs.allow_schemes = vec![
+        "memory".into(),
+        "file".into(),
+        "http".into(),
+        "https".into(),
+    ];
     config.resolution.refs.allow_hosts = vec!["example.com".into()];
     config
 }

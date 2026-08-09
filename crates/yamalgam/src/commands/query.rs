@@ -1,20 +1,39 @@
 //! The yg query pipeline: inputs to filter engine to serialized output.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{BufWriter, Read as _, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use yamalgam_core::{LoaderConfig, TagResolution};
+use yamalgam_core::{LoaderConfig, ResolutionMode, TagResolution};
 use yamalgam_query::emit::emit;
 use yamalgam_query::engine::{self, CompiledFilter, InputMeta, RunCtx};
-use yamalgam_query::{EmitFormat, EmitOpts, YamlVal, YgError};
+use yamalgam_query::{
+    EmitFormat, EmitOpts, Meta, ResolutionSessionKey, ResolvedInput, ResourceOrigin, YamlVal,
+    YgError, resolution_handle, resolve_documents,
+};
+use yamalgam_resolve::{
+    FileRetriever, LibrebarRetriever, ResourceId, RetrieveError, RetrieverRouter,
+};
 
-use crate::{QueryArgs, SchemaArg};
+use crate::{QueryArgs, RefSchemeArg, SchemaArg};
 
 struct InputRecord {
     metadata: InputMeta,
     value: Result<YamlVal, YgError>,
+    resolution: Option<ResolutionSessionKey>,
+}
+
+struct ResolutionRuntime {
+    http: Option<Arc<LibrebarRetriever>>,
+}
+
+struct ResolutionSource {
+    base: ResourceId,
+    config: LoaderConfig,
+    retriever: Arc<RetrieverRouter>,
 }
 
 struct BoundVariables {
@@ -65,7 +84,10 @@ pub struct RunOptions {
 
 /// Execute yg's default query mode.
 pub fn cmd_query(args: &QueryArgs, options: RunOptions) -> anyhow::Result<ExitCode> {
-    let config = loader_config(args);
+    let config = match loader_config(args) {
+        Ok(config) => config,
+        Err(error) => return Ok(report(error)),
+    };
     if args.schema == SchemaArg::Yaml11 && !options.quiet {
         eprintln!("warning: YAML 1.1 schema compatibility mode resolves yes/no/on/off as booleans");
     }
@@ -95,7 +117,18 @@ pub fn cmd_query(args: &QueryArgs, options: RunOptions) -> anyhow::Result<ExitCo
         Ok(filter) => filter,
         Err(error) => return Ok(report(error)),
     };
+    let runtime = match ResolutionRuntime::new(&config) {
+        Ok(runtime) => runtime,
+        Err(error) => return Ok(report(error)),
+    };
     let context = RunCtx::new(config).with_variables(variables.values);
+
+    if args.null_input {
+        match anonymous_resolution(args, &context, &runtime) {
+            Ok(resolution) => context.stage_input_resolution(resolution),
+            Err(error) => return Ok(report(error)),
+        }
+    }
 
     if args.in_place {
         if files.is_empty() || files.iter().any(|path| path == "-") {
@@ -103,7 +136,7 @@ pub fn cmd_query(args: &QueryArgs, options: RunOptions) -> anyhow::Result<ExitCo
             return Ok(ExitCode::from(2));
         }
         return Ok(
-            match run_in_place(&filter, &files, args, options.output, &context) {
+            match run_in_place(&filter, &files, args, options.output, &context, &runtime) {
                 Err(error) => report(error),
                 Ok(last) => exit_status(last, args.exit_status),
             },
@@ -115,7 +148,7 @@ pub fn cmd_query(args: &QueryArgs, options: RunOptions) -> anyhow::Result<ExitCo
     {
         return Ok(report(error));
     }
-    let records = deferred_inputs(&files, args, &context.config);
+    let records = deferred_inputs(&files, args, &context, &runtime);
     let stdout = std::io::stdout();
     let mut output = BufWriter::new(stdout.lock());
     let result = run_records(
@@ -147,6 +180,7 @@ fn run_records<'inputs>(
 ) -> Result<Option<bool>, YgError> {
     let inputs = records.map(move |record| {
         context.stage_input_meta(record.metadata);
+        context.stage_input_resolution(record.resolution);
         record.value
     });
 
@@ -218,6 +252,7 @@ fn run_in_place(
     args: &QueryArgs,
     output_mode: OutputMode,
     context: &RunCtx,
+    runtime: &ResolutionRuntime,
 ) -> Result<Option<bool>, YgError> {
     struct StagedEdit {
         path: camino::Utf8PathBuf,
@@ -236,7 +271,7 @@ fn run_in_place(
             )));
         }
         warn_if_hard_linked(path, &source_metadata);
-        let mut records = collect_inputs(std::slice::from_ref(path), args, &context.config)?;
+        let mut records = collect_inputs(std::slice::from_ref(path), args, context, runtime)?;
         for record in &mut records {
             record.metadata.filename = Some(Rc::<str>::from(path.as_str()));
             record.metadata.file_index = file_index;
@@ -430,7 +465,8 @@ fn filter_and_files(args: &QueryArgs) -> Result<(String, Vec<camino::Utf8PathBuf
 fn deferred_inputs<'inputs>(
     files: &'inputs [camino::Utf8PathBuf],
     args: &'inputs QueryArgs,
-    config: &'inputs LoaderConfig,
+    context: &'inputs RunCtx,
+    runtime: &'inputs ResolutionRuntime,
 ) -> impl Iterator<Item = InputRecord> + 'inputs {
     let mut next_file = 0;
     let mut loaded_stdin = false;
@@ -448,11 +484,12 @@ fn deferred_inputs<'inputs>(
                     return None;
                 }
                 loaded_slurp = true;
-                match collect_inputs(files, args, config) {
+                match collect_inputs(files, args, context, runtime) {
                     Ok(inputs) => records.extend(inputs),
                     Err(error) => records.push_back(InputRecord {
                         metadata: InputMeta::default(),
                         value: Err(error),
+                        resolution: None,
                     }),
                 }
                 continue;
@@ -463,11 +500,12 @@ fn deferred_inputs<'inputs>(
                     return None;
                 }
                 loaded_stdin = true;
-                match collect_inputs(&[], args, config) {
+                match collect_inputs(&[], args, context, runtime) {
                     Ok(inputs) => records.extend(inputs),
                     Err(error) => records.push_back(InputRecord {
                         metadata: InputMeta::default(),
                         value: Err(error),
+                        resolution: None,
                     }),
                 }
                 continue;
@@ -476,7 +514,7 @@ fn deferred_inputs<'inputs>(
             let path = files.get(next_file)?;
             let file_index = next_file;
             next_file += 1;
-            match collect_inputs(std::slice::from_ref(path), args, config) {
+            match collect_inputs(std::slice::from_ref(path), args, context, runtime) {
                 Ok(mut inputs) => {
                     for input in &mut inputs {
                         input.metadata.file_index = file_index;
@@ -490,6 +528,7 @@ fn deferred_inputs<'inputs>(
                         document_index: 0,
                     },
                     value: Err(error),
+                    resolution: None,
                 }),
             }
         }
@@ -512,7 +551,8 @@ fn validate_input_paths(files: &[camino::Utf8PathBuf]) -> Result<(), YgError> {
 fn collect_inputs(
     files: &[camino::Utf8PathBuf],
     args: &QueryArgs,
-    config: &LoaderConfig,
+    context: &RunCtx,
+    runtime: &ResolutionRuntime,
 ) -> Result<Vec<InputRecord>, YgError> {
     let mut records = Vec::new();
     if files.is_empty() {
@@ -522,7 +562,15 @@ fn collect_inputs(
             .map_err(|error| {
                 YgError::InputRead(format!("failed to read standard input: {error}"))
             })?;
-        append_input(&mut records, input, None, 0, args, config);
+        append_input(
+            &mut records,
+            input,
+            InputMeta::default(),
+            None,
+            args,
+            context,
+            runtime,
+        );
     } else {
         for (file_index, path) in files.iter().enumerate() {
             let input = if path == "-" {
@@ -541,10 +589,15 @@ fn collect_inputs(
             append_input(
                 &mut records,
                 input,
-                (path != "-").then(|| Rc::<str>::from(path.as_str())),
-                file_index,
+                InputMeta {
+                    filename: (path != "-").then(|| Rc::<str>::from(path.as_str())),
+                    file_index,
+                    document_index: 0,
+                },
+                (path != "-").then_some(path.as_path()),
                 args,
-                config,
+                context,
+                runtime,
             );
         }
     }
@@ -567,6 +620,7 @@ fn collect_inputs(
         return Ok(vec![InputRecord {
             metadata: InputMeta::default(),
             value: Ok(value),
+            resolution: None,
         }]);
     }
     Ok(records)
@@ -575,34 +629,124 @@ fn collect_inputs(
 fn append_input(
     records: &mut Vec<InputRecord>,
     input: String,
-    filename: Option<Rc<str>>,
-    file_index: usize,
+    metadata: InputMeta,
+    source_path: Option<&camino::Utf8Path>,
     args: &QueryArgs,
-    config: &LoaderConfig,
+    context: &RunCtx,
+    runtime: &ResolutionRuntime,
 ) {
+    let InputMeta {
+        filename,
+        file_index,
+        ..
+    } = metadata;
+    let source = if context.config.resolution.is_enabled() {
+        match resolution_source(args, &context.config, runtime, source_path) {
+            Ok(source) => Some(source),
+            Err(error) => {
+                records.push(InputRecord {
+                    metadata: InputMeta {
+                        filename,
+                        file_index,
+                        document_index: 0,
+                    },
+                    value: Err(error),
+                    resolution: None,
+                });
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
     if args.raw_input {
         let values = if args.slurp {
             vec![YamlVal::str(input)]
         } else {
             input.lines().map(YamlVal::str).collect::<Vec<_>>()
         };
-        records.extend(
-            values
-                .into_iter()
-                .enumerate()
-                .map(|(document_index, value)| InputRecord {
+        for (document_index, value) in values.into_iter().enumerate() {
+            let registered = match &source {
+                Some(source) => register_anonymous_value(context, source, value),
+                None => Ok((value, None)),
+            };
+            match registered {
+                Ok((value, resolution)) => records.push(InputRecord {
                     metadata: InputMeta {
                         filename: filename.clone(),
                         file_index,
                         document_index,
                     },
                     value: Ok(value),
+                    resolution,
                 }),
-        );
+                Err(error) => records.push(InputRecord {
+                    metadata: InputMeta {
+                        filename: filename.clone(),
+                        file_index,
+                        document_index,
+                    },
+                    value: Err(error.with_input_context(
+                        filename.as_deref().unwrap_or("<stdin>"),
+                        document_index,
+                    )),
+                    resolution: None,
+                }),
+            }
+        }
         return;
     }
 
-    match yamalgam_query::parse_str_with_config(&input, config) {
+    if let Some(source) = source {
+        match resolve_documents(
+            &input,
+            source.base,
+            Arc::clone(&source.retriever),
+            &source.config,
+        ) {
+            Ok(inputs) => {
+                for (document_index, input) in inputs.into_iter().enumerate() {
+                    let value = context.register_resolved_input(input);
+                    match value {
+                        Ok((value, resolution)) => records.push(InputRecord {
+                            metadata: InputMeta {
+                                filename: filename.clone(),
+                                file_index,
+                                document_index,
+                            },
+                            value: Ok(value),
+                            resolution: Some(resolution),
+                        }),
+                        Err(error) => records.push(InputRecord {
+                            metadata: InputMeta {
+                                filename: filename.clone(),
+                                file_index,
+                                document_index,
+                            },
+                            value: Err(error.with_input_context(
+                                filename.as_deref().unwrap_or("<stdin>"),
+                                document_index,
+                            )),
+                            resolution: None,
+                        }),
+                    }
+                }
+            }
+            Err(error) => records.push(InputRecord {
+                metadata: InputMeta {
+                    filename: filename.clone(),
+                    file_index,
+                    document_index: 0,
+                },
+                value: Err(error.with_input_source(filename.as_deref().unwrap_or("<stdin>"))),
+                resolution: None,
+            }),
+        }
+        return;
+    }
+
+    match yamalgam_query::parse_str_with_config(&input, &context.config) {
         Ok(values) => {
             records.extend(
                 values
@@ -615,6 +759,7 @@ fn append_input(
                             document_index,
                         },
                         value: Ok(value),
+                        resolution: None,
                     }),
             );
         }
@@ -628,6 +773,7 @@ fn append_input(
                 || error.to_string(),
                 |filename| format!("{filename}: {error}"),
             ))),
+            resolution: None,
         }),
     }
 }
@@ -636,20 +782,371 @@ fn append_input(
 // r[impl datamodel.schema.failsafe]
 // r[impl datamodel.schema.json]
 // r[impl datamodel.schema.yaml11]
-const fn loader_config(args: &QueryArgs) -> LoaderConfig {
-    let config = if args.strict {
+fn loader_config(args: &QueryArgs) -> Result<LoaderConfig, YgError> {
+    let mut config = if args.strict {
         LoaderConfig::strict()
     } else if args.trusted {
         LoaderConfig::trusted()
     } else {
         LoaderConfig::moderate()
     };
-    config.with_tag_resolution(match args.schema {
+    config = config.with_tag_resolution(match args.schema {
         SchemaArg::Core => TagResolution::Yaml12,
         SchemaArg::Failsafe => TagResolution::Failsafe,
         SchemaArg::Json => TagResolution::Json,
         SchemaArg::Yaml11 => TagResolution::Yaml11,
+    });
+
+    config.resolution.include.mode = if args.resolve_includes {
+        ResolutionMode::Automatic
+    } else if args.allow_includes {
+        ResolutionMode::Explicit
+    } else {
+        ResolutionMode::Disabled
+    };
+    let (ref_mode, schemes) = selected_ref_schemes(args)?;
+    config.resolution.refs.mode = ref_mode;
+    config.resolution.refs.allow_schemes = schemes;
+    config.resolution.refs.allow_hosts = normalized_ref_hosts(args)?;
+
+    let network_enabled = config
+        .resolution
+        .refs
+        .allow_schemes
+        .iter()
+        .any(|scheme| matches!(scheme.as_str(), "http" | "https"));
+    if network_enabled && config.resolution.refs.allow_hosts.is_empty() {
+        return Err(YgError::Usage(
+            "http or https reference resolution requires --allow-ref-host".into(),
+        ));
+    }
+    if !network_enabled && !config.resolution.refs.allow_hosts.is_empty() {
+        return Err(YgError::Usage(
+            "--allow-ref-host requires http or https reference resolution".into(),
+        ));
+    }
+
+    if let Some(root) = &args.resolution_root {
+        config.resolution.files.root = Some(canonical_directory(root)?);
+    }
+    if let Some(value) = &args.base_uri {
+        let base = parse_base_uri(value)?;
+        validate_base_in_root(&base, config.resolution.files.root.as_deref())?;
+    }
+
+    Ok(config)
+}
+
+impl ResolutionRuntime {
+    fn new(config: &LoaderConfig) -> Result<Self, YgError> {
+        let network_enabled = config
+            .resolution
+            .refs
+            .allow_schemes
+            .iter()
+            .any(|scheme| matches!(scheme.as_str(), "http" | "https"));
+        let http = network_enabled
+            .then(|| {
+                LibrebarRetriever::new(
+                    &config.resolution.refs,
+                    config.limits.max_input_bytes.unwrap_or(0),
+                )
+                .map(Arc::new)
+                .map_err(|error| {
+                    YgError::Runtime(format!("failed to initialize HTTP retrieval: {error}"))
+                })
+            })
+            .transpose()?;
+        Ok(Self { http })
+    }
+
+    fn router(&self, config: &LoaderConfig) -> Result<Arc<RetrieverRouter>, YgError> {
+        let mut router = RetrieverRouter::default();
+        if file_resolution_enabled(config) {
+            let files = FileRetriever::open(&config.resolution.files).map_err(|error| {
+                YgError::Usage(format!(
+                    "failed to initialize filesystem resolution: {error}"
+                ))
+            })?;
+            router
+                .register("file", files)
+                .map_err(internal_router_error)?;
+        }
+        if let Some(http) = &self.http {
+            for scheme in config
+                .resolution
+                .refs
+                .allow_schemes
+                .iter()
+                .filter(|scheme| matches!(scheme.as_str(), "http" | "https"))
+            {
+                router
+                    .register(scheme, Arc::clone(http))
+                    .map_err(internal_router_error)?;
+            }
+        }
+        Ok(Arc::new(router))
+    }
+}
+
+fn internal_router_error(error: RetrieveError) -> YgError {
+    YgError::Runtime(format!("failed to configure resource routing: {error}"))
+}
+
+fn selected_ref_schemes(args: &QueryArgs) -> Result<(ResolutionMode, Vec<String>), YgError> {
+    let (mode, selected) = if !args.resolve_refs.is_empty() {
+        (ResolutionMode::Automatic, args.resolve_refs.as_slice())
+    } else if !args.allow_refs.is_empty() {
+        (ResolutionMode::Explicit, args.allow_refs.as_slice())
+    } else {
+        (ResolutionMode::Disabled, &[][..])
+    };
+    let mut unique = BTreeSet::new();
+    let mut schemes = Vec::with_capacity(selected.len());
+    for scheme in selected.iter().copied().map(RefSchemeArg::as_str) {
+        if !unique.insert(scheme) {
+            return Err(YgError::Usage(format!(
+                "duplicate reference scheme {scheme}"
+            )));
+        }
+        schemes.push(scheme.to_owned());
+    }
+    Ok((mode, schemes))
+}
+
+fn normalized_ref_hosts(args: &QueryArgs) -> Result<Vec<String>, YgError> {
+    let mut hosts = BTreeSet::new();
+    for candidate in &args.allow_ref_hosts {
+        if candidate.is_empty()
+            || candidate.trim() != candidate
+            || (candidate.contains(':')
+                && !(candidate.starts_with('[') && candidate.ends_with(']')))
+        {
+            return Err(YgError::Usage(format!(
+                "invalid --allow-ref-host {candidate:?}: expected a hostname without scheme or port"
+            )));
+        }
+        let rendered = format!("https://{candidate}/");
+        let id = ResourceId::new(&rendered).map_err(|error| {
+            YgError::Usage(format!("invalid --allow-ref-host {candidate:?}: {error}"))
+        })?;
+        let url = id.as_url().ok_or_else(|| {
+            YgError::Usage(format!(
+                "invalid --allow-ref-host {candidate:?}: expected a hostname"
+            ))
+        })?;
+        if id.has_userinfo()
+            || url.port().is_some()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(YgError::Usage(format!(
+                "invalid --allow-ref-host {candidate:?}: expected a hostname without scheme or port"
+            )));
+        }
+        let host = url.host_str().ok_or_else(|| {
+            YgError::Usage(format!(
+                "invalid --allow-ref-host {candidate:?}: expected a hostname"
+            ))
+        })?;
+        hosts.insert(host.to_ascii_lowercase());
+    }
+    Ok(hosts.into_iter().collect())
+}
+
+fn parse_base_uri(value: &str) -> Result<ResourceId, YgError> {
+    if value.contains('#') {
+        return Err(YgError::Usage(
+            "--base-uri must not contain a fragment".into(),
+        ));
+    }
+    let base = ResourceId::new(value)
+        .map_err(|error| YgError::Usage(format!("invalid --base-uri {value:?}: {error}")))?;
+    match &base {
+        ResourceId::File(path) if !path.is_absolute() => Err(YgError::Usage(
+            "--base-uri must be an absolute URI or absolute file path".into(),
+        )),
+        ResourceId::File(_) => Ok(base),
+        ResourceId::Uri(_) if !matches!(base.scheme(), "http" | "https") => {
+            Err(YgError::Usage(format!(
+                "unsupported --base-uri scheme {}; expected file, http, or https",
+                base.scheme()
+            )))
+        }
+        ResourceId::Uri(_) if base.has_userinfo() || base.host_str().is_none() => {
+            Err(YgError::Usage(
+                "http and https --base-uri values require a host and no userinfo".into(),
+            ))
+        }
+        ResourceId::Uri(_) => Ok(base),
+        _ => Err(YgError::Usage(
+            "unsupported --base-uri resource kind".into(),
+        )),
+    }
+}
+
+fn canonical_directory(path: &camino::Utf8Path) -> Result<PathBuf, YgError> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| YgError::Usage(format!("invalid --resolution-root {path}: {error}")))?;
+    if !canonical.is_dir() {
+        return Err(YgError::Usage(format!(
+            "invalid --resolution-root {path}: not a directory"
+        )));
+    }
+    Ok(canonical)
+}
+
+fn canonical_file_base(path: &Path) -> Result<PathBuf, YgError> {
+    if path.exists() {
+        let canonical = std::fs::canonicalize(path).map_err(|error| {
+            YgError::Usage(format!("invalid file base {}: {error}", path.display()))
+        })?;
+        if canonical.is_dir() {
+            return Err(YgError::Usage(format!(
+                "invalid file base {}: expected a document path",
+                path.display()
+            )));
+        }
+        return Ok(canonical);
+    }
+    let name = path.file_name().ok_or_else(|| {
+        YgError::Usage(format!(
+            "invalid file base {}: expected a document path",
+            path.display()
+        ))
+    })?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = std::fs::canonicalize(parent).map_err(|error| {
+        YgError::Usage(format!(
+            "invalid file base {}: containing directory is unavailable: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(parent.join(name))
+}
+
+fn canonical_base(base: ResourceId) -> Result<ResourceId, YgError> {
+    match base {
+        ResourceId::File(path) => canonical_file_base(&path).map(ResourceId::from_file),
+        base => Ok(base),
+    }
+}
+
+fn validate_base_in_root(base: &ResourceId, root: Option<&Path>) -> Result<(), YgError> {
+    let (Some(path), Some(root)) = (base.as_path(), root) else {
+        return Ok(());
+    };
+    let canonical = canonical_file_base(path)?;
+    if !canonical.starts_with(root) {
+        return Err(YgError::Usage(format!(
+            "file base {} is outside --resolution-root {}",
+            canonical.display(),
+            root.display()
+        )));
+    }
+    Ok(())
+}
+
+fn file_resolution_enabled(config: &LoaderConfig) -> bool {
+    config.resolution.include.mode.allows_explicit()
+        || (config.resolution.refs.mode.allows_explicit()
+            && config
+                .resolution
+                .refs
+                .allow_schemes
+                .iter()
+                .any(|scheme| scheme == "file"))
+}
+
+fn resolution_source(
+    args: &QueryArgs,
+    global: &LoaderConfig,
+    runtime: &ResolutionRuntime,
+    source_path: Option<&camino::Utf8Path>,
+) -> Result<ResolutionSource, YgError> {
+    let mut config = global.clone();
+    let base = if let Some(path) = source_path {
+        let canonical = std::fs::canonicalize(path).map_err(|error| {
+            YgError::InputRead(format!("failed to resolve input path {path}: {error}"))
+        })?;
+        ResourceId::from_file(canonical)
+    } else if let Some(value) = &args.base_uri {
+        canonical_base(parse_base_uri(value)?)?
+    } else if let Some(root) = &config.resolution.files.root {
+        ResourceId::from_file(root.join(".yg-stdin.yaml"))
+    } else {
+        ResourceId::anonymous()
+    };
+
+    if source_path.is_none()
+        && config.resolution.include.mode.allows_explicit()
+        && config.resolution.files.root.is_none()
+    {
+        return Err(YgError::Usage(
+            "standard input includes require --resolution-root".into(),
+        ));
+    }
+    if config.resolution.include.mode.allows_explicit() && base.as_path().is_none() {
+        return Err(YgError::Usage(
+            "standard input includes require a file base under --resolution-root".into(),
+        ));
+    }
+
+    if config.resolution.files.root.is_none()
+        && let Some(path) = base.as_path()
+    {
+        config.resolution.files.root = path.parent().map(Path::to_path_buf);
+    }
+    if file_resolution_enabled(&config) && config.resolution.files.root.is_none() {
+        return Err(YgError::Usage(
+            "relative filesystem access from standard input requires --base-uri or --resolution-root"
+                .into(),
+        ));
+    }
+    validate_base_in_root(&base, config.resolution.files.root.as_deref())?;
+    let retriever = runtime.router(&config)?;
+    Ok(ResolutionSource {
+        base,
+        config,
+        retriever,
     })
+}
+
+fn register_anonymous_value(
+    context: &RunCtx,
+    source: &ResolutionSource,
+    value: YamlVal,
+) -> Result<(YamlVal, Option<ResolutionSessionKey>), YgError> {
+    let input = ResolvedInput {
+        value,
+        resolution: resolution_handle(
+            Arc::clone(&source.retriever),
+            Some(source.base.clone()),
+            source.config.clone(),
+        ),
+    };
+    let (mut value, key) = context.register_resolved_input(input)?;
+    let mut metadata = value.meta().cloned().unwrap_or_else(Meta::default);
+    metadata.origin = Some(ResourceOrigin {
+        resource: source.base.clone(),
+        session: key,
+    });
+    value = value.with_meta(metadata);
+    Ok((value, Some(key)))
+}
+
+fn anonymous_resolution(
+    args: &QueryArgs,
+    context: &RunCtx,
+    runtime: &ResolutionRuntime,
+) -> Result<Option<ResolutionSessionKey>, YgError> {
+    if !context.config.resolution.is_enabled() {
+        return Ok(None);
+    }
+    let source = resolution_source(args, &context.config, runtime, None)?;
+    let (_, key) = register_anonymous_value(context, &source, YamlVal::null())?;
+    Ok(key)
 }
 
 fn report(error: YgError) -> ExitCode {
@@ -714,5 +1211,22 @@ mod tests {
             handle_owner_preservation_error(std::io::Error::other("device failure"), path),
             Err(YgError::Runtime(message)) if message.contains("device failure")
         ));
+    }
+
+    #[test]
+    fn resolution_policy_normalizes_cli_schemes_and_hosts_once() {
+        let args = QueryArgs {
+            resolve_includes: true,
+            allow_refs: vec![RefSchemeArg::Https, RefSchemeArg::Http],
+            allow_ref_hosts: vec!["EXAMPLE.Test".into(), "example.test".into()],
+            ..QueryArgs::default()
+        };
+
+        let config = loader_config(&args).unwrap();
+
+        assert_eq!(config.resolution.include.mode, ResolutionMode::Automatic);
+        assert_eq!(config.resolution.refs.mode, ResolutionMode::Explicit);
+        assert_eq!(config.resolution.refs.allow_schemes, ["https", "http"]);
+        assert_eq!(config.resolution.refs.allow_hosts, ["example.test"]);
     }
 }

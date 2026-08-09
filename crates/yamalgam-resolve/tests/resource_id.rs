@@ -93,6 +93,25 @@ fn relative_references_require_a_base() {
 }
 
 #[test]
+fn anonymous_resources_allow_same_document_and_absolute_but_not_relative_targets() {
+    let base = ResourceId::anonymous();
+
+    assert_eq!(base.resolve("#/value").unwrap().resource, base);
+    assert_eq!(
+        base.resolve("https://example.com/root.yaml")
+            .unwrap()
+            .resource
+            .host_str(),
+        Some("example.com")
+    );
+    assert!(matches!(
+        base.resolve("./relative.yaml"),
+        Err(ResourceError::MissingBase)
+    ));
+    assert_eq!(base.to_string(), "<anonymous>");
+}
+
+#[test]
 fn display_and_debug_redact_uri_credentials_and_queries() {
     let left = ResourceId::new("https://alice:secret@example.com/data.yaml?token=one").unwrap();
     let right = ResourceId::new("https://alice:secret@example.com/data.yaml?token=two").unwrap();

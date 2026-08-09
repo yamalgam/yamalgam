@@ -40,6 +40,11 @@ struct ResolutionTarget {
     fragment: Fragment,
 }
 
+struct ReferenceContext<'a> {
+    requested: &'a str,
+    parent: &'a ResourceId,
+}
+
 type LoadedBytes = (Arc<[u8]>, ResourceId, bool, usize);
 
 /// Cache, budgets, cycle state, and report for one top-level YAML document.
@@ -609,7 +614,10 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                     edge_index,
                     ResolutionCapability::Include,
                     directive.span,
-                    &requested,
+                    ReferenceContext {
+                        requested: &requested,
+                        parent: &directive.origin,
+                    },
                     ResolvedReference {
                         resource,
                         fragment: Fragment::Root,
@@ -676,7 +684,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             next_edges,
             self.config.resolution.limits.max_edges,
         )?;
-        self.enforce_policy(capability, directive.span, &reference)?;
+        self.enforce_policy(capability, directive.span, &directive.origin, &reference)?;
         let depth = self.active.len().checked_add(1).ok_or_else(|| {
             self.overflow_error(
                 capability,
@@ -940,7 +948,12 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
             )
         })?;
         self.resolve_yaml_reference_inner(
-            edge_index, capability, span, requested, reference, trigger,
+            edge_index,
+            capability,
+            span,
+            ReferenceContext { requested, parent },
+            reference,
+            trigger,
         )
     }
 
@@ -949,11 +962,12 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         edge_index: usize,
         capability: ResolutionCapability,
         span: Span,
-        requested: &str,
+        context: ReferenceContext<'_>,
         reference: ResolvedReference,
         trigger: ResolutionTrigger,
     ) -> Result<OwnedNode, ResolveError> {
-        self.enforce_policy(capability, span, &reference)?;
+        let ReferenceContext { requested, parent } = context;
+        self.enforce_policy(capability, span, parent, &reference)?;
         {
             let edge = self.report.edge_mut(edge_index);
             edge.child = Some(reference.resource.clone());
@@ -1176,6 +1190,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
         &self,
         capability: ResolutionCapability,
         span: Span,
+        parent: &ResourceId,
         reference: &ResolvedReference,
     ) -> Result<(), ResolveError> {
         if capability == ResolutionCapability::Include
@@ -1191,7 +1206,7 @@ impl<R: ResourceRetriever> ResolutionSession<R> {
                 })),
             ));
         }
-        if capability != ResolutionCapability::Ref || reference.resource.as_path().is_some() {
+        if capability != ResolutionCapability::Ref || reference.resource == *parent {
             return Ok(());
         }
         let policy = &self.config.resolution.refs;
