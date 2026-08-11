@@ -6,8 +6,8 @@ status:
   mitigated: 0
   accepted: 0
   disputed: 0
-  deferred: 0
-  open: 1
+  deferred: 1
+  open: 0
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -363,5 +363,27 @@ an idempotent fallible `shutdown()` boundary. `Drop` remains non-panicking and
 emits a stable key/value event only for an unobserved abnormal termination.
 All 127 resolve tests, all 52 schema tests, all 30 LSP tests, and workspace
 Clippy pass.
+
+---
+
+## 2026-08-11 — Defer Librebar Tokio feature split
+
+**Disposition:** deferred
+
+**Addresses:** [librebar-http-enables-unused-tokio-subsystems](README.md#librebar-http-enables-unused-tokio-subsystems)
+
+**Author:** Codex
+
+**Target:** The next Librebar release containing the Tokio feature split.
+
+Librebar 0.6.0 remains the current crates.io release, and its `http` feature
+activates the shared Tokio dependency with `macros` and `signal`. The clean
+upstream checkout has the same manifest, while `cargo tree -e features -i
+tokio` confirms Yamalgam requests only `rt` and `sync`; Cargo feature
+unification offers no downstream subtraction mechanism. After Librebar moves
+`signal` behind `shutdown` and keeps macros in development scope, Yamalgam can
+update normally and rerun its full check and dependency gates. A local path
+patch or vendored fork would make builds non-portable and is not an acceptable
+remediation.
 
 ---
