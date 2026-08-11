@@ -42,6 +42,7 @@ fn converts_crlf_and_non_bmp_utf16_positions_both_directions() {
     let after_emoji = input.find('🦀').unwrap() + '🦀'.len_utf8();
     let snow = input.find('雪').unwrap();
 
+    assert_eq!(doc.len_bytes(), input.len());
     assert_eq!(doc.byte_offset_to_utf16(after_emoji), Some((0, 5)));
     assert_eq!(doc.utf16_to_byte_offset(0, 5), Some(after_emoji));
     assert_eq!(doc.utf16_to_byte_offset(0, 4), None);

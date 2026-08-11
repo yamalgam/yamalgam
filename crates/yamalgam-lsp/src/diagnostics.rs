@@ -227,12 +227,8 @@ fn span_range(document: &DocumentState, span: Option<Span>) -> Range {
 
 fn byte_position(document: &DocumentState, offset: usize) -> Position {
     document
-        .syntax
-        .byte_offset_to_utf16(offset.min(document.syntax.text().len()))
-        .map_or_else(
-            || Position::new(0, 0),
-            |(line, column)| Position::new(line, column),
-        )
+        .position_at(offset.min(document.source_len()))
+        .unwrap_or_else(|| Position::new(0, 0))
 }
 
 fn document_index_at(document: &DocumentState, offset: usize) -> usize {

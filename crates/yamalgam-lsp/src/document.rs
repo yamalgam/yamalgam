@@ -22,6 +22,7 @@ pub struct DocumentState {
     /// Rope-backed recovering syntax snapshot.
     pub syntax: IncrementalDocument,
     source: Arc<str>,
+    line_index: LineIndex,
     /// Located composed documents; empty while source is not composable.
     pub located: Vec<LocatedValue>,
     /// Schemas selected for the documents in this stream.
@@ -41,6 +42,7 @@ impl DocumentState {
             version,
             syntax: IncrementalDocument::new(text, config),
             source: Arc::from(text),
+            line_index: LineIndex::new(text),
             located,
             selected_schemas: Vec::new(),
             schema_assignments: Vec::new(),
@@ -77,6 +79,7 @@ impl DocumentState {
         let mut syntax = self.syntax.clone();
         syntax.replace_text(&text, config);
         let (located, composition_error) = compose(&text, config);
+        self.line_index = LineIndex::new(&text);
         self.syntax = syntax;
         self.source = Arc::from(text);
         self.located = located;
@@ -155,6 +158,60 @@ impl DocumentState {
     pub fn offset_at(&self, position: Position) -> Option<usize> {
         self.syntax
             .utf16_to_byte_offset(position.line, position.character)
+    }
+
+    /// Convert one UTF-8 byte offset through the current versioned line index.
+    #[must_use]
+    pub fn position_at(&self, offset: usize) -> Option<Position> {
+        self.line_index.position(&self.source, offset)
+    }
+
+    pub(crate) fn source_len(&self) -> usize {
+        self.source.len()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let bytes = source.as_bytes();
+        let mut starts = vec![0];
+        let mut offset = 0;
+        while offset < bytes.len() {
+            offset += match bytes[offset] {
+                b'\r' if bytes.get(offset + 1) == Some(&b'\n') => 2,
+                b'\r' | b'\n' => 1,
+                _ => {
+                    offset += 1;
+                    continue;
+                }
+            };
+            starts.push(offset);
+        }
+        Self { starts }
+    }
+
+    fn position(&self, source: &str, offset: usize) -> Option<Position> {
+        if offset > source.len() || !source.is_char_boundary(offset) {
+            return None;
+        }
+        let line = self
+            .starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        let start = self.starts[line];
+        let column = source[start..offset]
+            .chars()
+            .map(char::len_utf16)
+            .sum::<usize>();
+        Some(Position::new(
+            u32::try_from(line).ok()?,
+            u32::try_from(column).ok()?,
+        ))
     }
 }
 

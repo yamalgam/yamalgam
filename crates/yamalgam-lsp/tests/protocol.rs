@@ -385,5 +385,9 @@ fn document_state_batches_sequential_utf16_changes_against_one_snapshot() {
 
     assert!(applied);
     assert_eq!(document.syntax.text(), "name: 雪 day\r\ncount: 2\r\n");
+    assert_eq!(
+        document.position_at("name: 雪".len()),
+        Some(Position::new(0, 7))
+    );
     assert_eq!(document.located.len(), 1);
 }

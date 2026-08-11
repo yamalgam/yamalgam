@@ -73,6 +73,12 @@ impl IncrementalDocument {
         self.text.to_string()
     }
 
+    /// Return the current source length in UTF-8 bytes without materializing it.
+    #[must_use]
+    pub fn len_bytes(&self) -> usize {
+        self.text.len_bytes()
+    }
+
     /// Return the current immutable syntax tree.
     #[must_use]
     pub const fn syntax(&self) -> &SyntaxTree {
@@ -145,11 +151,13 @@ impl IncrementalDocument {
         }
         let line = self.text.try_byte_to_line(offset).ok()?;
         let line_start = self.text.try_line_to_byte(line).ok()?;
-        let prefix = self.text.byte_slice(line_start..offset).to_string();
-        Some((
-            u32::try_from(line).ok()?,
-            u32::try_from(prefix.encode_utf16().count()).ok()?,
-        ))
+        let utf16 = self
+            .text
+            .byte_slice(line_start..offset)
+            .chars()
+            .map(char::len_utf16)
+            .sum::<usize>();
+        Some((u32::try_from(line).ok()?, u32::try_from(utf16).ok()?))
     }
 
     /// Convert a zero-indexed UTF-16 line and column to a UTF-8 byte offset.
@@ -160,17 +168,21 @@ impl IncrementalDocument {
             return None;
         }
         let line_start = self.text.try_line_to_byte(line).ok()?;
-        let mut content = self.text.line(line).to_string();
-        if content.ends_with("\r\n") {
-            content.truncate(content.len() - 2);
-        } else if content.ends_with(['\r', '\n']) {
-            content.pop();
+        let line = self.text.line(line);
+        let mut content_end = line.len_bytes();
+        if content_end >= 2
+            && line.byte(content_end - 2) == b'\r'
+            && line.byte(content_end - 1) == b'\n'
+        {
+            content_end -= 2;
+        } else if content_end >= 1 && matches!(line.byte(content_end - 1), b'\r' | b'\n') {
+            content_end -= 1;
         }
 
         let target = usize::try_from(character).ok()?;
         let mut utf16 = 0;
         let mut bytes = 0;
-        for scalar in content.chars() {
+        for scalar in line.byte_slice(..content_end).chars() {
             if utf16 == target {
                 return Some(line_start + bytes);
             }
