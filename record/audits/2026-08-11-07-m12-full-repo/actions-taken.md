@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 8
+  fixed: 9
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 12
+  open: 11
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -151,5 +151,24 @@ The validator cache now uses a typed key containing the canonical
 schema identities no longer collide through redacted display strings, and a
 validator compiled for one report cap cannot be reused for another. Both
 regressions pass with all 29 LSP tests and workspace Clippy.
+
+---
+
+## 2026-08-11 — Bound native schema instance depth
+
+**Disposition:** fixed
+
+**Addresses:** [schema-native-adapter-unbounded-recursion](README.md#schema-native-adapter-unbounded-recursion)
+
+**Commit:** 8e3425f2751b101cc9ddd9799b8669b4c47032a8
+
+**Author:** Codex
+
+Schema validation now rejects instances deeper than
+`SchemaOptions::max_instance_depth`, which defaults to 256, before entering
+`jsonschema`. The typed `yaml/depth-limit` diagnostic retains the first
+excessive instance path. Native equality and JSON materialization use explicit
+work stacks; a 1,024-level regression covers both fallbacks. All 43 schema
+tests, all 29 LSP tests, and workspace Clippy pass.
 
 ---
