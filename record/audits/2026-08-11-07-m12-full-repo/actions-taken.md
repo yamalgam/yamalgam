@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 2
+  fixed: 3
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 18
+  open: 17
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -44,5 +44,22 @@ sequences count their direct comma separators. The fallback probe stays inside
 the current line, preserving partial `- ` recovery without inheriting the
 previous mapping entry. Block completion, flow completion, and sequence-value
 hover regressions pass with the full 21-test LSP suite and workspace Clippy.
+
+---
+
+## 2026-08-11 — Align Ropey line boundaries with LSP
+
+**Disposition:** fixed
+
+**Addresses:** [ropey-unicode-lines-desynchronize-lsp-positions](README.md#ropey-unicode-lines-desynchronize-lsp-positions)
+
+**Commit:** 53da91348fd819edbf437d1287d35048a24db1ec
+
+**Author:** Codex
+
+The CST now disables Ropey's Unicode-line feature while retaining CR-line and
+SIMD support. LSP UTF-16 conversions therefore treat U+2028 and U+2029 as
+content while honoring CR, LF, and CRLF as line boundaries. A bidirectional
+regression passes with all 54 CST tests, all 21 LSP tests, and workspace Clippy.
 
 ---
