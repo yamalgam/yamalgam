@@ -29,7 +29,7 @@ impl SchemaDocument {
     /// Create a schema document and retain its semantic content identity.
     #[must_use]
     pub fn new(id: ResourceId, document: LocatedValue) -> Self {
-        let semantic_digest = semantic_digest(&document.value);
+        let semantic_digest = semantic_digest(document.value());
         Self {
             id,
             document,
@@ -261,7 +261,7 @@ impl SchemaSession {
         options: SchemaOptions,
     ) -> Result<SchemaValidator, SchemaError> {
         let root = root.into();
-        let root_schema = schema_value_to_json(&root.document.value)?;
+        let root_schema = schema_value_to_json(root.document.value())?;
         {
             let mut state = self.lock_state();
             state.documents.insert(root.id.clone(), Arc::clone(&root));
@@ -361,7 +361,7 @@ impl SchemaSession {
                     if let Some(schema) = state.schemas.get(&document.id) {
                         schema.clone()
                     } else {
-                        let schema = schema_value_to_json(&document.document.value)?;
+                        let schema = schema_value_to_json(document.document.value())?;
                         state.schemas.insert(document.id.clone(), schema.clone());
                         schema
                     }

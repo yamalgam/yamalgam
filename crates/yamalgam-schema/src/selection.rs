@@ -220,7 +220,7 @@ impl SchemaSelector {
     ) -> Result<Vec<Option<SelectedSchema>>, SchemaSelectionError> {
         self.select_values(
             input,
-            documents.iter().map(|document| &document.value),
+            documents.iter().map(LocatedValue::value),
             documents.len(),
             containing,
             explicit,

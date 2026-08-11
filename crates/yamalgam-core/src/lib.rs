@@ -56,7 +56,9 @@ pub use loader::{
     ResolutionLimits, ResolutionMode, ResolutionPolicy, ResourceLimit, ResourceLimits,
 };
 
-pub use located::{LocatedValue, LocationKind, MappingLocations, ValueLocations};
+pub use located::{
+    LocatedValue, LocationKind, LocationShapeError, MappingLocations, ValueLocations,
+};
 
 pub use tag::{Yaml12TagResolver, resolve_plain_scalar};
 

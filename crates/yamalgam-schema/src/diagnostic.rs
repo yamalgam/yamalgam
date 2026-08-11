@@ -266,8 +266,8 @@ fn compact_text(mut text: String) -> String {
 }
 
 fn span_for_route(located: &LocatedValue, route: &[InstanceStep]) -> Option<Span> {
-    let mut value = &located.value;
-    let mut locations = &located.locations;
+    let mut value = located.value();
+    let mut locations = located.locations();
     for step in route {
         match (step, value, &locations.kind) {
             (

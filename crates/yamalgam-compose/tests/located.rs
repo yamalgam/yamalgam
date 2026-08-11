@@ -89,7 +89,7 @@ fn every_document_gets_an_independent_location_tree() {
     assert_eq!(
         located
             .iter()
-            .map(|document| document.value.clone())
+            .map(|document| document.value().clone())
             .collect::<Vec<_>>(),
         ordinary
     );

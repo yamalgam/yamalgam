@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 use yamalgam_core::tag_resolution::TagResolver;
 use yamalgam_core::{
-    LimitExceeded, LoaderConfig, LocatedValue, LocationKind, Mapping, MappingLocations,
-    ResourceLimits, Span, TagResolution, Value, ValueLocations,
+    LimitExceeded, LoaderConfig, LocatedValue, LocationKind, LocationShapeError, ResourceLimits,
+    Span, TagResolution, Value,
 };
 use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
@@ -32,6 +32,8 @@ pub enum ComposeError {
     /// Resource-accounting arithmetic overflowed before a configured limit
     /// could be checked.
     ResourceOverflow(&'static str),
+    /// An internal composition path produced mismatched value and location trees.
+    LocationShape(LocationShapeError),
 }
 
 impl std::fmt::Display for ComposeError {
@@ -44,6 +46,7 @@ impl std::fmt::Display for ComposeError {
             Self::ResourceOverflow(resource) => {
                 write!(f, "limit exceeded: {resource} overflow")
             }
+            Self::LocationShape(error) => write!(f, "invalid located value: {error}"),
         }
     }
 }
@@ -53,6 +56,7 @@ impl std::error::Error for ComposeError {
         match self {
             Self::Resolve(e) => Some(e),
             Self::LimitExceeded(error) => Some(error),
+            Self::LocationShape(error) => Some(error),
             Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) | Self::ResourceOverflow(_) => None,
         }
     }
@@ -67,6 +71,12 @@ impl From<ResolveError> for ComposeError {
 impl From<ParseError> for ComposeError {
     fn from(e: ParseError) -> Self {
         Self::Resolve(ResolveError::Parse(e))
+    }
+}
+
+impl From<LocationShapeError> for ComposeError {
+    fn from(error: LocationShapeError) -> Self {
+        Self::LocationShape(error)
     }
 }
 
@@ -270,7 +280,7 @@ where
         self.compose_stream_located().map(|documents| {
             documents
                 .into_iter()
-                .map(|document| document.value)
+                .map(LocatedValue::into_value)
                 .collect()
         })
     }
@@ -329,11 +339,11 @@ where
     /// If the next event is DocumentEnd, the document is empty (Null).
     fn compose_document_content_located(&mut self) -> Result<LocatedValue, ComposeError> {
         let Some(peeked) = self.peek_event()? else {
-            return Ok(located_scalar(Value::Null, Span::default()));
+            return located_scalar(Value::Null, Span::default());
         };
 
         if let Event::DocumentEnd { span, .. } = peeked {
-            return Ok(located_scalar(Value::Null, *span));
+            return located_scalar(Value::Null, *span);
         }
 
         self.compose_node_located(0)
@@ -361,7 +371,7 @@ where
                 span,
                 ..
             } => {
-                let resolved = located_scalar(self.resolve_scalar(&value, style), span);
+                let resolved = located_scalar(self.resolve_scalar(&value, style), span)?;
                 if let Some(name) = anchor {
                     self.remember_anchor(name.into_owned(), &resolved)?;
                 }
@@ -389,14 +399,7 @@ where
                     self.next_collection_size(items.len())?;
                     items.push(self.compose_node_located(child_depth(depth)?)?);
                 };
-                let locations = items.iter().map(|item| item.locations.clone()).collect();
-                let value = LocatedValue {
-                    value: Value::Sequence(items.into_iter().map(|item| item.value).collect()),
-                    locations: ValueLocations {
-                        span: encompassing_span(start_span, end_span),
-                        kind: LocationKind::Sequence(locations),
-                    },
-                };
+                let value = LocatedValue::sequence(items, encompassing_span(start_span, end_span));
                 if let Some(name) = anchor {
                     self.remember_anchor(name.into_owned(), &value)?;
                 }
@@ -408,8 +411,7 @@ where
                 span: start_span,
                 ..
             } => {
-                let mut map = Mapping::new();
-                let mut locations = Vec::new();
+                let mut entries = Vec::new();
                 let mut merge_pairs: Vec<(LocatedValue, LocatedValue)> = Vec::new();
                 let mut pair_count = 0_usize;
 
@@ -430,52 +432,33 @@ where
                     let val = self.compose_node_located(nested_depth)?;
 
                     // Merge key handling: `<<` key.
-                    if is_merge_key(&key.value) {
+                    if is_merge_key(key.value()) {
                         collect_located_merge_pairs(&val, &mut merge_pairs, &self.config, 0)?;
                     } else {
-                        insert_located_pair(&mut map, &mut locations, key, val);
+                        insert_located_pair(&mut entries, key, val);
                     }
                 };
 
                 // Apply merge pairs (explicit keys take precedence).
                 if !merge_pairs.is_empty() {
-                    let mut merged = Mapping::new();
-                    let mut merged_locations = Vec::new();
+                    let mut merged = Vec::new();
                     for (key, value) in merge_pairs {
-                        insert_located_pair(&mut merged, &mut merged_locations, key, value);
+                        insert_located_pair(&mut merged, key, value);
                         self.config
                             .check_collection_size(merged.len())
                             .map_err(ComposeError::LimitExceeded)?;
                     }
                     // Explicit keys override merged ones.
-                    for ((key, value), entry_locations) in map.iter().zip(&locations) {
-                        insert_located_pair(
-                            &mut merged,
-                            &mut merged_locations,
-                            LocatedValue {
-                                value: key.clone(),
-                                locations: entry_locations.key.clone(),
-                            },
-                            LocatedValue {
-                                value: value.clone(),
-                                locations: entry_locations.value.clone(),
-                            },
-                        );
+                    for (key, value) in entries {
+                        insert_located_pair(&mut merged, key, value);
                         self.config
                             .check_collection_size(merged.len())
                             .map_err(ComposeError::LimitExceeded)?;
                     }
-                    map = merged;
-                    locations = merged_locations;
+                    entries = merged;
                 }
 
-                let value = LocatedValue {
-                    value: Value::Mapping(map),
-                    locations: ValueLocations {
-                        span: encompassing_span(start_span, end_span),
-                        kind: LocationKind::Mapping(locations),
-                    },
-                };
+                let value = LocatedValue::mapping(entries, encompassing_span(start_span, end_span));
                 if let Some(name) = anchor {
                     self.remember_anchor(name.into_owned(), &value)?;
                 }
@@ -503,9 +486,7 @@ where
                     anchored.materialized_weight,
                     &self.config,
                 )?;
-                let mut located = anchored.located.clone();
-                located.locations.span = span;
-                Ok(located)
+                Ok(anchored.located.clone().with_root_span(span))
             }
 
             other => Err(ComposeError::UnexpectedEvent(format!("{other:?}"))),
@@ -609,7 +590,7 @@ where
     }
 
     fn remember_anchor(&mut self, name: String, value: &LocatedValue) -> Result<(), ComposeError> {
-        let materialized_weight = materialized_weight(&value.value)?;
+        let materialized_weight = materialized_weight(value.value())?;
         self.anchors.insert(
             name,
             AnchoredValue {
@@ -633,14 +614,8 @@ fn child_depth(depth: usize) -> Result<usize, ComposeError> {
         .ok_or(ComposeError::ResourceOverflow("depth"))
 }
 
-const fn located_scalar(value: Value, span: Span) -> LocatedValue {
-    LocatedValue {
-        value,
-        locations: ValueLocations {
-            span,
-            kind: LocationKind::Scalar,
-        },
-    }
+fn located_scalar(value: Value, span: Span) -> Result<LocatedValue, ComposeError> {
+    LocatedValue::scalar(value, span).map_err(ComposeError::from)
 }
 
 const fn encompassing_span(start: Span, end: Span) -> Span {
@@ -651,23 +626,17 @@ const fn encompassing_span(start: Span, end: Span) -> Span {
 }
 
 fn insert_located_pair(
-    mapping: &mut Mapping,
-    locations: &mut Vec<MappingLocations>,
+    entries: &mut Vec<(LocatedValue, LocatedValue)>,
     key: LocatedValue,
     value: LocatedValue,
 ) {
-    let existing = mapping
+    let existing = entries
         .iter()
-        .position(|(candidate, _)| candidate == &key.value);
-    mapping.insert(key.value, value.value);
-    let entry = MappingLocations {
-        key: key.locations,
-        value: value.locations,
-    };
+        .position(|(candidate, _)| candidate.value() == key.value());
     if let Some(index) = existing {
-        locations[index] = entry;
+        entries[index] = (key, value);
     } else {
-        locations.push(entry);
+        entries.push((key, value));
     }
 }
 
@@ -728,19 +697,13 @@ fn collect_located_merge_pairs(
     if let Err(error) = config.check_merge_depth(depth) {
         return Err(ComposeError::LimitExceeded(error));
     }
-    match (&val.value, &val.locations.kind) {
+    match (val.value(), &val.locations().kind) {
         (Value::Mapping(mapping), LocationKind::Mapping(locations)) => {
             for ((key, value), entry_locations) in mapping.iter().zip(locations) {
                 push_located_merge_pair(
                     pairs,
-                    LocatedValue {
-                        value: key.clone(),
-                        locations: entry_locations.key.clone(),
-                    },
-                    LocatedValue {
-                        value: value.clone(),
-                        locations: entry_locations.value.clone(),
-                    },
+                    LocatedValue::new(key.clone(), entry_locations.key.clone())?,
+                    LocatedValue::new(value.clone(), entry_locations.value.clone())?,
                     config,
                 )?;
             }
@@ -753,14 +716,8 @@ fn collect_located_merge_pairs(
                         for ((key, value), locations) in mapping.iter().zip(entry_locations) {
                             push_located_merge_pair(
                                 pairs,
-                                LocatedValue {
-                                    value: key.clone(),
-                                    locations: locations.key.clone(),
-                                },
-                                LocatedValue {
-                                    value: value.clone(),
-                                    locations: locations.value.clone(),
-                                },
+                                LocatedValue::new(key.clone(), locations.key.clone())?,
+                                LocatedValue::new(value.clone(), locations.value.clone())?,
                                 config,
                             )?;
                         }
@@ -840,7 +797,7 @@ pub fn from_str_single(input: &str) -> Result<Value, ComposeError> {
 pub fn from_str_single_located(input: &str) -> Result<LocatedValue, ComposeError> {
     let mut docs = Composer::from_str_located(input)?;
     match docs.len() {
-        0 => Ok(located_scalar(Value::Null, Span::default())),
+        0 => located_scalar(Value::Null, Span::default()),
         1 => Ok(docs.remove(0)),
         n => Err(ComposeError::UnexpectedEvent(format!(
             "expected 1 document, got {n}",
@@ -855,7 +812,7 @@ pub fn from_str_single_located_with_config(
 ) -> Result<LocatedValue, ComposeError> {
     let mut docs = Composer::from_str_located_with_config(input, config)?;
     match docs.len() {
-        0 => Ok(located_scalar(Value::Null, Span::default())),
+        0 => located_scalar(Value::Null, Span::default()),
         1 => Ok(docs.remove(0)),
         n => Err(ComposeError::UnexpectedEvent(format!(
             "expected 1 document, got {n}",

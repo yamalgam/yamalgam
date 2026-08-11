@@ -267,7 +267,7 @@ fn load_catalog(session: &SchemaSession, uri: &str) -> anyhow::Result<SchemaCata
         ResourceId::new(uri).with_context(|| format!("invalid SchemaStore catalog URI {uri:?}"))?,
     )?;
     let document = session.load(&id)?;
-    SchemaCatalog::from_value(&document.document.value).map_err(Into::into)
+    SchemaCatalog::from_value(document.document.value()).map_err(Into::into)
 }
 
 fn read_inputs(args: &ValidateArgs) -> anyhow::Result<Vec<InputStream>> {

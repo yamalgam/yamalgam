@@ -205,7 +205,7 @@ fn mapping_at<'value>(
     located: Option<&'value yamalgam_core::LocatedValue>,
     path: &str,
 ) -> Option<&'value yamalgam_core::Mapping> {
-    let mut value = &located?.value;
+    let mut value = located?.value();
     if !path.is_empty() {
         for segment in path.strip_prefix('/')?.split('/') {
             let segment = segment.replace("~1", "/").replace("~0", "~");

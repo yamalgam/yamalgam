@@ -105,7 +105,7 @@ impl SchemaValidator {
         schema: &LocatedValue,
         options: SchemaOptions,
     ) -> Result<Self, SchemaError> {
-        let json = schema_value_to_json(&schema.value)?;
+        let json = schema_value_to_json(schema.value())?;
         let navigation = NavigationIndex::single(
             json.clone(),
             Some(schema.clone()),
@@ -149,7 +149,7 @@ impl SchemaValidator {
     /// Validate a semantic YAML value and attach source spans to diagnostics.
     #[must_use]
     pub fn validate_located(&self, instance: &LocatedValue) -> ValidationReport {
-        self.validate_inner(&instance.value, Some(instance))
+        self.validate_inner(instance.value(), Some(instance))
     }
 
     /// Returns the checked JSON-compatible schema document.
