@@ -80,6 +80,13 @@ pub fn representation_diagnostic(
             Some("scalar mapping key".to_owned()),
             Some("sequence or mapping".to_owned()),
         ),
+        RepresentationErrorKind::DepthLimitExceeded { maximum, observed } => (
+            "yaml/depth-limit",
+            "depth-limit",
+            format!("YAML instance depth {observed} exceeds the limit of {maximum}"),
+            Some(format!("depth at most {maximum}")),
+            Some(format!("depth {observed}")),
+        ),
         RepresentationErrorKind::NonFiniteNumber => (
             "yaml/non-finite-number",
             "non-finite-number",

@@ -15,6 +15,7 @@ pub enum InstanceStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepresentationErrorKind {
     ComplexMappingKey,
+    DepthLimitExceeded { maximum: usize, observed: usize },
     NonFiniteNumber,
     ProjectedKeyCollision { name: String },
 }
@@ -71,12 +72,24 @@ impl ProjectedKeys {
 
 impl<'value> PreparedInstance<'value> {
     // r[impl validate.keys]
-    pub fn new(value: &'value Value) -> Result<Self, Vec<RepresentationError>> {
+    pub fn new(value: &'value Value, max_depth: usize) -> Result<Self, Vec<RepresentationError>> {
         let mut projected_keys = ProjectedKeys::default();
         let mut errors = Vec::new();
-        let mut pending = vec![(value, String::new(), Vec::new())];
+        let mut pending = vec![(value, String::new(), Vec::new(), 0_usize)];
 
-        while let Some((node, path, route)) = pending.pop() {
+        while let Some((node, path, route, depth)) = pending.pop() {
+            if depth > max_depth {
+                errors.push(RepresentationError {
+                    kind: RepresentationErrorKind::DepthLimitExceeded {
+                        maximum: max_depth,
+                        observed: depth,
+                    },
+                    instance_path: path,
+                    route,
+                    conflicting_route: None,
+                });
+                break;
+            }
             match node {
                 Value::Float(number) if !number.is_finite() => {
                     errors.push(RepresentationError {
@@ -87,13 +100,20 @@ impl<'value> PreparedInstance<'value> {
                     });
                 }
                 Value::Sequence(items) => {
+                    let child_depth = depth.saturating_add(1);
                     for (index, item) in items.iter().enumerate().rev() {
                         let mut child_route = route.clone();
                         child_route.push(InstanceStep::Sequence(index));
-                        pending.push((item, append_path(&path, &index.to_string()), child_route));
+                        pending.push((
+                            item,
+                            append_path(&path, &index.to_string()),
+                            child_route,
+                            child_depth,
+                        ));
                     }
                 }
                 Value::Mapping(mapping) => {
+                    let child_depth = depth.saturating_add(1);
                     let mut projection: Vec<ProjectedKey> = Vec::with_capacity(mapping.len());
                     let mut projections_by_hash = HashMap::<u64, Vec<usize>>::new();
                     let mut child_nodes = Vec::with_capacity(mapping.len());
@@ -129,7 +149,7 @@ impl<'value> PreparedInstance<'value> {
                         let mut child_route = route.clone();
                         child_route.push(InstanceStep::MappingValue(index));
                         let Some(projected_name) = projected_name else {
-                            child_nodes.push((child, path.clone(), child_route));
+                            child_nodes.push((child, path.clone(), child_route, child_depth));
                             continue;
                         };
                         let name = match &projected_name {
@@ -138,7 +158,12 @@ impl<'value> PreparedInstance<'value> {
                                 .expect("original projected names must be string keys"),
                             ProjectedName::Canonical(name) => name.as_str(),
                         };
-                        child_nodes.push((child, append_path(&path, name), child_route));
+                        child_nodes.push((
+                            child,
+                            append_path(&path, name),
+                            child_route,
+                            child_depth,
+                        ));
 
                         let name_hash = hash_name(name);
                         let first_index = projections_by_hash.get(&name_hash).and_then(|indices| {
@@ -246,7 +271,8 @@ mod yaml_schema_compat {
             (Value::from("plain"), Value::Integer(4)),
         ]);
 
-        let prepared = PreparedInstance::new(&value).expect("scalar keys are representable");
+        let prepared =
+            PreparedInstance::new(&value, usize::MAX).expect("scalar keys are representable");
         let object = prepared.root().as_object().expect("mapping is an object");
         let members = object.members().collect::<Vec<_>>();
         let names = members
@@ -278,7 +304,7 @@ mod yaml_schema_compat {
     fn complex_mapping_keys_are_rejected_with_their_route() {
         let value = mapping([(Value::Sequence(vec![Value::from("complex")]), Value::Null)]);
 
-        let errors = PreparedInstance::new(&value).expect_err("complex key must fail");
+        let errors = PreparedInstance::new(&value, usize::MAX).expect_err("complex key must fail");
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, RepresentationErrorKind::ComplexMappingKey);
@@ -294,7 +320,8 @@ mod yaml_schema_compat {
             (Value::Float(f64::INFINITY), Value::Null),
         ]);
 
-        let errors = PreparedInstance::new(&value).expect_err("non-finite keys must fail");
+        let errors =
+            PreparedInstance::new(&value, usize::MAX).expect_err("non-finite keys must fail");
 
         assert_eq!(errors.len(), 2);
         assert!(errors.iter().all(|error| {
@@ -310,7 +337,7 @@ mod yaml_schema_compat {
             (Value::from("1"), Value::from("string")),
         ]);
 
-        let errors = PreparedInstance::new(&value).expect_err("collisions must fail");
+        let errors = PreparedInstance::new(&value, usize::MAX).expect_err("collisions must fail");
 
         assert_eq!(errors.len(), 2);
         for (offset, error) in errors.iter().enumerate() {

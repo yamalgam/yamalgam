@@ -18,6 +18,33 @@ fn assert_case(schema: JsonValue, valid: JsonValue, invalid: JsonValue) {
     assert!(!validator.validate(&value(invalid)).valid);
 }
 
+#[test]
+fn validation_rejects_instances_beyond_the_configured_depth() {
+    let validator = SchemaValidator::compile(
+        &Value::Bool(true),
+        SchemaOptions {
+            max_instance_depth: 2,
+            ..SchemaOptions::default()
+        },
+    )
+    .expect("boolean schema compiles");
+    let instance = Value::Sequence(vec![Value::Sequence(vec![Value::Sequence(vec![
+        Value::Null,
+    ])])]);
+
+    let report = validator.validate(&instance);
+
+    assert!(!report.valid);
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(report.diagnostics[0].code, "yaml/depth-limit");
+    assert_eq!(report.diagnostics[0].instance_path, "/0/0/0");
+    assert_eq!(
+        report.diagnostics[0].expected.as_deref(),
+        Some("depth at most 2")
+    );
+    assert_eq!(report.diagnostics[0].actual.as_deref(), Some("depth 3"));
+}
+
 // r[verify validate]
 // r[verify validate.engine]
 // r[verify phases.validation]

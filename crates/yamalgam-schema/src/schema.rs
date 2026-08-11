@@ -20,6 +20,8 @@ pub struct SchemaOptions {
     pub base_uri: Option<String>,
     /// Whether the JSON Schema `format` keyword is asserted.
     pub validate_formats: bool,
+    /// Maximum nesting depth accepted from one instance root.
+    pub max_instance_depth: usize,
     /// Maximum number of diagnostics retained in one report.
     pub max_diagnostics: usize,
 }
@@ -29,6 +31,7 @@ impl Default for SchemaOptions {
         Self {
             base_uri: None,
             validate_formats: false,
+            max_instance_depth: 256,
             max_diagnostics: 100,
         }
     }
@@ -169,7 +172,7 @@ impl SchemaValidator {
     }
 
     fn validate_inner(&self, instance: &Value, located: Option<&LocatedValue>) -> ValidationReport {
-        let prepared = match PreparedInstance::new(instance) {
+        let prepared = match PreparedInstance::new(instance, self.options.max_instance_depth) {
             Ok(prepared) => prepared,
             Err(errors) => {
                 let mut diagnostics =
