@@ -9,7 +9,7 @@ description = "Lossless concrete syntax tree for YAML"
 publish = false
 
 [dependencies]
-ropey = "1.6.1"
+ropey = { version = "1.6.1", default-features = false, features = ["cr_lines", "simd"] }
 rowan = "0.16.1"
 yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-parser = { path = "../yamalgam-parser" }

@@ -52,6 +52,22 @@ fn converts_crlf_and_non_bmp_utf16_positions_both_directions() {
 }
 
 #[test]
+fn lsp_lines_ignore_unicode_separators_and_honor_carriage_returns() {
+    let input = "a\u{2028}b\u{2029}c\rd\n";
+    let doc = document(input);
+    let b = input.find('b').unwrap();
+    let c = input.find('c').unwrap();
+    let d = input.find('d').unwrap();
+
+    assert_eq!(doc.byte_offset_to_utf16(b), Some((0, 2)));
+    assert_eq!(doc.byte_offset_to_utf16(c), Some((0, 4)));
+    assert_eq!(doc.byte_offset_to_utf16(d), Some((1, 0)));
+    assert_eq!(doc.utf16_to_byte_offset(0, 2), Some(b));
+    assert_eq!(doc.utf16_to_byte_offset(0, 4), Some(c));
+    assert_eq!(doc.utf16_to_byte_offset(1, 0), Some(d));
+}
+
+#[test]
 fn reparses_one_document_when_markers_and_boundaries_are_stable() {
     let mut doc = document("---\na: one\n---\nb: two\n");
     let start = doc.text().find("one").unwrap();
