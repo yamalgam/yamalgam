@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 7
+  fixed: 8
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 13
+  open: 12
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -133,5 +133,23 @@ retrieval, UTF-8, and URI failures. The LSP server maps those failures to
 `RequestFailed` with a fixed path-safe message while retaining full typed
 causes inside the library. Library and protocol regressions pass with all 27
 LSP tests and workspace Clippy.
+
+---
+
+## 2026-08-11 — Preserve schema validator cache identity
+
+**Disposition:** fixed
+
+**Addresses:** [schema-validator-cache-key-erases-identity-and-options](README.md#schema-validator-cache-key-erases-identity-and-options)
+
+**Commit:** 4911f5714c297e3d65a296356013a2e332fb9c5f
+
+**Author:** Codex
+
+The validator cache now uses a typed key containing the canonical
+`ResourceId`, semantic schema digest, and diagnostic limit. Query-bearing
+schema identities no longer collide through redacted display strings, and a
+validator compiled for one report cap cannot be reused for another. Both
+regressions pass with all 29 LSP tests and workspace Clippy.
 
 ---
