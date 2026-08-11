@@ -321,20 +321,20 @@ impl LocatedValue {
 }
 ```
 
-- [ ] **Step 1: Write failing located-composition tests**
+- [x] **Step 1: Write failing located-composition tests**
 
 Cover a nested mapping/sequence, a key containing `/` and `~`, an alias, a
 merge key, and two YAML documents. Assert `/service/ports/1` resolves to the
 value token span. Alias-root diagnostics point to the alias use; merged child
 properties retain the anchor definition span.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-compose --test located
 ```
 
-- [ ] **Step 3: Add the location tree without changing `Value`**
+- [x] **Step 3: Add the location tree without changing `Value`**
 
 Refactor the composer's internal `AnchoredValue` to carry `LocatedValue`.
 Build value and location children in the same stack frame. Keep
@@ -351,14 +351,14 @@ location tree together. Resolve scalar mapping keys through the same canonical
 property names as `PreparedInstance`; return no match for complex keys or a
 canonical-name collision.
 
-- [ ] **Step 4: Re-run existing composer tests and located tests**
+- [x] **Step 4: Re-run existing composer tests and located tests**
 
 ```bash
 cargo nextest run -p yamalgam-compose
 just test-schema value_adapter
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/yamalgam-core crates/yamalgam-compose
