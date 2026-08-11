@@ -113,10 +113,18 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
     /// Parse and compose all documents with parallel source-location trees.
     pub fn from_str_located(input: &'input str) -> Result<Vec<LocatedValue>, ComposeError> {
         let config = LoaderConfig::default();
-        let parser = Parser::with_config(input, &config);
+        Self::from_str_located_with_config(input, &config)
+    }
+
+    /// Parse and compose located documents with caller-selected resource limits.
+    pub fn from_str_located_with_config(
+        input: &'input str,
+        config: &LoaderConfig,
+    ) -> Result<Vec<LocatedValue>, ComposeError> {
+        let parser = Parser::with_config(input, config);
         let events =
-            ResolvedEvents::new_with_config(parser.map(map_parse_error), NoopResolver, &config);
-        let mut composer = Composer::new_with_config(events, &config);
+            ResolvedEvents::new_with_config(parser.map(map_parse_error), NoopResolver, config);
+        let mut composer = Composer::new_with_config(events, config);
         composer.compose_stream_located()
     }
 
@@ -800,6 +808,14 @@ pub fn from_str_located(input: &str) -> Result<Vec<LocatedValue>, ComposeError> 
     Composer::from_str_located(input)
 }
 
+/// Parse YAML documents with parallel source-location trees and resource limits.
+pub fn from_str_located_with_config(
+    input: &str,
+    config: &LoaderConfig,
+) -> Result<Vec<LocatedValue>, ComposeError> {
+    Composer::from_str_located_with_config(input, config)
+}
+
 /// Parse a YAML string into documents with no resource limits.
 ///
 /// Use only for trusted input. Prefer [`from_str`] for ordinary input.
@@ -823,6 +839,21 @@ pub fn from_str_single(input: &str) -> Result<Value, ComposeError> {
 /// Parse a YAML string into one value with a parallel source-location tree.
 pub fn from_str_single_located(input: &str) -> Result<LocatedValue, ComposeError> {
     let mut docs = Composer::from_str_located(input)?;
+    match docs.len() {
+        0 => Ok(located_scalar(Value::Null, Span::default())),
+        1 => Ok(docs.remove(0)),
+        n => Err(ComposeError::UnexpectedEvent(format!(
+            "expected 1 document, got {n}",
+        ))),
+    }
+}
+
+/// Parse one located YAML value with caller-selected resource limits.
+pub fn from_str_single_located_with_config(
+    input: &str,
+    config: &LoaderConfig,
+) -> Result<LocatedValue, ComposeError> {
+    let mut docs = Composer::from_str_located_with_config(input, config)?;
     match docs.len() {
         0 => Ok(located_scalar(Value::Null, Span::default())),
         1 => Ok(docs.remove(0)),

@@ -503,7 +503,7 @@ impl SchemaSession {
 }
 ```
 
-- [ ] **Step 1: Write policy and reference tests**
+- [x] **Step 1: Write policy and reference tests**
 
 Use `MemoryRetriever` for relative, absolute, cyclic, missing, oversized, and
 over-budget `$ref` graphs. Use `FileRetriever` under a temporary capability
@@ -514,13 +514,13 @@ URI user information and query values. Drive every case through existing
 `ResourceLimits::max_input_bytes` as a per-document ceiling and
 `ResolutionLimits::max_fetched_bytes` across the session.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-schema retrieval
 ```
 
-- [ ] **Step 3: Build the `jsonschema::Retrieve` bridge**
+- [x] **Step 3: Build the `jsonschema::Retrieve` bridge**
 
 The bridge converts an absolute schema URI to `ResourceId`, checks the existing
 ref mode, scheme, host, file capability, depth, edge count, and byte ceilings,
@@ -531,7 +531,7 @@ schema document through `schema_value_to_json`. Cache canonical resources per
 
 Do not enable `jsonschema`'s `resolve-file` or `resolve-http` features.
 
-- [ ] **Step 4: Verify refs and M11 regressions**
+- [x] **Step 4: Verify refs and M11 regressions**
 
 ```bash
 just test-schema retrieval
@@ -539,7 +539,7 @@ cargo nextest run -p yamalgam-resolve
 just deny
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/yamalgam-schema Cargo.lock

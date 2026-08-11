@@ -1,6 +1,9 @@
 #![allow(missing_docs)]
 
-use yamalgam_compose::{from_str, from_str_located, from_str_single_located};
+use yamalgam_compose::{
+    from_str, from_str_located, from_str_single_located, from_str_single_located_with_config,
+};
+use yamalgam_core::LoaderConfig;
 
 fn span_text(input: &str, span: yamalgam_core::Span) -> &str {
     &input[span.start.offset..span.end.offset]
@@ -90,4 +93,12 @@ fn every_document_gets_an_independent_location_tree() {
             .collect::<Vec<_>>(),
         ordinary
     );
+}
+
+#[test]
+fn located_composition_honors_the_callers_loader_limits() {
+    let mut config = LoaderConfig::moderate();
+    config.limits.max_depth = Some(1);
+
+    assert!(from_str_single_located_with_config("a: {b: 1}\n", &config).is_err());
 }

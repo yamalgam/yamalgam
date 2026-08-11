@@ -4,8 +4,10 @@
 
 pub(crate) mod diagnostic;
 mod preflight;
-mod schema;
+mod retrieval;
+pub(crate) mod schema;
 mod value;
 
 pub use diagnostic::{ValidationDiagnostic, ValidationReport};
-pub use schema::{SchemaError, SchemaOptions, SchemaRetrieveError, SchemaValidator};
+pub use retrieval::{SchemaDocument, SchemaRetrieveError, SchemaSession};
+pub use schema::{SchemaError, SchemaOptions, SchemaValidator};

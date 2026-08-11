@@ -6,6 +6,7 @@ use yamalgam_core::{LocatedValue, Value};
 
 use crate::diagnostic::{ValidationReport, representation_diagnostic, schema_diagnostic};
 use crate::preflight::PreparedInstance;
+use crate::retrieval::SchemaRetrieveError;
 use crate::value::YamlJson;
 
 /// Options controlling schema compilation and report size.
@@ -27,13 +28,6 @@ impl Default for SchemaOptions {
             max_diagnostics: 100,
         }
     }
-}
-
-/// Placeholder retrieval failure boundary, implemented by the schema session.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{message}")]
-pub struct SchemaRetrieveError {
-    message: String,
 }
 
 /// Failure to convert or compile a JSON Schema document.
@@ -84,13 +78,7 @@ impl SchemaValidator {
     /// Compile one semantic YAML value as a Draft 2020-12 schema.
     pub fn compile(schema: &Value, options: SchemaOptions) -> Result<Self, SchemaError> {
         let schema = schema_value_to_json(schema)?;
-        let mut builder = jsonschema::options_for::<YamlJson>()
-            .with_draft(jsonschema::Draft::Draft202012)
-            .should_validate_formats(options.validate_formats)
-            .with_pattern_options(jsonschema::PatternOptions::regex());
-        if let Some(base_uri) = &options.base_uri {
-            builder = builder.with_base_uri(base_uri);
-        }
+        let builder = validator_options(&options);
         let validator = builder
             .build(&schema)
             .map_err(|error| compile_error(&schema, &error))?;
@@ -107,6 +95,22 @@ impl SchemaValidator {
         options: SchemaOptions,
     ) -> Result<Self, SchemaError> {
         Self::compile(&schema.value, options)
+    }
+
+    pub(crate) fn compile_json_with_retriever(
+        schema: JsonValue,
+        options: SchemaOptions,
+        retriever: impl jsonschema::Retrieve + 'static,
+    ) -> Result<Self, SchemaError> {
+        let validator = validator_options(&options)
+            .with_retriever(retriever)
+            .build(&schema)
+            .map_err(|error| compile_error(&schema, &error))?;
+        Ok(Self {
+            schema,
+            validator,
+            options,
+        })
     }
 
     /// Validate an unlocated semantic YAML value.
@@ -155,7 +159,7 @@ impl SchemaValidator {
     }
 }
 
-fn schema_value_to_json(schema: &Value) -> Result<JsonValue, SchemaError> {
+pub fn schema_value_to_json(schema: &Value) -> Result<JsonValue, SchemaError> {
     enum ArenaNode {
         Scalar(JsonValue),
         Sequence(Vec<usize>),
@@ -243,6 +247,19 @@ fn schema_value_to_json(schema: &Value) -> Result<JsonValue, SchemaError> {
         converted[index] = Some(value);
     }
     Ok(converted[0].take().expect("root schema converted"))
+}
+
+fn validator_options(
+    options: &SchemaOptions,
+) -> jsonschema::ValidationOptions<'static, std::sync::Arc<dyn jsonschema::Retrieve>, YamlJson> {
+    let mut builder = jsonschema::options_for::<YamlJson>()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .should_validate_formats(options.validate_formats)
+        .with_pattern_options(jsonschema::PatternOptions::regex());
+    if let Some(base_uri) = &options.base_uri {
+        builder = builder.with_base_uri(base_uri);
+    }
+    builder
 }
 
 fn compile_error(schema: &JsonValue, error: &jsonschema::ValidationError<'_>) -> SchemaError {
