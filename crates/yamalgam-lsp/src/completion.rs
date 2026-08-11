@@ -98,13 +98,12 @@ pub(super) fn editor_context(
         .chars()
         .take_while(|character| *character == ' ')
         .count();
-    let mut document_index = 0;
+    let document_index = document.document_index_at_offset(offset);
     let mut stack = Vec::<(usize, String)>::new();
 
     for line in text[..line_start].lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("---") {
-            document_index += 1;
             stack.clear();
             continue;
         }

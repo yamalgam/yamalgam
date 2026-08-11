@@ -4,7 +4,7 @@ use lsp_types::{Position, TextDocumentContentChangeEvent, Uri};
 use thiserror::Error;
 use yamalgam_compose::from_str_located_with_config;
 use yamalgam_core::{LoaderConfig, LocatedValue};
-use yamalgam_cst::{EditError, IncrementalDocument, TextEdit};
+use yamalgam_cst::{EditError, IncrementalDocument, SyntaxKind, TextEdit};
 use yamalgam_schema::SelectedSchema;
 
 use crate::ServerConfig;
@@ -116,6 +116,24 @@ impl DocumentState {
 
     pub(crate) fn schema_for_document(&self, index: usize) -> Option<&SelectedSchema> {
         self.schema_assignments.get(index).and_then(Option::as_ref)
+    }
+
+    pub(crate) fn document_index_at_offset(&self, offset: usize) -> usize {
+        let mut index = 0;
+        for (candidate, document) in self
+            .syntax
+            .syntax()
+            .root()
+            .children()
+            .filter(|node| node.kind() == SyntaxKind::Document)
+            .enumerate()
+        {
+            if usize::from(document.text_range().start()) > offset {
+                break;
+            }
+            index = candidate;
+        }
+        index
     }
 
     pub(crate) fn schema_selection_error(&self) -> Option<&str> {

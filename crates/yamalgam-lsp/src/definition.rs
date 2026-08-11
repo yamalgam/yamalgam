@@ -97,7 +97,7 @@ impl WorkspaceState {
 #[must_use]
 pub fn navigation_index(document: &DocumentState, workspace: &WorkspaceState) -> NavigationIndex {
     let text = document.syntax.text();
-    let sites = reference_sites(&text);
+    let sites = reference_sites(document, &text);
     let base = ResourceId::new(document.uri.as_str()).ok();
     let mut index = NavigationIndex::default();
     for site in sites {
@@ -163,7 +163,7 @@ pub fn definition(
 ) -> Option<GotoDefinitionResponse> {
     let offset = document.offset_at(position)?;
     let text = document.syntax.text();
-    let site = reference_sites(&text)
+    let site = reference_sites(document, &text)
         .into_iter()
         .find(|site| site.start <= offset && offset <= site.end)?;
     let origin = byte_range(document, site.start, site.end)?;
@@ -237,17 +237,15 @@ struct ReferenceSite {
     end: usize,
 }
 
-fn reference_sites(text: &str) -> Vec<ReferenceSite> {
+fn reference_sites(document: &DocumentState, text: &str) -> Vec<ReferenceSite> {
     let mut sites = Vec::new();
     let mut line_start = 0;
-    let mut document_index = 0;
     let mut structured_include_indent = None;
     for line in text.split_inclusive('\n') {
         let content = line.trim_end_matches(['\r', '\n']);
         let trimmed = content.trim_start();
         let indent = content.len() - trimmed.len();
         if trimmed.starts_with("---") {
-            document_index += 1;
             structured_include_indent = None;
         }
         if let Some(marker) = content.find("!include") {
@@ -255,7 +253,7 @@ fn reference_sites(text: &str) -> Vec<ReferenceSite> {
             if let Some((requested, start, end)) = scalar_after(content, after) {
                 sites.push(ReferenceSite {
                     kind: ReferenceKind::Include,
-                    document_index,
+                    document_index: document.document_index_at_offset(line_start + start),
                     requested,
                     start: line_start + start,
                     end: line_start + end,
@@ -271,7 +269,7 @@ fn reference_sites(text: &str) -> Vec<ReferenceSite> {
             {
                 sites.push(ReferenceSite {
                     kind: ReferenceKind::Include,
-                    document_index,
+                    document_index: document.document_index_at_offset(line_start + start),
                     requested,
                     start: line_start + start,
                     end: line_start + end,
@@ -288,7 +286,7 @@ fn reference_sites(text: &str) -> Vec<ReferenceSite> {
         {
             sites.push(ReferenceSite {
                 kind: ReferenceKind::DataRef,
-                document_index,
+                document_index: document.document_index_at_offset(line_start + start),
                 requested,
                 start: line_start + start,
                 end: line_start + end,

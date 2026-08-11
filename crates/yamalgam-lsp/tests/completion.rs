@@ -111,6 +111,19 @@ fn completion_handles_nested_partial_mappings_and_enum_values() {
 }
 
 #[test]
+fn completion_keeps_a_leading_document_marker_in_document_zero() {
+    let schema = r#"{
+      "type": "object",
+      "properties": {"name": {"type": "string"}}
+    }"#;
+    let (schemas, document) = fixture(schema, "---\n");
+
+    let candidates = items(complete(&document, Position::new(1, 0), &schemas));
+
+    assert!(candidates.iter().any(|item| item.label == "name"));
+}
+
+#[test]
 fn completion_returns_no_candidates_without_an_active_schema() {
     let document = DocumentState::new(
         Uri::from_str("file:///workspace/plain.yaml").unwrap(),

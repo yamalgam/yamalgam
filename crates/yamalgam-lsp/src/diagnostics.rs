@@ -227,12 +227,7 @@ fn byte_position(document: &DocumentState, offset: usize) -> Position {
 }
 
 fn document_index_at(document: &DocumentState, offset: usize) -> usize {
-    let text = document.syntax.text();
-    let offset = offset.min(text.len());
-    text[..offset]
-        .lines()
-        .filter(|line| line.trim_start().starts_with("---"))
-        .count()
+    document.document_index_at_offset(offset)
 }
 
 const fn severity(severity: Severity) -> DiagnosticSeverity {

@@ -68,6 +68,17 @@ fn hover_renders_schema_annotations_as_safe_plain_text() {
 }
 
 #[test]
+fn hover_keeps_a_leading_document_marker_in_document_zero() {
+    let (schemas, document) = fixture("---\nmode: fast\n");
+
+    let hover = hover(&document, Position::new(1, 7), &schemas).unwrap();
+    let HoverContents::Scalar(MarkedString::String(text)) = hover.contents else {
+        panic!("expected plain-text hover");
+    };
+    assert!(text.contains("Run mode"));
+}
+
+#[test]
 fn hover_ignores_whitespace_comments_and_documents_without_schemas() {
     let (schemas, document) = fixture("mode: fast # comment\n");
     assert!(hover(&document, Position::new(0, 5), &schemas).is_none());

@@ -121,3 +121,39 @@ fn definition_uses_the_schema_navigation_index_for_schema_refs() {
     assert_eq!(link.target_uri.as_str(), uri);
     assert_eq!(link.target_selection_range.start.line, 1);
 }
+
+#[test]
+fn definition_keeps_a_leading_document_marker_in_document_zero() {
+    let uri = "memory://schemas/leading-marker";
+    let schema = r##"{
+      "$defs": {"name": {"type": "string"}}
+    }"##;
+    let mut retriever = MemoryRetriever::default();
+    retriever.insert(RetrievedResource {
+        id: ResourceId::new(uri).unwrap(),
+        bytes: schema.as_bytes().to_vec(),
+        provenance: ResourceProvenance::default(),
+    });
+    let mut loader = LoaderConfig::trusted();
+    loader.resolution.refs.mode = ResolutionMode::Explicit;
+    loader.resolution.refs.allow_schemes = vec!["memory".to_owned()];
+    let schemas = Arc::new(SchemaWorkspace::new(Arc::new(retriever), loader));
+    let mut workspace = WorkspaceState::new(Arc::clone(&schemas), Vec::new());
+    workspace.insert_resource(Uri::from_str(uri).unwrap(), schema.to_owned());
+    let server = ServerConfig {
+        schema_associations: vec![SchemaAssociation {
+            uri: uri.to_owned(),
+            file_match: vec!["*.yaml".to_owned()],
+        }],
+        ..ServerConfig::default()
+    };
+    let mut document = document(
+        "file:///workspace/leading-marker.yaml",
+        "---\n$ref: '#/$defs/name'\n",
+    );
+    document.select_schemas(&server).unwrap();
+
+    let link = link(definition(&document, Position::new(1, 16), &workspace).unwrap());
+
+    assert_eq!(link.target_uri.as_str(), uri);
+}

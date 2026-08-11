@@ -102,6 +102,23 @@ fn diagnostics_preserve_unicode_ranges_and_document_indexes() {
 }
 
 #[test]
+fn syntax_diagnostics_keep_a_leading_document_marker_in_document_zero() {
+    let schemas = SchemaWorkspace::empty(LoaderConfig::default());
+    let server = ServerConfig::default();
+    let document = DocumentState::new(
+        Uri::from_str("file:///workspace/leading-marker.yaml").unwrap(),
+        1,
+        "---\nbad: ]\n",
+        &LoaderConfig::default(),
+    );
+
+    let diagnostics = document_diagnostics(&document, &schemas, &server);
+
+    assert!(!diagnostics.is_empty());
+    assert_eq!(diagnostics[0].data.as_ref().unwrap()["documentIndex"], 0);
+}
+
+#[test]
 fn diagnostics_publish_current_versions_and_skip_stale_changes() {
     let (server, client) = Connection::memory();
     let worker = std::thread::spawn(move || run(server));
