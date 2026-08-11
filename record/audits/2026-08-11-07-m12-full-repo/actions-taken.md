@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 17
+  fixed: 18
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 3
+  open: 2
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -323,5 +323,25 @@ invariant without repeatedly walking completed subtrees. Composer merge,
 alias, schema, LSP, and CLI consumers now use that API. The invariant
 regression passes with all 77 core tests, all 66 composer tests, all 52 schema
 tests, all 30 LSP tests, and workspace Clippy.
+
+---
+
+## 2026-08-11 — Separate value-only composition state
+
+**Disposition:** fixed
+
+**Addresses:** [located-composition-clones-location-subtrees](README.md#located-composition-clones-location-subtrees)
+
+**Commit:** 2a0fae5ea93ec986eb6b59936c727842eab17911
+
+**Author:** Codex
+
+The composer now accumulates either plain `Value` nodes or `LocatedValue`
+nodes through one mode-aware parser path. Value-only entry points no longer
+construct source-location trees, and their anchor cache contains semantic
+values only; located sequences and mappings move-unzip owned child nodes
+without cloning location subtrees. Parsing, merge handling, aliases, and
+resource accounting remain shared. All 67 composer tests, all 52 schema tests,
+all 30 LSP tests, all 351 YAML Test Suite cases, and workspace Clippy pass.
 
 ---
