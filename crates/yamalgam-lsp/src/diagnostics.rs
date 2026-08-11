@@ -15,10 +15,17 @@ use yamalgam_schema::{
 
 use crate::{DocumentState, ServerConfig};
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ValidatorCacheKey {
+    resource: ResourceId,
+    semantic_digest: u64,
+    max_diagnostics: usize,
+}
+
 /// Cached schema loading and compilation shared by editor features.
 pub struct SchemaWorkspace {
     session: SchemaSession,
-    validators: Mutex<HashMap<(String, u64), Arc<SchemaValidator>>>,
+    validators: Mutex<HashMap<ValidatorCacheKey, Arc<SchemaValidator>>>,
 }
 
 impl SchemaWorkspace {
@@ -53,7 +60,11 @@ impl SchemaWorkspace {
         let id = schema_resource_id(&selected.uri)?;
         let document = self.session.load(&id)?;
         let digest = semantic_digest(&document.document.value);
-        let key = (document.id.to_string(), digest);
+        let key = ValidatorCacheKey {
+            resource: document.id.clone(),
+            semantic_digest: digest,
+            max_diagnostics,
+        };
         if let Some(validator) = self.lock_validators().get(&key) {
             return Ok(Arc::clone(validator));
         }
@@ -69,7 +80,7 @@ impl SchemaWorkspace {
         Ok(validator)
     }
 
-    fn lock_validators(&self) -> MutexGuard<'_, HashMap<(String, u64), Arc<SchemaValidator>>> {
+    fn lock_validators(&self) -> MutexGuard<'_, HashMap<ValidatorCacheKey, Arc<SchemaValidator>>> {
         self.validators
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -7,9 +7,10 @@ use std::time::Duration;
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use lsp_types::{DiagnosticSeverity, PublishDiagnosticsParams, Uri};
 use serde_json::json;
-use yamalgam_core::{LoaderConfig, ResolutionMode};
+use yamalgam_core::{LoaderConfig, ResolutionMode, Value};
 use yamalgam_lsp::{DocumentState, SchemaWorkspace, ServerConfig, document_diagnostics, run};
 use yamalgam_resolve::{MemoryRetriever, ResourceId, ResourceProvenance, RetrievedResource};
+use yamalgam_schema::{SchemaSource, SelectedSchema};
 
 fn schema_workspace(uri: &str, schema: &str) -> (SchemaWorkspace, LoaderConfig) {
     let mut schema_config = LoaderConfig::trusted();
@@ -36,6 +37,59 @@ fn selected_document(text: &str, loader: &LoaderConfig, server: &ServerConfig) -
     );
     document.select_schemas(server).unwrap();
     document
+}
+
+fn selected_schema(uri: &str) -> SelectedSchema {
+    SelectedSchema {
+        uri: uri.to_owned(),
+        source: SchemaSource::Explicit,
+    }
+}
+
+#[test]
+fn validator_cache_preserves_diagnostic_limits() {
+    let schema_uri = "memory://schemas/limits";
+    let (schemas, _) = schema_workspace(schema_uri, "type: object\nrequired: [first, second]\n");
+    let selected = selected_schema(schema_uri);
+
+    schemas.validator(&selected, 1).unwrap();
+    let validator = schemas.validator(&selected, 2).unwrap();
+    let instance: Value = serde_json::from_value(json!({})).unwrap();
+    let report = validator.validate(&instance);
+
+    assert_eq!(report.diagnostics.len(), 2, "{:#?}", report.diagnostics);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == "schema/required"),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn validator_cache_preserves_query_bearing_resource_identity() {
+    let first_uri = "memory://schemas/root.yaml?tenant=first";
+    let second_uri = "memory://schemas/root.yaml?tenant=second";
+    let mut schema_config = LoaderConfig::trusted();
+    schema_config.resolution.refs.mode = ResolutionMode::Explicit;
+    schema_config.resolution.refs.allow_schemes = vec!["memory".to_owned()];
+    let mut retriever = MemoryRetriever::default();
+    for uri in [first_uri, second_uri] {
+        retriever.insert(RetrievedResource {
+            id: ResourceId::new(uri).unwrap(),
+            bytes: b"type: string\n".to_vec(),
+            provenance: ResourceProvenance::default(),
+        });
+    }
+    let schemas = SchemaWorkspace::new(Arc::new(retriever), schema_config);
+
+    let first = schemas.validator(&selected_schema(first_uri), 64).unwrap();
+    let second = schemas.validator(&selected_schema(second_uri), 64).unwrap();
+
+    assert_eq!(first.context_at("").schema_locations, vec![first_uri]);
+    assert_eq!(second.context_at("").schema_locations, vec![second_uri]);
 }
 
 #[test]
