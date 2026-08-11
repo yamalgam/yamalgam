@@ -1110,7 +1110,7 @@ just test-compliance
 just clippy
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/yamalgam-cst Cargo.lock
@@ -1154,20 +1154,20 @@ pub struct ServerConfig {
 }
 ```
 
-- [ ] **Step 1: Write in-memory lifecycle tests**
+- [x] **Step 1: Write in-memory lifecycle tests**
 
 Drive `Connection::memory()` through initialize, initialized, didOpen,
 incremental didChange, didClose, shutdown, and exit. Assert LSP 3.17
 capabilities advertise incremental sync, completion triggers `:` and `-`,
 hover, definition, and UTF-16 position encoding.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-lsp protocol
 ```
 
-- [ ] **Step 3: Add the crate with the narrow dependency set**
+- [x] **Step 3: Add the crate with the narrow dependency set**
 
 ```toml
 [dependencies]
@@ -1188,18 +1188,18 @@ Use one synchronous state-owning loop. Route requests by method and answer
 unknown methods with JSON-RPC MethodNotFound. Handle cancellation before
 expensive feature work.
 
-- [ ] **Step 4: Build document snapshots**
+- [x] **Step 4: Build document snapshots**
 
 Apply LSP edits through `IncrementalDocument`, rebuild located semantic values
 when composition succeeds, retain recovering syntax when it does not, and
 discard out-of-order document versions. Never panic on malformed client data.
 
-- [ ] **Step 5: Ship a second binary without mixing protocols**
+- [x] **Step 5: Ship a second binary without mixing protocols**
 
 `src/bin/yamalgam-lsp.rs` calls `yamalgam_lsp::run_stdio()`. Update xtask
 install to copy both `yg` and `yamalgam-lsp`. Do not add `yg lsp`.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 ```bash
 just test-lsp protocol
