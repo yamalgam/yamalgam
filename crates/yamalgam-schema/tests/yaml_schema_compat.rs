@@ -17,6 +17,7 @@ fn mapping(entries: impl IntoIterator<Item = (Value, Value)>) -> Value {
     Value::Mapping(mapping)
 }
 
+// r[verify validate.keys]
 #[test]
 fn scalar_keys_participate_in_properties_and_required() {
     let validator = schema(json!({
@@ -74,6 +75,7 @@ fn property_names_always_validate_projected_strings() {
     );
 }
 
+// r[verify validate.keys]
 #[test]
 fn invalid_yaml_mapping_shapes_stop_before_json_schema() {
     let validator = schema(json!({"type": "object"}));

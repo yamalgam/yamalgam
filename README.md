@@ -5,8 +5,8 @@
 [![docs.rs](https://docs.rs/yamalgam/badge.svg)](https://docs.rs/yamalgam)
 [![MSRV](https://img.shields.io/badge/MSRV-1.89.0-blue.svg)](https://github.com/claylo/yamalgam)
 
-A pure Rust YAML toolkit: scanner, event parser, lossless CST, DOM, and a
-streaming serde deserializer — one pipeline, four consumers.
+A pure Rust YAML toolkit: scanner, event parser, lossless CST, DOM, schema
+validation, language services, and a streaming serde deserializer.
 
 > **Pre-release.** We haven't published to crates.io yet; APIs change
 > without deprecation cycles. The `yg` CLI is available from this workspace.
@@ -31,6 +31,8 @@ YAML bytes → Scanner (tokens) → Parser (events) → Resolver middleware
 | `yamalgam-parser` | Tokens → events (full-fidelity: comments, indicators, spans). |
 | `yamalgam-compose` | Events → `Value` documents. |
 | `yamalgam-cst` | Events → lossless concrete syntax tree (`to_text()` round-trips). |
+| `yamalgam-schema` | Draft 2020-12 validation over native YAML values. |
+| `yamalgam-lsp` | Diagnostics, completion, hover, and source navigation over LSP 3.17. |
 | `yamalgam-serde` | Streaming serde `Deserializer` (no intermediate DOM). |
 
 ## Status
@@ -65,6 +67,7 @@ yg '.services.api.image' compose.yml           # jq-familiar field access
 yg 'keys' config.yml                           # insertion order; keys_sorted opts in to sorting
 yg -j '.jobs.build' .github/workflows/ci.yml   # deliberate JSON escape hatch
 yg --schema 1.1 '.enabled | type' legacy.yml   # schema-aware resolution
+yg validate --schema schema.yml config.yml     # Draft 2020-12 validation
 yg -i '.image.tag = "2026.08.02"' deploy.yml   # atomic in-place mutation
 ```
 
@@ -77,7 +80,9 @@ and `orphan_anchors`. Mutation filters such as `set_tag`, `set_anchor`,
 > but they reserialize the document and therefore **lose comments and exact
 > formatting**. Milestone 13 adds CST-spliced editing.
 
-Start with the [`yg` user guide](docs/yg/README.md). See the
+Start with the [`yg` user guide](docs/yg/README.md), then see
+[schema validation](docs/yg/validation.md) and the
+[language-server setup](docs/yg/language-server.md). See the
 [draft-01 implementation notes](docs/spec/yg-spec-draft-01-implementation-notes.md)
 for compatibility counts and deliberate deviations.
 

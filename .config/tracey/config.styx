@@ -61,6 +61,21 @@ specs (
                 include (crates/yamalgam-parser/src/**/*.rs)
                 test_include (crates/yamalgam-parser/tests/**/*.rs)
             }
+            {
+                name schema
+                include (crates/yamalgam-schema/src/**/*.rs)
+                test_include (crates/yamalgam-schema/tests/**/*.rs)
+            }
+            {
+                name cst
+                include (crates/yamalgam-cst/src/**/*.rs)
+                test_include (crates/yamalgam-cst/tests/**/*.rs)
+            }
+            {
+                name lsp
+                include (crates/yamalgam-lsp/src/**/*.rs)
+                test_include (crates/yamalgam-lsp/tests/**/*.rs)
+            }
         )
     }
 )

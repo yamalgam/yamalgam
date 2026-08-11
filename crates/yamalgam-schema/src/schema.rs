@@ -72,6 +72,7 @@ pub enum SchemaError {
 }
 
 /// A compiled Draft 2020-12 validator over native Yamalgam values.
+// r[impl validate.engine]
 pub struct SchemaValidator {
     schema: JsonValue,
     validator: jsonschema::Validator<YamlJson>,

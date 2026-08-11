@@ -365,6 +365,7 @@ impl SchemaSession {
         Ok(document)
     }
 
+    // r[impl validate.policy]
     fn enforce_policy(
         &self,
         id: &ResourceId,

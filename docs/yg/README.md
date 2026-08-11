@@ -60,6 +60,8 @@ The `.ygq` suffix marks a reusable `yg` query. It is a file-name convention;
 ## Next steps
 
 - [Query YAML](querying.md)
+- [Validate YAML](validation.md)
+- [Set up the language server](language-server.md)
 - [Work with YAML features](yaml-features.md)
 - [Edit files in place](editing.md)
 - [Look up options and filters](reference.md)

@@ -162,7 +162,8 @@ resolution reports wired through `LoaderConfig`.
 
 ## Milestone 12 — Schema Validation + LSP
 
-**Status:** Planned
+**Status:** In progress — implementation and documentation complete; final
+integration, release, and audit gates remain
 
 - Plan: `2026-08-09-m12-schema-validation-lsp.md`
 

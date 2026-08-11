@@ -1438,21 +1438,21 @@ git commit -m "feat(lsp): navigate includes and references"
 
 **Steps:**
 
-- [ ] **Step 1: Add executable validation examples**
+- [x] **Step 1: Add executable validation examples**
 
 Document explicit and pragma-selected schemas, `validate(schema)`, `yg
 validate`, the `lint` alias, JSON CI output, exit codes, local `$ref`,
 SchemaStore opt-in, and network-off defaults. Run each stable CLI example from
 the docs harness.
 
-- [ ] **Step 2: Add editor setup and settings**
+- [x] **Step 2: Add editor setup and settings**
 
 Document `yamalgam-lsp` stdio setup for VS Code-compatible clients, Neovim,
 Zed, and BBEdit/Tinymist-style generic LSP clients. List initialization
 settings, schema precedence, workspace-root confinement, supported features,
 and M12 exclusions.
 
-- [ ] **Step 3: Make the normative spec match released behavior**
+- [x] **Step 3: Make the normative spec match released behavior**
 
 Mark Phase 5 complete. Specify diagnostic fields and exit codes, schema
 selection precedence, Draft 2020-12 engine, scalar-key projection,
@@ -1462,20 +1462,20 @@ custom-representation contract. Record the `yaml-schema` borrowing boundary:
 adapted tests and canonical key behavior, not its evaluator or typed-key
 `propertyNames` extension.
 
-- [ ] **Step 4: Extend traceability**
+- [x] **Step 4: Extend traceability**
 
 Add `yamalgam-schema`, `yamalgam-cst`, and `yamalgam-lsp` code/test
 roots for the `r` spec. Add `r[impl validate.*]` markers for validation,
 selection, CLI, and filter requirements.
 
-- [ ] **Step 5: Run documentation gates**
+- [x] **Step 5: Run documentation gates**
 
 ```bash
 just docs-check
-tracey query status --format summary
+tracey query status
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add README.md docs record/superpowers/plans/README.md .config/tracey scripts/check-yg-doc-examples

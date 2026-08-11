@@ -221,6 +221,7 @@ impl ResourceRetriever for SpyRetriever {
     }
 }
 
+// r[verify validate.policy]
 #[test]
 fn retrieval_denies_policy_violations_before_backend_calls_and_redacts_errors() {
     let calls = Arc::new(AtomicUsize::new(0));

@@ -126,6 +126,7 @@ fn loaded_value(source: &str, resource: &str) -> YamlVal {
     .value
 }
 
+// r[verify validate.filter]
 #[test]
 fn validation_explicit_filter_returns_the_identical_metadata_bearing_value() {
     let mut resolver = RegistryResolver::default();
@@ -176,6 +177,7 @@ fn validation_invalid_input_preserves_the_typed_report() {
     );
 }
 
+// r[verify validate.filter.inline]
 #[test]
 fn validation_no_argument_uses_the_inputs_source_selection() {
     let root = ResourceId::new("memory://inputs/service.yaml").unwrap();

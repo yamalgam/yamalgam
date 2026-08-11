@@ -101,6 +101,41 @@ If retrieval succeeds but parsing fails, check the resource itself. It must be
 valid UTF-8 YAML with exactly one document. A `$ref` mapping may contain no
 sibling keys, and its fragment must be an RFC 6901 JSON Pointer.
 
+## Diagnose schema validation failures
+
+Use JSON output when you need to separate a validation finding from schema
+setup failure:
+
+```yaml file=examples/troubleshooting/service.schema.yaml
+type: object
+required: [name]
+properties:
+  name: {type: string}
+```
+
+```yaml file=examples/troubleshooting/invalid-service.yaml
+name: 7
+```
+
+```console
+$ yg --format json validate \
+    --schema service.schema.yaml \
+    examples/troubleshooting/invalid-service.yaml
+...
+$ echo $?
+1
+```
+
+Exit 1 means the schema loaded and found invalid data. Read `code`,
+`instance_path`, `schema_path`, `expected`, and `actual` in the diagnostic.
+Exit 5 means validation could not run: YAML was invalid, no schema was
+selected, a schema was malformed, or retrieval failed.
+
+For a local schema error, check the selected URI and `--resolution-root` first.
+For a remote schema, both `--allow-refs=http|https` and an exact
+`--allow-ref-host` are required. SchemaStore does not imply network access.
+Use [`yg` validation](validation.md) for selection precedence and report fields.
+
 ## Disable environment access
 
 ```console
@@ -179,5 +214,11 @@ set -e
 test "$status" -eq 5
 printf '%s\n' "$error" | grep -F 'examples/troubleshooting/missing.yaml document 1:' >/dev/null
 printf '%s\n' "$error" | grep -F 'resource not found' >/dev/null
+
+check_status 1 "$YG_BIN" --format json validate \
+  --schema service.schema.yaml \
+  examples/troubleshooting/invalid-service.yaml
+check_status 5 "$YG_BIN" validate --schema not-there.yaml \
+  examples/troubleshooting/invalid-service.yaml
 ```
 </script>-->

@@ -12,6 +12,7 @@ fi
 
 cargo build -p yamalgam --locked
 yg_bin="$repo_root/target/debug/yg"
+yamalgam_lsp_bin="$repo_root/target/debug/yamalgam-lsp"
 
 docs=(docs/yg/*.md)
 if [[ ! -e "${docs[0]}" ]]; then
@@ -25,5 +26,6 @@ for doc in "${docs[@]}"; do
     exit 1
   fi
   echo "checking $doc"
-  YG_BIN="$yg_bin" mdcode run --quiet --name test "$doc"
+  YG_BIN="$yg_bin" YAMALGAM_LSP_BIN="$yamalgam_lsp_bin" \
+    mdcode run --quiet --name test "$doc"
 done

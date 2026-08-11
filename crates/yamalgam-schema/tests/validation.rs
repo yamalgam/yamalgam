@@ -18,6 +18,9 @@ fn assert_case(schema: JsonValue, valid: JsonValue, invalid: JsonValue) {
     assert!(!validator.validate(&value(invalid)).valid);
 }
 
+// r[verify validate]
+// r[verify validate.engine]
+// r[verify phases.validation]
 #[test]
 fn boolean_and_core_validation_keywords_use_draft_2020_12() {
     assert!(compile(json!(true)).validate(&Value::Null).valid);

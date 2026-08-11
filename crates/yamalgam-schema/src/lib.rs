@@ -1,5 +1,8 @@
 //! Native YAML adaptation for JSON Schema validation.
 
+// r[impl validate]
+// r[impl phases.validation]
+
 #![deny(unsafe_code)]
 
 pub(crate) mod diagnostic;

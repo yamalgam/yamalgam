@@ -55,6 +55,8 @@ pub struct ValidateArgs {
 }
 
 #[derive(Serialize)]
+// r[impl validate.output]
+// r[impl validate.output.fields]
 struct DocumentReport {
     filename: String,
     document: usize,
@@ -69,6 +71,8 @@ struct InputStream {
 }
 
 /// Validate every input document and write one deterministic report array.
+// r[impl validate.cli]
+// r[impl validate.self-describing]
 pub fn cmd_validate(
     args: &ValidateArgs,
     json_output: bool,
@@ -152,6 +156,7 @@ pub fn cmd_validate(
     }
 
     write_reports(&reports, json_output, &loader)?;
+    // r[impl validate.exit]
     Ok(if reports.iter().all(|report| report.valid) {
         ExitCode::SUCCESS
     } else {

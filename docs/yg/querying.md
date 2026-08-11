@@ -183,6 +183,36 @@ plain scalars as strings. `json` uses JSON rules. `1.1` supports legacy YAML
 
 YAML 1.1 mode prints a warning unless you pass `-q`.
 
+## Validate a query value
+
+The `--schema` option above chooses how YAML scalars resolve. The
+`validate(schema)` filter is different: it applies a JSON Schema Draft 2020-12
+document to the current query value.
+
+```yaml file=examples/query-schema.yaml
+type: object
+required: [name]
+properties:
+  name: {type: string}
+```
+
+```yaml file=examples/query-service.yaml
+name: api
+```
+
+Local schema retrieval is explicit and capability-rooted:
+
+```console
+$ yg --allow-refs=file --resolution-root=examples \
+    'validate("query-schema.yaml")' examples/query-service.yaml
+name: api
+```
+
+The filter returns the same metadata-bearing value when it is valid and raises
+a structured runtime validation error when it is not. Use `yg validate` for
+multi-file reports and CI-friendly exit 1 on validation findings. See
+[Validate YAML with JSON Schema](validation.md).
+
 ## Control YAML, JSON, raw, and compact output
 
 ```console
@@ -248,6 +278,9 @@ test "$actual" = "$expected"
 
 actual="$(printf 'value: yes\n' | "$YG_BIN" -q --schema 1.1 -r '.value | type')"
 test "$actual" = 'boolean'
+
+actual="$("$YG_BIN" --allow-refs=file --resolution-root=examples 'validate("query-schema.yaml")' examples/query-service.yaml)"
+printf '%s\n' "$actual" | grep -F 'name: api' >/dev/null
 
 actual="$("$YG_BIN" --resolve-refs=file -j -c '.' examples/resolution/app.yaml)"
 test "$actual" = '{"service":{"replicas":3,"image":"ghcr.io/acme/api:1.4.0"}}'

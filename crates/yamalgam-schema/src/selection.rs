@@ -180,6 +180,8 @@ impl SchemaSelector {
     ///
     /// Returns a structured error for invalid YAML, malformed or conflicting
     /// leading directives, relative URIs without a base, and invalid globs.
+    // r[impl validate.selection]
+    // r[impl validate.self-describing]
     pub fn select(
         &self,
         input: &str,

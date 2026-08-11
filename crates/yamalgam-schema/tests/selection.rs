@@ -39,6 +39,8 @@ fn selected_uri(
     (selected.uri.clone(), selected.source)
 }
 
+// r[verify validate.selection]
+// r[verify validate.self-describing]
 #[test]
 fn selection_uses_the_documented_precedence() {
     let selector = SchemaSelector {

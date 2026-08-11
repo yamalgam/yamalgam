@@ -3,6 +3,7 @@
 Milestone 10 implemented Phases 1 and 2 of
 [`yg-query-language-spec-draft-01.md`](yg-query-language-spec-draft-01.md).
 Milestone 11 adds Phase 4 external resolution.
+Milestone 12 adds Phase 5 schema validation and language services.
 This document records deliberate deviations and implementation-driven changes
 for the draft-02 revision. It does not edit or reinterpret draft 01.
 Bracketed `r[...]` links identify Tracey requirement IDs in draft 01.
@@ -85,13 +86,18 @@ retain their stored spelling. This resolves draft 01's examples, which mix core
 shorthand and full URI forms, into one deterministic rule
 ([`r[ext.tag]`](yg-query-language-spec-draft-01.md#61-node-metadata-filters)).
 
-## 8. Document schema pragmas are deferred
+## 8. Scalar-resolution document pragmas are deferred
 
 Milestone 10 ships explicit `--schema` selection and the `schema`, `resolve`,
 and `resolve_as` filters. It does not inspect the `# yg-schema:` document
 pragma, which was not part of Phases 1 or 2
 ([`r[datamodel.schema.document-declared]`](yg-query-language-spec-draft-01.md#23-schema-resolution),
 [`r[cli.schema-flag]`](yg-query-language-spec-draft-01.md#84-schema-and-security-flags)).
+
+Milestone 12 recognizes the distinct `# yg-schema-validate:` pragma for JSON
+Schema selection. The comments control different systems: `# yg-schema:`
+would change YAML scalar resolution, while the implemented pragma selects a
+validation schema.
 
 ## 9. Exit code 4 represents no output
 
@@ -202,6 +208,43 @@ parameterized includes also remain deferred
 ([`r[resolution.session]`](yg-query-language-spec-draft-01.md#73-sessions-reports-and-integrity),
 [`r[resolution.report]`](yg-query-language-spec-draft-01.md#73-sessions-reports-and-integrity),
 [`r[resolution.integrity]`](yg-query-language-spec-draft-01.md#73-sessions-reports-and-integrity)).
+
+## 17. M12 adapts native YAML values to Draft 2020-12
+
+M12 uses `jsonschema` 0.49.8 with default features disabled and delegates
+Draft 2020-12 keyword evaluation through its custom representation API. YAML
+instances do not round-trip through `serde_json::Value`. Schema documents may
+be authored as YAML, but they must remain JSON-compatible. Every external
+schema and schema `$ref` is preloaded through the M11 retriever and the active
+`LoaderConfig` policy before compilation
+([`r[validate.engine]`](yg-query-language-spec-draft-01.md#10-schema-validation),
+[`r[validate.policy]`](yg-query-language-spec-draft-01.md#10-schema-validation)).
+
+Scalar YAML mapping keys project to canonical JSON property names. The adapter
+retains original key types and spans, rejects complex keys and non-finite
+numbers, and reports rather than overwrites canonical-name collisions.
+`propertyNames` remains standards-correct and sees the projected string
+([`r[validate.keys]`](yg-query-language-spec-draft-01.md#10-schema-validation)).
+
+The implementation adapts the MIT-licensed mapping-key and source-location
+boundary cases from `yaml-schema` 0.9.3 at commit
+`1c9403a7e4eaf2e5de2ea39594279ce73df258fc`. It does not copy that crate's
+Saphyr DOM, evaluator, typed schema AST, typed-key `propertyNames` extension,
+ambient filesystem or HTTP loader, first-document-only behavior, format
+validators, or Cucumber harness.
+
+`yg validate` owns full document selection: explicit schema, pragma or
+modeline, top-level `$schema`, configured association, then opt-in SchemaStore.
+It emits ordered document reports and uses exits 0, 1, 2, and 5 as specified.
+The query filter is narrower: `validate(schema)` uses the same policy-bound
+schema session, while no-argument `validate` uses a top-level `$schema` in the
+CLI frontend. Library frontends may attach another schema selector through
+`QuerySchemaResolver`; comment pragmas, associations, SchemaStore, and
+multi-file reporting remain the validation command's job
+([`r[validate.filter]`](yg-query-language-spec-draft-01.md#10-schema-validation),
+[`r[validate.selection]`](yg-query-language-spec-draft-01.md#10-schema-validation),
+[`r[validate.output]`](yg-query-language-spec-draft-01.md#10-schema-validation),
+[`r[validate.exit]`](yg-query-language-spec-draft-01.md#10-schema-validation)).
 
 ## Additional implementation-driven changes
 

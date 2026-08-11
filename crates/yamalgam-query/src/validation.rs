@@ -46,6 +46,8 @@ pub enum RuntimeValidationError {
     Validation(ValidationFailure),
 }
 
+// r[impl validate.filter]
+// r[impl validate.filter.inline]
 pub fn validate(
     resolver: Option<&dyn QuerySchemaResolver>,
     limits: &ResourceLimits,

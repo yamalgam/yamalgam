@@ -70,6 +70,7 @@ impl ProjectedKeys {
 }
 
 impl<'value> PreparedInstance<'value> {
+    // r[impl validate.keys]
     pub fn new(value: &'value Value) -> Result<Self, Vec<RepresentationError>> {
         let mut projected_keys = ProjectedKeys::default();
         let mut errors = Vec::new();
