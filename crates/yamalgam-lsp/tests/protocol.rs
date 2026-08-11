@@ -140,9 +140,9 @@ fn protocol_lifecycle_and_capabilities_work_over_an_in_memory_connection() {
     assert_eq!(
         response(&client, 2)
             .response_result
-            .expect_err("cancelled request")
+            .expect_err("unknown cancellation must not poison a future request")
             .code,
-        ErrorCode::RequestCanceled as i32
+        ErrorCode::InvalidParams as i32
     );
 
     client
