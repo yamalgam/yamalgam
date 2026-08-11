@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 3
+  fixed: 4
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 17
+  open: 16
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -61,5 +61,23 @@ The CST now disables Ropey's Unicode-line feature while retaining CR-line and
 SIMD support. LSP UTF-16 conversions therefore treat U+2028 and U+2029 as
 content while honoring CR, LF, and CRLF as line boundaries. A bidirectional
 regression passes with all 54 CST tests, all 21 LSP tests, and workspace Clippy.
+
+---
+
+## 2026-08-11 — Render schema examples in hover
+
+**Disposition:** fixed
+
+**Addresses:** [documented-example-hover-is-not-implemented](README.md#documented-example-hover-is-not-implemented)
+
+**Commit:** ef26ca4b44d7b9515ff444c421a4aa626ee4a1a1
+
+**Author:** Codex
+
+Schema navigation now collects the first eight unique JSON Schema examples in
+deterministic traversal order, including examples contributed by combinators.
+Hover renders those compact JSON values as plain text, so an example-only
+schema produces useful output. The regression passes with all 41 schema tests,
+all 22 LSP tests, and workspace Clippy.
 
 ---
