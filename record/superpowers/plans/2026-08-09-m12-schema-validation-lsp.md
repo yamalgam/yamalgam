@@ -578,7 +578,7 @@ pub struct ValidationReport {
 }
 ```
 
-- [ ] **Step 1: Write diagnostic snapshots**
+- [x] **Step 1: Write diagnostic snapshots**
 
 Snapshot required-property, type, enum, additional-properties, pattern,
 reference, complex-key, non-finite-number, and projected-key-collision errors.
@@ -589,13 +589,13 @@ path, then code. Assert paths use RFC 6901 escaping and spans come from
 `LocatedValue`. A projected-key collision uses the later key as its primary
 span and labels the earlier key.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-schema diagnostics
 ```
 
-- [ ] **Step 3: Map upstream error kinds to stable Yamalgam codes**
+- [x] **Step 3: Map upstream error kinds to stable Yamalgam codes**
 
 Use `schema/<keyword>` for JSON Schema failures, `schema/ref` for retrieval,
 and `yaml/complex-key`, `yaml/non-finite-number`, and
@@ -605,14 +605,14 @@ complete user values or response bodies. Cap diagnostics at
 `SchemaOptions::max_diagnostics` and append one `schema/diagnostic-limit`
 warning when truncation occurs.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ```bash
 just test-schema diagnostics
 just test-schema
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/yamalgam-schema

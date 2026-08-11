@@ -4,7 +4,10 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use thiserror::Error;
 use yamalgam_core::{LocatedValue, Value};
 
-use crate::diagnostic::{ValidationReport, representation_diagnostic, schema_diagnostic};
+use crate::diagnostic::{
+    ValidationReport, diagnostic_limit_warning, representation_diagnostic, retain_diagnostic,
+    schema_diagnostic,
+};
 use crate::preflight::PreparedInstance;
 use crate::retrieval::SchemaRetrieveError;
 use crate::value::YamlJson;
@@ -135,11 +138,21 @@ impl SchemaValidator {
         let prepared = match PreparedInstance::new(instance) {
             Ok(prepared) => prepared,
             Err(errors) => {
-                let diagnostics = errors
-                    .iter()
-                    .take(self.options.max_diagnostics)
-                    .map(|error| representation_diagnostic(error, located))
-                    .collect();
+                let mut diagnostics =
+                    Vec::with_capacity(errors.len().min(self.options.max_diagnostics));
+                for error in &errors {
+                    retain_diagnostic(
+                        &mut diagnostics,
+                        representation_diagnostic(error, located),
+                        self.options.max_diagnostics,
+                    );
+                }
+                if errors.len() > self.options.max_diagnostics {
+                    diagnostics.push(diagnostic_limit_warning(
+                        self.options.max_diagnostics,
+                        errors.len(),
+                    ));
+                }
                 return ValidationReport {
                     valid: false,
                     diagnostics,
@@ -147,15 +160,26 @@ impl SchemaValidator {
             }
         };
 
-        let mut valid = true;
+        let mut observed = 0_usize;
         let mut diagnostics = Vec::new();
         for error in self.validator.iter_errors(prepared.root()) {
-            valid = false;
-            if diagnostics.len() < self.options.max_diagnostics {
-                diagnostics.push(schema_diagnostic(&error, located));
-            }
+            observed = observed.saturating_add(1);
+            retain_diagnostic(
+                &mut diagnostics,
+                schema_diagnostic(&error, located),
+                self.options.max_diagnostics,
+            );
         }
-        ValidationReport { valid, diagnostics }
+        if observed > self.options.max_diagnostics {
+            diagnostics.push(diagnostic_limit_warning(
+                self.options.max_diagnostics,
+                observed,
+            ));
+        }
+        ValidationReport {
+            valid: observed == 0,
+            diagnostics,
+        }
     }
 }
 
