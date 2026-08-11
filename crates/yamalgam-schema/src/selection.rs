@@ -7,7 +7,7 @@ use globset::Glob;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
-use yamalgam_core::Value;
+use yamalgam_core::{LocatedValue, Value};
 use yamalgam_cst::{CstElement, CstNode, CstToken, TokenKind, parse_to_cst};
 use yamalgam_resolve::ResourceId;
 
@@ -193,15 +193,57 @@ impl SchemaSelector {
                 message: error.to_string(),
             }
         })?;
-        if documents.is_empty() {
+        self.select_values(
+            input,
+            documents.iter(),
+            documents.len(),
+            containing,
+            explicit,
+        )
+    }
+
+    /// Select schemas using documents the caller has already composed.
+    ///
+    /// The source text is inspected only for leading comment directives; inline
+    /// `$schema` properties come from `documents`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured error for malformed or conflicting directives,
+    /// relative URIs without a base, and invalid globs.
+    pub fn select_composed(
+        &self,
+        input: &str,
+        documents: &[LocatedValue],
+        containing: Option<&ResourceId>,
+        explicit: Option<&str>,
+    ) -> Result<Vec<Option<SelectedSchema>>, SchemaSelectionError> {
+        self.select_values(
+            input,
+            documents.iter().map(|document| &document.value),
+            documents.len(),
+            containing,
+            explicit,
+        )
+    }
+
+    fn select_values<'document>(
+        &self,
+        input: &str,
+        documents: impl IntoIterator<Item = &'document Value>,
+        document_count: usize,
+        containing: Option<&ResourceId>,
+        explicit: Option<&str>,
+    ) -> Result<Vec<Option<SelectedSchema>>, SchemaSelectionError> {
+        if document_count == 0 {
             return Ok(Vec::new());
         }
 
-        let directives = document_directives(input, documents.len())?;
+        let directives = document_directives(input, document_count)?;
         let path = containing.and_then(resource_path);
-        let mut selected = Vec::with_capacity(documents.len());
+        let mut selected = Vec::with_capacity(document_count);
 
-        for (document, value) in documents.iter().enumerate() {
+        for (document, value) in documents.into_iter().enumerate() {
             let local = &directives[document];
             let candidate = explicit
                 .map(|uri| (uri, SchemaSource::Explicit))

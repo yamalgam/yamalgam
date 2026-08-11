@@ -85,23 +85,26 @@ impl IncrementalDocument {
         edits: &[TextEdit],
         config: &LoaderConfig,
     ) -> Result<ReparseOutcome, EditError> {
-        let original = self.text.to_string();
-        let ordered = validate_edits(edits, &original)?;
-        let document = self.document_reparse_candidate(&ordered, &original);
+        let mut updated = self.text.to_string();
+        let ordered = validate_edits(edits, &updated)?;
 
         for edit in ordered.iter().rev() {
-            let start = self.text.byte_to_char(edit.range.start);
-            let end = self.text.byte_to_char(edit.range.end);
-            self.text.remove(start..end);
-            self.text.insert(start, &edit.replacement);
+            updated.replace_range(edit.range.clone(), &edit.replacement);
         }
 
-        let updated = self.text.to_string();
+        Ok(self.replace_text(&updated, config))
+    }
+
+    /// Replace the source from one caller-owned snapshot and reparse the
+    /// smallest safe scope.
+    pub fn replace_text(&mut self, updated: &str, config: &LoaderConfig) -> ReparseOutcome {
+        let original_len = self.text.len_bytes();
+        let (old_change, new_change) = changed_ranges(&self.text, updated);
+        let document = self.document_reparse_candidate(&old_change, &updated[new_change]);
+        self.text = Rope::from_str(updated);
+
         if let Some((old_document, old_range)) = document {
-            let delta = ordered.iter().fold(0isize, |total, edit| {
-                total + edit.replacement.len() as isize
-                    - (edit.range.end - edit.range.start) as isize
-            });
+            let delta = updated.len() as isize - original_len as isize;
             if let Some(new_end) = old_range.end.checked_add_signed(delta)
                 && new_end <= updated.len()
                 && updated.is_char_boundary(old_range.start)
@@ -124,14 +127,14 @@ impl IncrementalDocument {
                     let syntax = SyntaxTree::from_parts(green, Vec::new());
                     if syntax.text() == updated {
                         self.syntax = syntax;
-                        return Ok(ReparseOutcome::Document);
+                        return ReparseOutcome::Document;
                     }
                 }
             }
         }
 
-        self.syntax = SyntaxTree::parse_with_config(&updated, config);
-        Ok(ReparseOutcome::Full)
+        self.syntax = SyntaxTree::parse_with_config(updated, config);
+        ReparseOutcome::Full
     }
 
     /// Convert a UTF-8 byte offset to a zero-indexed UTF-16 line and column.
@@ -183,16 +186,14 @@ impl IncrementalDocument {
 
     fn document_reparse_candidate(
         &self,
-        edits: &[&TextEdit],
-        original: &str,
+        changed: &Range<usize>,
+        replacement: &str,
     ) -> Option<(SyntaxNode, Range<usize>)> {
-        if edits.is_empty() || !self.syntax.diagnostics().is_empty() {
+        if !self.syntax.diagnostics().is_empty() {
             return None;
         }
-        if edits.iter().any(|edit| {
-            contains_document_marker(&original[edit.range.clone()])
-                || contains_document_marker(&edit.replacement)
-        }) {
+        let removed = self.text.byte_slice(changed.clone()).to_string();
+        if contains_document_marker(&removed) || contains_document_marker(replacement) {
             return None;
         }
 
@@ -205,9 +206,7 @@ impl IncrementalDocument {
                 return false;
             }
             let range = syntax_range(node);
-            edits
-                .iter()
-                .all(|edit| edit.range.start >= range.start && edit.range.end <= range.end)
+            changed.start >= range.start && changed.end <= range.end
         });
         let document = matches.next()?;
         if matches.next().is_some() {
@@ -216,6 +215,36 @@ impl IncrementalDocument {
         let range = syntax_range(&document);
         Some((document, range))
     }
+}
+
+fn changed_ranges(original: &Rope, updated: &str) -> (Range<usize>, Range<usize>) {
+    let mut prefix = 0;
+    for (left, right) in original.chars().zip(updated.chars()) {
+        if left != right {
+            break;
+        }
+        prefix += left.len_utf8();
+    }
+
+    let mut suffix = 0;
+    let mut original_chars = original.chars_at(original.len_chars());
+    for right in updated[prefix..].chars().rev() {
+        if suffix >= original.len_bytes() - prefix {
+            break;
+        }
+        let Some(left) = original_chars.prev() else {
+            break;
+        };
+        if left != right {
+            break;
+        }
+        suffix += left.len_utf8();
+    }
+
+    (
+        prefix..original.len_bytes() - suffix,
+        prefix..updated.len() - suffix,
+    )
 }
 
 fn validate_edits<'a>(edits: &'a [TextEdit], text: &str) -> Result<Vec<&'a TextEdit>, EditError> {

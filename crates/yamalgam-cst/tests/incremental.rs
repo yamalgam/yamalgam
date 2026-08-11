@@ -86,6 +86,18 @@ fn reparses_one_document_when_markers_and_boundaries_are_stable() {
 }
 
 #[test]
+fn replaces_from_one_shared_snapshot_with_document_local_reparse() {
+    let mut doc = document("---\na: one\n---\nb: two\n");
+    let updated = "---\na: uno\n---\nb: two\n";
+
+    let outcome = doc.replace_text(updated, &LoaderConfig::default());
+
+    assert_eq!(outcome, ReparseOutcome::Document);
+    assert_eq!(doc.text(), updated);
+    assert_eq!(doc.syntax().text(), updated);
+}
+
+#[test]
 fn falls_back_for_marker_cross_document_and_recovery_boundary_edits() {
     let config = LoaderConfig::default();
 

@@ -343,3 +343,47 @@ fn protocol_document_state_applies_changes_and_discards_stale_versions() {
     );
     assert_eq!(document.version, 3);
 }
+
+#[test]
+fn document_state_batches_sequential_utf16_changes_against_one_snapshot() {
+    let config = LoaderConfig::default();
+    let uri = Uri::from_str("file:///tmp/sequential.yaml").unwrap();
+    let mut document = DocumentState::new(uri, 1, "name: 🦀\r\ncount: 1\r\n", &config);
+
+    let applied = document
+        .apply_changes(
+            2,
+            &[
+                TextDocumentContentChangeEvent {
+                    range: Some(Range {
+                        start: Position::new(0, 6),
+                        end: Position::new(0, 8),
+                    }),
+                    range_length: None,
+                    text: "雪".to_owned(),
+                },
+                TextDocumentContentChangeEvent {
+                    range: Some(Range {
+                        start: Position::new(0, 7),
+                        end: Position::new(0, 7),
+                    }),
+                    range_length: None,
+                    text: " day".to_owned(),
+                },
+                TextDocumentContentChangeEvent {
+                    range: Some(Range {
+                        start: Position::new(1, 7),
+                        end: Position::new(1, 8),
+                    }),
+                    range_length: None,
+                    text: "2".to_owned(),
+                },
+            ],
+            &config,
+        )
+        .unwrap();
+
+    assert!(applied);
+    assert_eq!(document.syntax.text(), "name: 雪 day\r\ncount: 2\r\n");
+    assert_eq!(document.located.len(), 1);
+}

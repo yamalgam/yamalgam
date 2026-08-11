@@ -39,6 +39,21 @@ fn selected_uri(
     (selected.uri.clone(), selected.source)
 }
 
+#[test]
+fn selection_uses_precomposed_documents_for_inline_schema() {
+    let selector = SchemaSelector::default();
+    let documents = yamalgam_compose::from_str_located("$schema: memory://composed\n").unwrap();
+
+    let selected = selector
+        .select_composed("$schema: memory://reparsed\n", &documents, None, None)
+        .unwrap();
+
+    assert_eq!(
+        selected[0].as_ref().map(|schema| schema.uri.as_str()),
+        Some("memory://composed")
+    );
+}
+
 // r[verify validate.selection]
 // r[verify validate.self-describing]
 #[test]
