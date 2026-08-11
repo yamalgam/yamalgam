@@ -13,15 +13,16 @@ use yamalgam_core::LoaderConfig;
 use yamalgam_lsp::{DocumentState, run};
 
 fn response(connection: &Connection, expected: i32) -> Response {
-    let message = connection
-        .receiver
-        .recv_timeout(Duration::from_secs(5))
-        .expect("server should respond");
-    let Message::Response(response) = message else {
-        panic!("expected response, got {message:?}");
-    };
-    assert_eq!(response.id, RequestId::from(expected));
-    response
+    loop {
+        let message = connection
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server should respond");
+        if let Message::Response(response) = message {
+            assert_eq!(response.id, RequestId::from(expected));
+            return response;
+        }
+    }
 }
 
 #[test]

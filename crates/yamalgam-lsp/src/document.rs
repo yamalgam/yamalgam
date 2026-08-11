@@ -7,6 +7,8 @@ use yamalgam_core::{LoaderConfig, LocatedValue};
 use yamalgam_cst::{EditError, IncrementalDocument, TextEdit};
 use yamalgam_schema::SelectedSchema;
 
+use crate::ServerConfig;
+
 /// One open text document and its derived syntax and semantic state.
 #[derive(Clone, Debug)]
 pub struct DocumentState {
@@ -20,6 +22,8 @@ pub struct DocumentState {
     pub located: Vec<LocatedValue>,
     /// Schemas selected for the documents in this stream.
     pub selected_schemas: Vec<SelectedSchema>,
+    schema_assignments: Vec<Option<SelectedSchema>>,
+    schema_selection_error: Option<String>,
 }
 
 impl DocumentState {
@@ -32,6 +36,8 @@ impl DocumentState {
             syntax: IncrementalDocument::new(text, config),
             located: from_str_located_with_config(text, config).unwrap_or_default(),
             selected_schemas: Vec::new(),
+            schema_assignments: Vec::new(),
+            schema_selection_error: None,
         }
     }
 
@@ -70,6 +76,44 @@ impl DocumentState {
         self.located = from_str_located_with_config(&text, config).unwrap_or_default();
         self.version = version;
         Ok(true)
+    }
+
+    /// Re-select schemas for the current text and configured associations.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed selection error for malformed directives, URIs, or globs.
+    pub fn select_schemas(
+        &mut self,
+        config: &ServerConfig,
+    ) -> Result<(), yamalgam_schema::SchemaSelectionError> {
+        let containing = yamalgam_resolve::ResourceId::new(self.uri.as_str()).ok();
+        let selector = yamalgam_schema::SchemaSelector {
+            associations: config.schema_associations.clone(),
+            schema_store: None,
+        };
+        match selector.select(&self.syntax.text(), containing.as_ref(), None) {
+            Ok(assignments) => {
+                self.selected_schemas = assignments.iter().flatten().cloned().collect();
+                self.schema_assignments = assignments;
+                self.schema_selection_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.selected_schemas.clear();
+                self.schema_assignments.clear();
+                self.schema_selection_error = Some(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn schema_for_document(&self, index: usize) -> Option<&SelectedSchema> {
+        self.schema_assignments.get(index).and_then(Option::as_ref)
+    }
+
+    pub(crate) fn schema_selection_error(&self) -> Option<&str> {
+        self.schema_selection_error.as_deref()
     }
 }
 

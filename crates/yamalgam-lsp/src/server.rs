@@ -7,14 +7,14 @@ use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestI
 use lsp_types::{
     CancelParams, CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, HoverProviderCapability, InitializeResult, NumberOrString, OneOf,
-    PositionEncodingKind, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
+    PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 use thiserror::Error;
 use tracing::warn;
 use yamalgam_core::LoaderConfig;
 
-use crate::DocumentState;
+use crate::{DocumentState, SchemaWorkspace, ServerConfig, document_diagnostics};
 
 /// Run the language server over standard input and standard output.
 pub fn run_stdio() -> Result<(), ServerError> {
@@ -48,7 +48,7 @@ pub fn run(connection: Connection) -> Result<(), ServerError> {
                 server.handle_request(&connection, request)?;
             }
             Message::Notification(notification) => {
-                server.handle_notification(notification);
+                server.handle_notification(&connection, notification)?;
             }
             Message::Response(_) => {}
         }
@@ -76,11 +76,25 @@ fn capabilities() -> ServerCapabilities {
     }
 }
 
-#[derive(Default)]
 struct Server {
     documents: HashMap<Uri, DocumentState>,
     cancelled: HashSet<RequestId>,
     loader: LoaderConfig,
+    config: ServerConfig,
+    schemas: SchemaWorkspace,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        let loader = LoaderConfig::default();
+        Self {
+            documents: HashMap::new(),
+            cancelled: HashSet::new(),
+            schemas: SchemaWorkspace::empty(loader.clone()),
+            loader,
+            config: ServerConfig::default(),
+        }
+    }
 }
 
 impl Server {
@@ -113,7 +127,11 @@ impl Server {
         send_response(connection, response)
     }
 
-    fn handle_notification(&mut self, notification: Notification) {
+    fn handle_notification(
+        &mut self,
+        connection: &Connection,
+        notification: Notification,
+    ) -> Result<(), ServerError> {
         match notification.method.as_str() {
             "$/cancelRequest" => {
                 match serde_json::from_value::<CancelParams>(notification.params) {
@@ -127,15 +145,15 @@ impl Server {
                 match serde_json::from_value::<DidOpenTextDocumentParams>(notification.params) {
                     Ok(params) => {
                         let document = params.text_document;
-                        self.documents.insert(
+                        let mut state = DocumentState::new(
                             document.uri.clone(),
-                            DocumentState::new(
-                                document.uri,
-                                document.version,
-                                &document.text,
-                                &self.loader,
-                            ),
+                            document.version,
+                            &document.text,
+                            &self.loader,
                         );
+                        let _ = state.select_schemas(&self.config);
+                        self.publish_diagnostics(connection, &state)?;
+                        self.documents.insert(document.uri, state);
                     }
                     Err(error) => warn!(%error, "ignored malformed didOpen"),
                 }
@@ -143,14 +161,24 @@ impl Server {
             "textDocument/didChange" => {
                 match serde_json::from_value::<DidChangeTextDocumentParams>(notification.params) {
                     Ok(params) => {
-                        if let Some(document) = self.documents.get_mut(&params.text_document.uri)
-                            && let Err(error) = document.apply_changes(
+                        if let Some(mut document) = self.documents.remove(&params.text_document.uri)
+                        {
+                            let changed = match document.apply_changes(
                                 params.text_document.version,
                                 &params.content_changes,
                                 &self.loader,
-                            )
-                        {
-                            warn!(%error, "ignored malformed didChange");
+                            ) {
+                                Ok(changed) => changed,
+                                Err(error) => {
+                                    warn!(%error, "ignored malformed didChange");
+                                    false
+                                }
+                            };
+                            if changed {
+                                let _ = document.select_schemas(&self.config);
+                                self.publish_diagnostics(connection, &document)?;
+                            }
+                            self.documents.insert(params.text_document.uri, document);
                         }
                     }
                     Err(error) => warn!(%error, "ignored malformed didChange"),
@@ -160,12 +188,46 @@ impl Server {
                 match serde_json::from_value::<DidCloseTextDocumentParams>(notification.params) {
                     Ok(params) => {
                         self.documents.remove(&params.text_document.uri);
+                        self.publish_empty_diagnostics(connection, params.text_document.uri)?;
                     }
                     Err(error) => warn!(%error, "ignored malformed didClose"),
                 }
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn publish_diagnostics(
+        &self,
+        connection: &Connection,
+        document: &DocumentState,
+    ) -> Result<(), ServerError> {
+        send_notification(
+            connection,
+            "textDocument/publishDiagnostics",
+            PublishDiagnosticsParams {
+                uri: document.uri.clone(),
+                diagnostics: document_diagnostics(document, &self.schemas, &self.config),
+                version: Some(document.version),
+            },
+        )
+    }
+
+    fn publish_empty_diagnostics(
+        &self,
+        connection: &Connection,
+        uri: Uri,
+    ) -> Result<(), ServerError> {
+        send_notification(
+            connection,
+            "textDocument/publishDiagnostics",
+            PublishDiagnosticsParams {
+                uri,
+                diagnostics: Vec::new(),
+                version: None,
+            },
+        )
     }
 }
 
@@ -180,6 +242,18 @@ fn send_response(connection: &Connection, response: Response) -> Result<(), Serv
     connection
         .sender
         .send(Message::Response(response))
+        .map_err(|error| ServerError::Transport(error.to_string()))
+}
+
+fn send_notification(
+    connection: &Connection,
+    method: &str,
+    params: impl serde::Serialize,
+) -> Result<(), ServerError> {
+    let notification = Notification::new(method.to_owned(), params);
+    connection
+        .sender
+        .send(Message::Notification(notification))
         .map_err(|error| ServerError::Transport(error.to_string()))
 }
 
