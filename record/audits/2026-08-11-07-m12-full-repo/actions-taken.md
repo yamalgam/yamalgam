@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 12
+  fixed: 13
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 8
+  open: 7
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -228,5 +228,24 @@ document retains its semantic digest when parsed, and the LSP validator cache
 uses that retained value without another tree walk. The shared-handle
 regression passes with all 50 schema tests, all 29 LSP tests, and workspace
 Clippy.
+
+---
+
+## 2026-08-11 — Precompile schema navigation patterns
+
+**Disposition:** fixed
+
+**Addresses:** [schema-navigation-recompiles-patterns-per-request](README.md#schema-navigation-recompiles-patterns-per-request)
+
+**Commit:** bdded7d00e8af192932a5d4ef15a0b14537a0af0
+
+**Author:** Codex
+
+Navigation resources now compile valid `patternProperties` expressions once
+when the index is built and retain them beside their schema-node pointers.
+Completion and hover path traversal reuse those automata instead of recompiling
+patterns on every lookup. A structural regression covers retained valid
+patterns and ignored invalid patterns; all 51 schema tests, all 29 LSP tests,
+and workspace Clippy pass.
 
 ---
