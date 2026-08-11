@@ -2,20 +2,24 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::Arc;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CancelParams, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    HoverParams, HoverProviderCapability, InitializeResult, NumberOrString, OneOf,
-    PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities, ServerInfo,
+    GotoDefinitionParams, HoverParams, HoverProviderCapability, InitializeResult, NumberOrString,
+    OneOf, PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities, ServerInfo,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
 use thiserror::Error;
 use tracing::warn;
 use yamalgam_core::LoaderConfig;
 
-use crate::{DocumentState, SchemaWorkspace, ServerConfig, complete, document_diagnostics, hover};
+use crate::{
+    DocumentState, SchemaWorkspace, ServerConfig, WorkspaceState, complete, definition,
+    document_diagnostics, hover,
+};
 
 /// Run the language server over standard input and standard output.
 pub fn run_stdio() -> Result<(), ServerError> {
@@ -27,7 +31,8 @@ pub fn run_stdio() -> Result<(), ServerError> {
 
 /// Run one synchronous language-server connection to completion.
 pub fn run(connection: Connection) -> Result<(), ServerError> {
-    let (initialize_id, _initialize_params) = connection.initialize_start()?;
+    let (initialize_id, initialize_params) = connection.initialize_start()?;
+    let config = server_config(&initialize_params);
     connection.initialize_finish(
         initialize_id,
         serde_json::to_value(InitializeResult {
@@ -39,7 +44,7 @@ pub fn run(connection: Connection) -> Result<(), ServerError> {
         })?,
     )?;
 
-    let mut server = Server::default();
+    let mut server = Server::new(config);
     while let Ok(message) = connection.receiver.recv() {
         match message {
             Message::Request(request) => {
@@ -82,23 +87,27 @@ struct Server {
     cancelled: HashSet<RequestId>,
     loader: LoaderConfig,
     config: ServerConfig,
-    schemas: SchemaWorkspace,
+    schemas: Arc<SchemaWorkspace>,
 }
 
 impl Default for Server {
     fn default() -> Self {
-        let loader = LoaderConfig::default();
-        Self {
-            documents: HashMap::new(),
-            cancelled: HashSet::new(),
-            schemas: SchemaWorkspace::empty(loader.clone()),
-            loader,
-            config: ServerConfig::default(),
-        }
+        Self::new(ServerConfig::default())
     }
 }
 
 impl Server {
+    fn new(config: ServerConfig) -> Self {
+        let loader = LoaderConfig::default();
+        Self {
+            documents: HashMap::new(),
+            cancelled: HashSet::new(),
+            schemas: Arc::new(SchemaWorkspace::empty(loader.clone())),
+            loader,
+            config,
+        }
+    }
+
     fn handle_request(
         &mut self,
         connection: &Connection,
@@ -118,7 +127,7 @@ impl Server {
         let response = match request.method.as_str() {
             "textDocument/completion" => self.completion_response(request),
             "textDocument/hover" => self.hover_response(request),
-            "textDocument/definition" => Response::new_ok(request.id, serde_json::Value::Null),
+            "textDocument/definition" => self.definition_response(request),
             _ => Response::new_err(
                 request.id,
                 ErrorCode::MethodNotFound as i32,
@@ -155,6 +164,28 @@ impl Server {
             .documents
             .get(&uri)
             .and_then(|document| hover(document, position, &self.schemas));
+        serialized_response(id, response)
+    }
+
+    fn definition_response(&self, request: Request) -> Response {
+        let id = request.id;
+        let params = match serde_json::from_value::<GotoDefinitionParams>(request.params) {
+            Ok(params) => params,
+            Err(error) => return invalid_params(id, error),
+        };
+        let position = params.text_document_position_params.position;
+        let uri = params.text_document_position_params.text_document.uri;
+        let mut workspace = WorkspaceState::new(
+            Arc::clone(&self.schemas),
+            self.config.workspace_roots.clone(),
+        );
+        for document in self.documents.values() {
+            workspace.insert_document(document);
+        }
+        let response = self
+            .documents
+            .get(&uri)
+            .and_then(|document| definition(document, position, &workspace));
         serialized_response(id, response)
     }
 
@@ -305,6 +336,36 @@ fn invalid_params(id: RequestId, error: serde_json::Error) -> Response {
         ErrorCode::InvalidParams as i32,
         format!("invalid request parameters: {error}"),
     )
+}
+
+fn server_config(initialize_params: &serde_json::Value) -> ServerConfig {
+    let mut config = ServerConfig::default();
+    if let Some(folders) = initialize_params
+        .get("workspaceFolders")
+        .and_then(serde_json::Value::as_array)
+    {
+        for uri in folders.iter().filter_map(|folder| folder.get("uri")) {
+            push_workspace_root(&mut config, uri);
+        }
+    }
+    if config.workspace_roots.is_empty()
+        && let Some(uri) = initialize_params.get("rootUri")
+    {
+        push_workspace_root(&mut config, uri);
+    }
+    config
+}
+
+fn push_workspace_root(config: &mut ServerConfig, uri: &serde_json::Value) {
+    let Some(uri) = uri.as_str() else {
+        return;
+    };
+    let Ok(id) = yamalgam_resolve::ResourceId::new(uri) else {
+        return;
+    };
+    if let Some(path) = id.as_path() {
+        config.workspace_roots.push(path.to_path_buf());
+    }
 }
 
 /// Language-server startup or transport failure.
