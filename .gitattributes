@@ -50,3 +50,14 @@ AGENTS.md export-ignore
 bench-reports/ export-ignore
 scripts/ export-ignore
 docs/ export-ignore
+record/ export-ignore
+
+# cased audits
+record/audits/**/report.html linguist-generated=true
+record/audits/**/findings.yaml linguist-generated=true
+record/audits/**/recon.yaml linguist-generated=true
+record/audits/**/README.md linguist-generated=true
+record/audits/**/CLAUDE.md linguist-generated=true
+record/audits/**/AGENTS.md linguist-generated=true
+record/audits/**/assets/*.svg linguist-generated=true
+
