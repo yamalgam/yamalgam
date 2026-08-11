@@ -881,7 +881,7 @@ pub enum Commands {
 }
 ```
 
-- [ ] **Step 1: Write CLI contract tests**
+- [x] **Step 1: Write CLI contract tests**
 
 Cover explicit schema, pragma schema, multiple files and documents, valid and
 invalid exits, missing schema, malformed schema, stdin with relative schema
@@ -889,13 +889,13 @@ and no base, JSON output, YAML output, `lint` alias, SchemaStore opt-in, and
 network-off default. Use exit 0 for valid, 1 for validation findings, 2 for
 usage, and 5 for parsing/schema/retrieval failures.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam --test validate
 ```
 
-- [ ] **Step 3: Wire the thin command**
+- [x] **Step 3: Wire the thin command**
 
 Load each stream through located composition, select one schema per document,
 compile validators through a shared `SchemaSession`, and emit a deterministic
@@ -903,7 +903,7 @@ report containing filename, document index, validity, and diagnostics. Reuse
 Librebar `--format`; emit JSON with `serde_json` and YAML through the existing
 Yamalgam emitter.
 
-- [ ] **Step 4: Add configuration without ambient network access**
+- [x] **Step 4: Add configuration without ambient network access**
 
 Add `schemas` associations and `schema_store.enabled`/`schema_store.url` to
 `Config`. Default `enabled` to false and the URL to
@@ -911,7 +911,7 @@ Add `schemas` associations and `schema_store.enabled`/`schema_store.url` to
 unless the command also enables explicit ref resolution and allowlists the
 scheme and host through the existing `LoaderConfig.resolution.refs` path.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam --test validate
@@ -919,7 +919,7 @@ just test
 just clippy
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam config Cargo.lock

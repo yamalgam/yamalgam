@@ -3024,9 +3024,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "yamalgam-compose",
  "yamalgam-core",
  "yamalgam-query",
  "yamalgam-resolve",
+ "yamalgam-schema",
  "yamalgam-serde",
 ]
 

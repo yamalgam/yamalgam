@@ -255,6 +255,9 @@ pub enum Commands {
     Doctor(commands::doctor::DoctorArgs),
     /// Show package information
     Info(commands::info::InfoArgs),
+    /// Validate YAML documents against JSON Schema
+    #[command(visible_alias = "lint")]
+    Validate(commands::validate::ValidateArgs),
 }
 
 /// Returns the clap command for documentation generation.

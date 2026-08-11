@@ -53,6 +53,19 @@ pub struct SchemaCatalog {
     pub schemas: Vec<SchemaCatalogEntry>,
 }
 
+impl SchemaCatalog {
+    /// Decode a semantic YAML or JSON value as a SchemaStore catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is not JSON-compatible or does not
+    /// match the supported SchemaStore catalog shape.
+    pub fn from_value(value: &Value) -> Result<Self, SchemaCatalogError> {
+        let json = crate::schema::schema_value_to_json(value)?;
+        serde_json::from_value(json).map_err(SchemaCatalogError::InvalidCatalog)
+    }
+}
+
 /// One schema entry from the SchemaStore catalog.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SchemaCatalogEntry {
@@ -136,6 +149,18 @@ pub enum SchemaSelectionError {
         #[source]
         source: globset::Error,
     },
+}
+
+/// Failure decoding a SchemaStore catalog document.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SchemaCatalogError {
+    /// The catalog used YAML values that cannot represent JSON data.
+    #[error(transparent)]
+    InvalidValue(#[from] crate::SchemaError),
+    /// The document did not match the supported SchemaStore catalog shape.
+    #[error("invalid SchemaStore catalog: {0}")]
+    InvalidCatalog(#[source] serde_json::Error),
 }
 
 #[derive(Clone, Debug, Default)]

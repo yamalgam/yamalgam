@@ -12,7 +12,9 @@ use yamalgam_resolve::{
     FileRetriever, LibrebarRetriever, MemoryRetriever, ResourceId, ResourceProvenance,
     ResourceRequest, ResourceRetriever, RetrieveError, RetrievedResource,
 };
-use yamalgam_schema::{SchemaDocument, SchemaError, SchemaRetrieveError, SchemaSession};
+use yamalgam_schema::{
+    SchemaDocument, SchemaError, SchemaOptions, SchemaRetrieveError, SchemaSession,
+};
 
 fn resource(id: &str, yaml: &str) -> RetrievedResource {
     RetrievedResource {
@@ -82,6 +84,27 @@ fn retrieval_resolves_relative_absolute_and_cyclic_schema_graphs() {
             .validate(&value(json!({"name": 1, "count": 0, "node": {}})))
             .valid
     );
+}
+
+#[test]
+fn retrieval_compile_options_control_diagnostic_limits() {
+    let session = SchemaSession::new(Arc::new(MemoryRetriever::default()), config(&["memory"]));
+    let validator = session
+        .compile_with_options(
+            document(
+                "memory://schemas/root.yaml",
+                "type: object\nrequired: [first, second]\n",
+            ),
+            SchemaOptions {
+                max_diagnostics: 1,
+                ..SchemaOptions::default()
+            },
+        )
+        .unwrap();
+
+    let report = validator.validate(&value(json!({})));
+    assert_eq!(report.diagnostics.len(), 2);
+    assert_eq!(report.diagnostics[1].code, "schema/diagnostic-limit");
 }
 
 #[test]

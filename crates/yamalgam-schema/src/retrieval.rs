@@ -131,6 +131,22 @@ impl SchemaSession {
     ///
     /// Returns schema conversion/compilation failures or typed retrieval errors.
     pub fn compile(&self, root: SchemaDocument) -> Result<SchemaValidator, SchemaError> {
+        self.compile_with_options(root, SchemaOptions::default())
+    }
+
+    /// Compile a root document with caller-selected validation options.
+    ///
+    /// The root document identity always supplies the base URI; other options
+    /// are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns schema conversion/compilation failures or typed retrieval errors.
+    pub fn compile_with_options(
+        &self,
+        root: SchemaDocument,
+        options: SchemaOptions,
+    ) -> Result<SchemaValidator, SchemaError> {
         let root_schema = schema_value_to_json(&root.document.value)?;
         {
             let mut state = self.lock_state();
@@ -177,7 +193,7 @@ impl SchemaSession {
         };
         let options = SchemaOptions {
             base_uri: resource_uri(&root.id)?,
-            ..SchemaOptions::default()
+            ..options
         };
         SchemaValidator::compile_json_with_retriever(
             root_schema,

@@ -15,6 +15,6 @@ pub use navigation::{PropertyCandidate, SchemaContext, SchemaLocation};
 pub use retrieval::{SchemaDocument, SchemaRetrieveError, SchemaSession};
 pub use schema::{SchemaError, SchemaOptions, SchemaValidator};
 pub use selection::{
-    SchemaAssociation, SchemaCatalog, SchemaCatalogEntry, SchemaSelectionError, SchemaSelector,
-    SchemaSource, SelectedSchema,
+    SchemaAssociation, SchemaCatalog, SchemaCatalogEntry, SchemaCatalogError, SchemaSelectionError,
+    SchemaSelector, SchemaSource, SelectedSchema,
 };
