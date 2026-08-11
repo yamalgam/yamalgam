@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 5
+  fixed: 6
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 15
+  open: 14
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -98,5 +98,22 @@ cooperative cancellation flags; cancellation responds immediately, suppresses
 stale completion, and removes the exact generation so reused IDs remain clean.
 Unknown and late cancellation IDs are ignored. The lifecycle and deterministic
 held-work regressions pass with all 23 LSP tests and workspace Clippy.
+
+---
+
+## 2026-08-11 — Preserve stdio failures without blocking on input
+
+**Disposition:** fixed
+
+**Addresses:** [stdio-error-path-can-hang-joining-reader](README.md#stdio-error-path-can-hang-joining-reader)
+
+**Commit:** f4d4ba7a4000c12f65b5dd5e304dfdf02557dce6
+
+**Author:** Codex
+
+The stdio entry point now returns a server failure before attempting to join
+the transport threads, avoiding a wait on a reader blocked on still-open
+standard input. Clean protocol exits retain the existing join behavior. Both
+lifecycle branches pass with all 25 LSP tests and workspace Clippy.
 
 ---
