@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 6
+  fixed: 7
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 14
+  open: 13
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -115,5 +115,23 @@ The stdio entry point now returns a server failure before attempting to join
 the transport threads, avoiding a wait on a reader blocked on still-open
 standard input. Clean protocol exits retain the existing join behavior. Both
 lifecycle branches pass with all 25 LSP tests and workspace Clippy.
+
+---
+
+## 2026-08-11 — Surface definition resource failures
+
+**Disposition:** fixed
+
+**Addresses:** [lsp-definition-resource-errors-erased](README.md#lsp-definition-resource-errors-erased)
+
+**Commit:** 56ff7a46da10d80e6f7c58036e5f46d81623c08c
+
+**Author:** Codex
+
+Definition lookup now distinguishes `Ok(None)` from typed workspace policy,
+retrieval, UTF-8, and URI failures. The LSP server maps those failures to
+`RequestFailed` with a fixed path-safe message while retaining full typed
+causes inside the library. Library and protocol regressions pass with all 27
+LSP tests and workspace Clippy.
 
 ---
