@@ -30,9 +30,16 @@ use crate::{
 /// Run the language server over standard input and standard output.
 pub fn run_stdio() -> Result<(), ServerError> {
     let (connection, threads) = Connection::stdio();
-    let result = run(connection);
-    threads.join()?;
-    result
+    finish_transport(run(connection), || threads.join())
+}
+
+fn finish_transport(
+    result: Result<(), ServerError>,
+    join: impl FnOnce() -> io::Result<()>,
+) -> Result<(), ServerError> {
+    result?;
+    join()?;
+    Ok(())
 }
 
 /// Run one synchronous language-server connection to completion.
@@ -697,6 +704,36 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn transport_join_is_skipped_after_server_failure() {
+        let joined = AtomicBool::new(false);
+        let result = finish_transport(
+            Err(ServerError::Transport("boom".to_owned())),
+            || -> io::Result<()> {
+                joined.store(true, Ordering::Release);
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(ServerError::Transport(message)) if message == "boom"
+        ));
+        assert!(!joined.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn transport_join_runs_after_clean_server_exit() {
+        let joined = AtomicBool::new(false);
+        let result = finish_transport(Ok(()), || -> io::Result<()> {
+            joined.store(true, Ordering::Release);
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+        assert!(joined.load(Ordering::Acquire));
+    }
 
     #[test]
     fn request_dispatcher_cancels_active_work_without_poisoning_reused_ids() {
