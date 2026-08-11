@@ -458,7 +458,8 @@ mod value_adapter {
     #[test]
     fn custom_representation_satisfies_jsonschema_conformance() {
         let value = from_json(jsonschema::json::conformance::document());
-        let prepared = PreparedInstance::new(&value, usize::MAX).expect("conformance value");
+        let prepared =
+            PreparedInstance::new(&value, usize::MAX, usize::MAX).expect("conformance value");
 
         jsonschema::json::conformance::assert_conformance::<YamlJson>(&prepared.root());
     }
@@ -466,7 +467,8 @@ mod value_adapter {
     #[test]
     fn mapping_lookup_and_iteration_reuse_native_nodes() {
         let value = from_json(serde_json::json!({"items": [1, 2], "name": "héllo"}));
-        let prepared = PreparedInstance::new(&value, usize::MAX).expect("representable value");
+        let prepared =
+            PreparedInstance::new(&value, usize::MAX, usize::MAX).expect("representable value");
         let root = prepared.root();
         let object = root.as_object().expect("object");
         let items = object
@@ -504,7 +506,8 @@ mod value_adapter {
     #[test]
     fn hot_accessors_do_not_materialize_json_values() {
         let value = from_json(serde_json::json!({"items": [1, 2], "name": "value"}));
-        let prepared = PreparedInstance::new(&value, usize::MAX).expect("representable value");
+        let prepared =
+            PreparedInstance::new(&value, usize::MAX, usize::MAX).expect("representable value");
         let root = prepared.root();
 
         reset_to_value_calls();
@@ -538,7 +541,8 @@ mod value_adapter {
             value = Value::Sequence(vec![value]);
             expected = JsonValue::Array(vec![expected]);
         }
-        let prepared = PreparedInstance::new(&value, DEPTH).expect("deep value is representable");
+        let prepared =
+            PreparedInstance::new(&value, DEPTH, usize::MAX).expect("deep value is representable");
 
         assert!(prepared.root().equals_value(&expected));
 

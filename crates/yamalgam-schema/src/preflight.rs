@@ -72,12 +72,16 @@ impl ProjectedKeys {
 
 impl<'value> PreparedInstance<'value> {
     // r[impl validate.keys]
-    pub fn new(value: &'value Value, max_depth: usize) -> Result<Self, Vec<RepresentationError>> {
+    pub fn new(
+        value: &'value Value,
+        max_depth: usize,
+        max_errors: usize,
+    ) -> Result<Self, Vec<RepresentationError>> {
         let mut projected_keys = ProjectedKeys::default();
         let mut errors = Vec::new();
         let mut pending = vec![(value, String::new(), Vec::new(), 0_usize)];
 
-        while let Some((node, path, route, depth)) = pending.pop() {
+        'pending: while let Some((node, path, route, depth)) = pending.pop() {
             if depth > max_depth {
                 errors.push(RepresentationError {
                     kind: RepresentationErrorKind::DepthLimitExceeded {
@@ -98,6 +102,9 @@ impl<'value> PreparedInstance<'value> {
                         route,
                         conflicting_route: None,
                     });
+                    if errors.len() > max_errors {
+                        break;
+                    }
                 }
                 Value::Sequence(items) => {
                     let child_depth = depth.saturating_add(1);
@@ -129,6 +136,9 @@ impl<'value> PreparedInstance<'value> {
                                     route: key_route,
                                     conflicting_route: None,
                                 });
+                                if errors.len() > max_errors {
+                                    break 'pending;
+                                }
                                 None
                             }
                             Value::Sequence(_) | Value::Mapping(_) => {
@@ -138,6 +148,9 @@ impl<'value> PreparedInstance<'value> {
                                     route: key_route,
                                     conflicting_route: None,
                                 });
+                                if errors.len() > max_errors {
+                                    break 'pending;
+                                }
                                 None
                             }
                             Value::String(_) => Some(ProjectedName::Original),
@@ -190,6 +203,9 @@ impl<'value> PreparedInstance<'value> {
                                 route: collision_route,
                                 conflicting_route: Some(conflicting_route),
                             });
+                            if errors.len() > max_errors {
+                                break 'pending;
+                            }
                         }
                         projection.push(ProjectedKey {
                             mapping_index: index,
@@ -271,8 +287,8 @@ mod yaml_schema_compat {
             (Value::from("plain"), Value::Integer(4)),
         ]);
 
-        let prepared =
-            PreparedInstance::new(&value, usize::MAX).expect("scalar keys are representable");
+        let prepared = PreparedInstance::new(&value, usize::MAX, usize::MAX)
+            .expect("scalar keys are representable");
         let object = prepared.root().as_object().expect("mapping is an object");
         let members = object.members().collect::<Vec<_>>();
         let names = members
@@ -304,7 +320,8 @@ mod yaml_schema_compat {
     fn complex_mapping_keys_are_rejected_with_their_route() {
         let value = mapping([(Value::Sequence(vec![Value::from("complex")]), Value::Null)]);
 
-        let errors = PreparedInstance::new(&value, usize::MAX).expect_err("complex key must fail");
+        let errors = PreparedInstance::new(&value, usize::MAX, usize::MAX)
+            .expect_err("complex key must fail");
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, RepresentationErrorKind::ComplexMappingKey);
@@ -320,13 +337,33 @@ mod yaml_schema_compat {
             (Value::Float(f64::INFINITY), Value::Null),
         ]);
 
-        let errors =
-            PreparedInstance::new(&value, usize::MAX).expect_err("non-finite keys must fail");
+        let errors = PreparedInstance::new(&value, usize::MAX, usize::MAX)
+            .expect_err("non-finite keys must fail");
 
         assert_eq!(errors.len(), 2);
         assert!(errors.iter().all(|error| {
             error.kind == RepresentationErrorKind::NonFiniteNumber && error.instance_path.is_empty()
         }));
+    }
+
+    #[test]
+    fn representation_errors_stop_at_the_cap_plus_one_sentinel() {
+        let value = Value::Sequence(vec![
+            Value::Float(f64::NAN),
+            Value::Float(f64::NAN),
+            Value::Float(f64::NAN),
+            Value::Float(f64::NAN),
+        ]);
+
+        let errors =
+            PreparedInstance::new(&value, usize::MAX, 2).expect_err("non-finite values must fail");
+
+        assert_eq!(errors.len(), 3);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.kind == RepresentationErrorKind::NonFiniteNumber)
+        );
     }
 
     #[test]
@@ -337,7 +374,8 @@ mod yaml_schema_compat {
             (Value::from("1"), Value::from("string")),
         ]);
 
-        let errors = PreparedInstance::new(&value, usize::MAX).expect_err("collisions must fail");
+        let errors = PreparedInstance::new(&value, usize::MAX, usize::MAX)
+            .expect_err("collisions must fail");
 
         assert_eq!(errors.len(), 2);
         for (offset, error) in errors.iter().enumerate() {

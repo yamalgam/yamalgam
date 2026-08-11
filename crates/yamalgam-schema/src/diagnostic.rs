@@ -47,6 +47,8 @@ pub fn schema_diagnostic(
     error: &ValidationError<'_>,
     located: Option<&LocatedValue>,
 ) -> ValidationDiagnostic {
+    #[cfg(test)]
+    crate::increment_schema_diagnostic_calls();
     let keyword = error.kind().keyword();
     let instance_path = error.instance_path().to_string();
     let (expected, actual) = expected_actual(error);
@@ -147,16 +149,18 @@ pub fn retain_diagnostic(
     }
 }
 
-pub fn diagnostic_limit_warning(maximum: usize, observed: usize) -> ValidationDiagnostic {
+pub fn diagnostic_limit_warning(maximum: usize) -> ValidationDiagnostic {
     ValidationDiagnostic {
         code: "schema/diagnostic-limit".to_owned(),
         severity: Severity::Warning,
-        message: format!("validation produced {observed} diagnostics; showing the first {maximum}"),
+        message: format!(
+            "validation produced more than {maximum} diagnostics; showing the first {maximum}"
+        ),
         keyword: "diagnostic-limit".to_owned(),
         instance_path: String::new(),
         schema_path: String::new(),
         expected: Some(format!("at most {maximum} diagnostics")),
-        actual: Some(observed.to_string()),
+        actual: Some(format!("more than {maximum}")),
         span: None,
         labels: Vec::new(),
     }

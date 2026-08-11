@@ -172,23 +172,25 @@ impl SchemaValidator {
     }
 
     fn validate_inner(&self, instance: &Value, located: Option<&LocatedValue>) -> ValidationReport {
-        let prepared = match PreparedInstance::new(instance, self.options.max_instance_depth) {
+        let prepared = match PreparedInstance::new(
+            instance,
+            self.options.max_instance_depth,
+            self.options.max_diagnostics,
+        ) {
             Ok(prepared) => prepared,
             Err(errors) => {
+                let maximum = self.options.max_diagnostics;
                 let mut diagnostics =
-                    Vec::with_capacity(errors.len().min(self.options.max_diagnostics));
-                for error in &errors {
+                    Vec::with_capacity(errors.len().min(maximum).saturating_add(1));
+                for error in errors.iter().take(maximum) {
                     retain_diagnostic(
                         &mut diagnostics,
                         representation_diagnostic(error, located),
-                        self.options.max_diagnostics,
+                        maximum,
                     );
                 }
-                if errors.len() > self.options.max_diagnostics {
-                    diagnostics.push(diagnostic_limit_warning(
-                        self.options.max_diagnostics,
-                        errors.len(),
-                    ));
+                if errors.len() > maximum {
+                    diagnostics.push(diagnostic_limit_warning(maximum));
                 }
                 return ValidationReport {
                     valid: false,
@@ -197,24 +199,24 @@ impl SchemaValidator {
             }
         };
 
-        let mut observed = 0_usize;
+        let maximum = self.options.max_diagnostics;
+        let mut invalid = false;
         let mut diagnostics = Vec::new();
-        for error in self.validator.iter_errors(prepared.root()) {
-            observed = observed.saturating_add(1);
+        let mut errors = self.validator.iter_errors(prepared.root());
+        for error in errors.by_ref().take(maximum) {
+            invalid = true;
             retain_diagnostic(
                 &mut diagnostics,
                 schema_diagnostic(&error, located),
-                self.options.max_diagnostics,
+                maximum,
             );
         }
-        if observed > self.options.max_diagnostics {
-            diagnostics.push(diagnostic_limit_warning(
-                self.options.max_diagnostics,
-                observed,
-            ));
+        if errors.next().is_some() {
+            invalid = true;
+            diagnostics.push(diagnostic_limit_warning(maximum));
         }
         ValidationReport {
-            valid: observed == 0,
+            valid: !invalid,
             diagnostics,
         }
     }
@@ -343,4 +345,57 @@ fn compile_error(schema: &JsonValue, error: &jsonschema::ValidationError<'_>) ->
 fn append_path(path: &str, segment: &str) -> String {
     let escaped = segment.replace('~', "~0").replace('/', "~1");
     format!("{path}/{escaped}")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use yamalgam_core::Value;
+
+    use super::{SchemaOptions, SchemaValidator};
+    use crate::{reset_schema_diagnostic_calls, schema_diagnostic_calls};
+
+    fn value(value: serde_json::Value) -> Value {
+        serde_json::from_value(value).expect("JSON fixture fits Value")
+    }
+
+    #[test]
+    fn diagnostic_limit_bounds_schema_error_conversion() {
+        let validator = SchemaValidator::compile(
+            &value(json!({"items": {"type": "integer"}})),
+            SchemaOptions {
+                max_diagnostics: 2,
+                ..SchemaOptions::default()
+            },
+        )
+        .expect("schema compiles");
+        let instance = value(json!(["zero", "one", "two", "three"]));
+
+        reset_schema_diagnostic_calls();
+        let report = validator.validate(&instance);
+
+        assert_eq!(schema_diagnostic_calls(), 2);
+        assert_eq!(report.diagnostics.len(), 3);
+        assert_eq!(report.diagnostics[2].code, "schema/diagnostic-limit");
+    }
+
+    #[test]
+    fn zero_diagnostic_limit_uses_only_the_error_sentinel() {
+        let validator = SchemaValidator::compile(
+            &value(json!({"type": "integer"})),
+            SchemaOptions {
+                max_diagnostics: 0,
+                ..SchemaOptions::default()
+            },
+        )
+        .expect("schema compiles");
+
+        reset_schema_diagnostic_calls();
+        let report = validator.validate(&Value::String("nope".to_owned()));
+
+        assert!(!report.valid);
+        assert_eq!(schema_diagnostic_calls(), 0);
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].code, "schema/diagnostic-limit");
+    }
 }

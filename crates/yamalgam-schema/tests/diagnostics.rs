@@ -163,7 +163,7 @@ fn diagnostics_preserve_yaml_representation_spans_and_collision_labels() {
 #[test]
 fn diagnostics_append_one_warning_when_the_error_limit_is_reached() {
     let report = validator(json!({"items": {"type": "integer"}}), 2)
-        .validate(&value(json!(["zero", "one", "two"])));
+        .validate(&value(json!(["zero", "one", "two", "three"])));
 
     assert!(!report.valid);
     assert_eq!(report.diagnostics.len(), 3);
@@ -171,4 +171,9 @@ fn diagnostics_append_one_warning_when_the_error_limit_is_reached() {
     assert_eq!(report.diagnostics[1].instance_path, "/1");
     assert_eq!(report.diagnostics[2].code, "schema/diagnostic-limit");
     assert_eq!(report.diagnostics[2].severity, Severity::Warning);
+    assert_eq!(
+        report.diagnostics[2].message,
+        "validation produced more than 2 diagnostics; showing the first 2"
+    );
+    assert_eq!(report.diagnostics[2].actual.as_deref(), Some("more than 2"));
 }

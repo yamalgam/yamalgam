@@ -5,6 +5,26 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(test)]
+std::thread_local! {
+    static SCHEMA_DIAGNOSTIC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn increment_schema_diagnostic_calls() {
+    SCHEMA_DIAGNOSTIC_CALLS.set(SCHEMA_DIAGNOSTIC_CALLS.get() + 1);
+}
+
+#[cfg(test)]
+fn reset_schema_diagnostic_calls() {
+    SCHEMA_DIAGNOSTIC_CALLS.set(0);
+}
+
+#[cfg(test)]
+fn schema_diagnostic_calls() -> usize {
+    SCHEMA_DIAGNOSTIC_CALLS.get()
+}
+
 pub(crate) mod diagnostic;
 mod navigation;
 mod preflight;
