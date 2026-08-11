@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 14
+  fixed: 15
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 6
+  open: 5
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -265,5 +265,24 @@ chunk's relative spans once. The completed tree no longer recomputes every
 node and token endpoint by rescanning from byte zero. The scaling regression
 drops the 4,096-line fixture from 3.37 seconds to 15 milliseconds; all 55 CST
 tests, all 29 LSP tests, and workspace Clippy pass.
+
+---
+
+## 2026-08-11 — Batch editor snapshot rebuilds
+
+**Disposition:** fixed
+
+**Addresses:** [lsp-didchange-rebuilds-full-document-stages](README.md#lsp-didchange-rebuilds-full-document-stages)
+
+**Commit:** 660a8a4a838d0df8222dca83e16d3e28c94fe75d
+
+**Author:** Codex
+
+`didChange` now applies sequential UTF-16 edits to one shared source snapshot,
+updates the incremental CST once, and composes located values once. Minimal
+prefix/suffix differencing retains document-local CST reparsing. Schema
+selection consumes those precomposed values and retained composition failures
+instead of copying and composing the source again. All 56 CST tests, all 52
+schema tests, all 30 LSP tests, and workspace Clippy pass.
 
 ---
