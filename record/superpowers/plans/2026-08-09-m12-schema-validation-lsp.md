@@ -1206,7 +1206,7 @@ just test-lsp protocol
 just clippy
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/yamalgam-lsp crates/yamalgam xtask Cargo.lock
