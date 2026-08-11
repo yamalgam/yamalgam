@@ -14,7 +14,11 @@ use lsp_types::{
 };
 use thiserror::Error;
 use tracing::warn;
-use yamalgam_core::LoaderConfig;
+use yamalgam_core::{LoaderConfig, ResolutionMode};
+use yamalgam_resolve::{
+    FileRetriever, ResourceRequest, ResourceRetriever, RetrieveError, RetrievedResource,
+};
+use yamalgam_schema::SchemaAssociation;
 
 use crate::{
     DocumentState, SchemaWorkspace, ServerConfig, WorkspaceState, complete, definition,
@@ -32,7 +36,7 @@ pub fn run_stdio() -> Result<(), ServerError> {
 /// Run one synchronous language-server connection to completion.
 pub fn run(connection: Connection) -> Result<(), ServerError> {
     let (initialize_id, initialize_params) = connection.initialize_start()?;
-    let config = server_config(&initialize_params);
+    let config = server_config(&initialize_params)?;
     connection.initialize_finish(
         initialize_id,
         serde_json::to_value(InitializeResult {
@@ -44,7 +48,7 @@ pub fn run(connection: Connection) -> Result<(), ServerError> {
         })?,
     )?;
 
-    let mut server = Server::new(config);
+    let mut server = Server::new(config)?;
     while let Ok(message) = connection.receiver.recv() {
         match message {
             Message::Request(request) => {
@@ -92,20 +96,21 @@ struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Self::new(ServerConfig::default())
+        Self::new(ServerConfig::default()).expect("default server configuration should be valid")
     }
 }
 
 impl Server {
-    fn new(config: ServerConfig) -> Self {
+    fn new(config: ServerConfig) -> Result<Self, ServerError> {
         let loader = LoaderConfig::default();
-        Self {
+        let schemas = schema_workspace(&config)?;
+        Ok(Self {
             documents: HashMap::new(),
             cancelled: HashSet::new(),
-            schemas: Arc::new(SchemaWorkspace::empty(loader.clone())),
+            schemas: Arc::new(schemas),
             loader,
             config,
-        }
+        })
     }
 
     fn handle_request(
@@ -338,7 +343,7 @@ fn invalid_params(id: RequestId, error: serde_json::Error) -> Response {
     )
 }
 
-fn server_config(initialize_params: &serde_json::Value) -> ServerConfig {
+fn server_config(initialize_params: &serde_json::Value) -> Result<ServerConfig, ServerError> {
     let mut config = ServerConfig::default();
     if let Some(folders) = initialize_params
         .get("workspaceFolders")
@@ -353,7 +358,22 @@ fn server_config(initialize_params: &serde_json::Value) -> ServerConfig {
     {
         push_workspace_root(&mut config, uri);
     }
-    config
+
+    if let Some(options) = initialize_params.get("initializationOptions") {
+        let options = options.get("yamalgam").unwrap_or(options);
+        if !options.is_null() {
+            let options: InitializationOptions = serde_json::from_value(options.clone())?;
+            config.schema_associations = options
+                .schemas
+                .into_iter()
+                .map(InitializationSchemaAssociation::into_schema_association)
+                .collect();
+            if let Some(maximum) = options.max_diagnostics {
+                config.max_diagnostics = maximum;
+            }
+        }
+    }
+    Ok(config)
 }
 
 fn push_workspace_root(config: &mut ServerConfig, uri: &serde_json::Value) {
@@ -365,6 +385,77 @@ fn push_workspace_root(config: &mut ServerConfig, uri: &serde_json::Value) {
     };
     if let Some(path) = id.as_path() {
         config.workspace_roots.push(path.to_path_buf());
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct InitializationOptions {
+    schemas: Vec<InitializationSchemaAssociation>,
+    max_diagnostics: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializationSchemaAssociation {
+    uri: String,
+    file_match: Vec<String>,
+}
+
+impl InitializationSchemaAssociation {
+    fn into_schema_association(self) -> SchemaAssociation {
+        SchemaAssociation {
+            uri: self.uri,
+            file_match: self.file_match,
+        }
+    }
+}
+
+fn schema_workspace(config: &ServerConfig) -> Result<SchemaWorkspace, ServerError> {
+    if config.workspace_roots.is_empty() {
+        return Ok(SchemaWorkspace::empty(LoaderConfig::default()));
+    }
+
+    let mut loader = LoaderConfig::default();
+    loader.resolution.refs.mode = ResolutionMode::Explicit;
+    loader.resolution.refs.allow_schemes = vec!["file".to_owned()];
+    loader.resolution.files.root = config.workspace_roots.first().cloned();
+    let retriever = WorkspaceFileRetriever::open(&config.workspace_roots, &loader)?;
+    Ok(SchemaWorkspace::new(Arc::new(retriever), loader))
+}
+
+struct WorkspaceFileRetriever {
+    roots: Vec<(std::path::PathBuf, FileRetriever)>,
+}
+
+impl WorkspaceFileRetriever {
+    fn open(roots: &[std::path::PathBuf], loader: &LoaderConfig) -> Result<Self, RetrieveError> {
+        let mut retrievers = Vec::with_capacity(roots.len());
+        for root in roots {
+            let root = std::path::absolute(root).map_err(|source| RetrieveError::Io {
+                id: yamalgam_resolve::ResourceId::from_file(root),
+                source,
+            })?;
+            let mut policy = loader.resolution.files.clone();
+            policy.root = Some(root.clone());
+            retrievers.push((root, FileRetriever::open(&policy)?));
+        }
+        Ok(Self { roots: retrievers })
+    }
+}
+
+impl ResourceRetriever for WorkspaceFileRetriever {
+    fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError> {
+        let Some(path) = request.id.as_path() else {
+            return Err(RetrieveError::UnsupportedScheme(
+                request.id.scheme().to_owned(),
+            ));
+        };
+        let Some((_, retriever)) = self.roots.iter().find(|(root, _)| path.starts_with(root))
+        else {
+            return Err(RetrieveError::OutsideRoot(request.id.clone()));
+        };
+        retriever.retrieve(request)
     }
 }
 
@@ -380,6 +471,9 @@ pub enum ServerError {
     /// JSON serialization failure.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Workspace schema retriever configuration failed.
+    #[error(transparent)]
+    Retrieval(#[from] RetrieveError),
     /// In-memory or standard-I/O channel disconnected.
     #[error("language-server transport failed: {0}")]
     Transport(String),

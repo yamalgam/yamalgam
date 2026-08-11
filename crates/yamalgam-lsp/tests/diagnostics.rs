@@ -193,3 +193,108 @@ fn diagnostics_publish_current_versions_and_skip_stale_changes() {
         .unwrap();
     worker.join().unwrap().unwrap();
 }
+
+#[test]
+fn initialization_options_load_workspace_local_schema_associations() {
+    let workspace = std::env::temp_dir().join(format!(
+        "yamalgam-lsp-schema-settings-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("schema.yaml"),
+        "type: object\nrequired: [name]\n",
+    )
+    .unwrap();
+    let workspace_uri = yamalgam_resolve::ResourceId::from_file(&workspace).to_string();
+    let document_uri =
+        yamalgam_resolve::ResourceId::from_file(workspace.join("service.yaml")).to_string();
+
+    let (server, client) = Connection::memory();
+    let worker = std::thread::spawn(move || run(server));
+
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: RequestId::from(1),
+            method: "initialize".to_owned(),
+            params: json!({
+                "processId": null,
+                "rootUri": workspace_uri,
+                "capabilities": {},
+                "initializationOptions": {
+                    "yamalgam": {
+                        "schemas": [{
+                            "uri": "./schema.yaml",
+                            "fileMatch": ["*.yaml"]
+                        }],
+                        "maxDiagnostics": 8
+                    }
+                }
+            }),
+        }))
+        .unwrap();
+    let _ = client
+        .receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "initialized".to_owned(),
+            params: json!({}),
+        }))
+        .unwrap();
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "textDocument/didOpen".to_owned(),
+            params: json!({
+                "textDocument": {
+                    "uri": document_uri,
+                    "languageId": "yaml",
+                    "version": 1,
+                    "text": "enabled: true\n"
+                }
+            }),
+        }))
+        .unwrap();
+
+    let Message::Notification(published) = client
+        .receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("schema diagnostics should be published")
+    else {
+        panic!("expected publishDiagnostics notification");
+    };
+    let params: PublishDiagnosticsParams = serde_json::from_value(published.params).unwrap();
+    assert_eq!(params.diagnostics.len(), 1, "{:#?}", params.diagnostics);
+    assert_eq!(
+        params.diagnostics[0].code,
+        Some(lsp_types::NumberOrString::String(
+            "schema/required".to_owned()
+        ))
+    );
+
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: RequestId::from(2),
+            method: "shutdown".to_owned(),
+            params: serde_json::Value::Null,
+        }))
+        .unwrap();
+    let _ = client
+        .receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "exit".to_owned(),
+            params: serde_json::Value::Null,
+        }))
+        .unwrap();
+    worker.join().unwrap().unwrap();
+    std::fs::remove_dir_all(workspace).unwrap();
+}

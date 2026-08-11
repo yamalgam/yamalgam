@@ -23,7 +23,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             schema_associations: Vec::new(),
-            schema_store_enabled: true,
+            schema_store_enabled: false,
             schema_store_url: "https://www.schemastore.org/api/json/catalog.json".to_string(),
             max_diagnostics: 64,
             workspace_roots: Vec::new(),

@@ -27,6 +27,10 @@ fn json_output(assertion: &assert_cmd::assert::Assert) -> Value {
     serde_json::from_slice(&assertion.get_output().stdout).expect("validation report is JSON")
 }
 
+// r[verify validate.cli]
+// r[verify validate.output]
+// r[verify validate.output.fields]
+// r[verify validate.exit]
 #[test]
 fn explicit_schema_returns_zero_for_valid_and_one_for_findings() {
     let directory = TempDir::new().unwrap();
@@ -72,6 +76,7 @@ fn explicit_schema_returns_zero_for_valid_and_one_for_findings() {
     assert_eq!(report[0]["diagnostics"][0]["instance_path"], "/name");
 }
 
+// r[verify validate.self-describing]
 #[test]
 fn pragma_selection_preserves_file_and_document_order() {
     let directory = TempDir::new().unwrap();
@@ -253,4 +258,42 @@ fn parse_failures_are_runtime_errors_and_bad_flags_are_usage_errors() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("requires --allow-ref-host"));
+}
+
+#[test]
+fn query_validate_filter_enforces_a_workspace_local_schema() {
+    let directory = TempDir::new().unwrap();
+    write(
+        &directory,
+        "schema.yaml",
+        "type: object\nrequired: [name]\nproperties:\n  name: {type: string}\n",
+    );
+    write(&directory, "valid.yaml", "name: api\n");
+    write(&directory, "invalid.yaml", "name: 7\n");
+
+    yg(&directory)
+        .args([
+            "--allow-refs",
+            "file",
+            "--resolution-root",
+            ".",
+            "validate(\"schema.yaml\")",
+            "valid.yaml",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("name: api"));
+
+    yg(&directory)
+        .args([
+            "--allow-refs",
+            "file",
+            "--resolution-root",
+            ".",
+            "validate(\"schema.yaml\")",
+            "invalid.yaml",
+        ])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("schema validation failed"));
 }

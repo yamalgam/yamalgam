@@ -1,21 +1,24 @@
 //! The yg query pipeline: inputs to filter engine to serialized output.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{BufWriter, Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use yamalgam_core::{LoaderConfig, ResolutionMode, TagResolution};
+use yamalgam_core::{LoaderConfig, ResolutionMode, Severity, TagResolution};
 use yamalgam_query::emit::emit;
 use yamalgam_query::engine::{self, CompiledFilter, InputMeta, RunCtx};
 use yamalgam_query::{
-    EmitFormat, EmitOpts, Meta, ResolutionSessionKey, ResolvedInput, ResourceOrigin, YamlVal,
-    YgError, resolution_handle, resolve_documents,
+    EmitFormat, EmitOpts, Meta, QuerySchemaResolver, ResolutionSessionKey, ResolvedInput,
+    ResourceOrigin, ValidationFailure, YamlVal, YgError, resolution_handle, resolve_documents,
 };
 use yamalgam_resolve::{
-    FileRetriever, LibrebarRetriever, ResourceId, RetrieveError, RetrieverRouter,
+    FileRetriever, LibrebarRetriever, ResourceId, ResourceRetriever, RetrieveError, RetrieverRouter,
+};
+use yamalgam_schema::{
+    SchemaOptions, SchemaSession, SchemaValidator, ValidationDiagnostic, ValidationReport,
 };
 
 use crate::{QueryArgs, RefSchemeArg, SchemaArg};
@@ -28,6 +31,12 @@ struct InputRecord {
 
 struct ResolutionRuntime {
     http: Option<Arc<LibrebarRetriever>>,
+}
+
+struct QueryValidationResolver {
+    root: Option<PathBuf>,
+    session: SchemaSession,
+    validators: Mutex<HashMap<ResourceId, Arc<SchemaValidator>>>,
 }
 
 struct ResolutionSource {
@@ -121,7 +130,13 @@ pub fn cmd_query(args: &QueryArgs, options: RunOptions) -> anyhow::Result<ExitCo
         Ok(runtime) => runtime,
         Err(error) => return Ok(report(error)),
     };
-    let context = RunCtx::new(config).with_variables(variables.values);
+    let validation = match QueryValidationResolver::new(&config, &runtime) {
+        Ok(validation) => Arc::new(validation),
+        Err(error) => return Ok(report(error)),
+    };
+    let context = RunCtx::new(config)
+        .with_variables(variables.values)
+        .with_schema_resolver(validation);
 
     if args.null_input {
         match anonymous_resolution(args, &context, &runtime) {
@@ -902,6 +917,120 @@ impl ResolutionRuntime {
             }
         }
         Ok(Arc::new(router))
+    }
+}
+
+impl QueryValidationResolver {
+    fn new(config: &LoaderConfig, runtime: &ResolutionRuntime) -> Result<Self, YgError> {
+        let mut config = config.clone();
+        config.resolution.include.mode = ResolutionMode::Disabled;
+        let file_enabled = config
+            .resolution
+            .refs
+            .allow_schemes
+            .iter()
+            .any(|scheme| scheme == "file");
+        if file_enabled && config.resolution.files.root.is_none() {
+            config.resolution.files.root = Some(std::env::current_dir().map_err(|error| {
+                YgError::Runtime(format!(
+                    "failed to determine schema resolution root: {error}"
+                ))
+            })?);
+        }
+        let root = config.resolution.files.root.clone();
+        let retriever: Arc<dyn ResourceRetriever> = runtime.router(&config)?;
+        Ok(Self {
+            root,
+            session: SchemaSession::new(retriever, config),
+            validators: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn schema_id(&self, schema_ref: &str) -> Result<ResourceId, ValidationFailure> {
+        let id = ResourceId::new(schema_ref).map_err(|error| {
+            query_validation_failure("schema/invalid-reference", error.to_string())
+        })?;
+        let Some(path) = id.as_path() else {
+            return Ok(id);
+        };
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.as_ref().map_or_else(
+                || {
+                    Err(query_validation_failure(
+                        "schema/missing-base",
+                        "relative schema reference requires --resolution-root",
+                    ))
+                },
+                |root| Ok(root.join(path)),
+            )?
+        };
+        Ok(ResourceId::from_file(
+            std::fs::canonicalize(&path).unwrap_or(path),
+        ))
+    }
+
+    fn lock_validators(&self) -> MutexGuard<'_, HashMap<ResourceId, Arc<SchemaValidator>>> {
+        self.validators
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl QuerySchemaResolver for QueryValidationResolver {
+    fn validator(
+        &self,
+        schema_ref: Option<&str>,
+        input: &YamlVal,
+    ) -> Result<Arc<SchemaValidator>, ValidationFailure> {
+        let schema_ref = schema_ref
+            .or_else(|| input.get_str("$schema").and_then(YamlVal::as_str_content))
+            .ok_or_else(|| {
+                query_validation_failure(
+                    "schema/missing",
+                    "validate requires a schema argument or top-level $schema property",
+                )
+            })?;
+        let id = self.schema_id(schema_ref)?;
+        if let Some(validator) = self.lock_validators().get(&id) {
+            return Ok(Arc::clone(validator));
+        }
+
+        let document = self
+            .session
+            .load(&id)
+            .map_err(|error| query_validation_failure("schema/retrieval", error.to_string()))?;
+        let validator = Arc::new(
+            self.session
+                .compile_with_options(document, SchemaOptions::default())
+                .map_err(|error| query_validation_failure("schema/invalid", error.to_string()))?,
+        );
+        self.lock_validators().insert(id, Arc::clone(&validator));
+        Ok(validator)
+    }
+}
+
+fn query_validation_failure(
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ValidationFailure {
+    ValidationFailure {
+        report: ValidationReport {
+            valid: false,
+            diagnostics: vec![ValidationDiagnostic {
+                code: code.into(),
+                severity: Severity::Error,
+                message: message.into(),
+                keyword: String::new(),
+                instance_path: String::new(),
+                schema_path: String::new(),
+                expected: None,
+                actual: None,
+                span: None,
+                labels: Vec::new(),
+            }],
+        },
     }
 }
 
