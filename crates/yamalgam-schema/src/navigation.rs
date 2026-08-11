@@ -68,6 +68,13 @@ pub struct NavigationResource {
 struct IndexedResource {
     schema: JsonValue,
     located: Option<LocatedValue>,
+    patterns: HashMap<String, Vec<CompiledPattern>>,
+}
+
+#[derive(Clone, Debug)]
+struct CompiledPattern {
+    source: String,
+    regex: Regex,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -118,11 +125,13 @@ impl NavigationIndex {
         };
         for resource in resources {
             let uri = fragmentless_uri(&resource.uri).unwrap_or(resource.uri);
+            let patterns = compile_patterns(&resource.schema);
             index.resources.insert(
                 uri,
                 IndexedResource {
                     schema: resource.schema,
                     located: resource.located,
+                    patterns,
                 },
             );
         }
@@ -352,9 +361,13 @@ impl NavigationIndex {
                     },
                 );
             }
-            if let Some(patterns) = node.get("patternProperties").and_then(JsonValue::as_object) {
-                for pattern in patterns.keys() {
-                    if Regex::new(pattern).is_ok_and(|regex| regex.is_match(segment)) {
+            if let Some(patterns) = self
+                .resources
+                .get(&cursor.uri)
+                .and_then(|resource| resource.patterns.get(&cursor.pointer))
+            {
+                for pattern in patterns {
+                    if pattern.regex.is_match(segment) {
                         matched = true;
                         push_cursor(
                             &mut children,
@@ -363,7 +376,7 @@ impl NavigationIndex {
                                 uri: cursor.uri.clone(),
                                 pointer: append_pointer(
                                     &append_pointer(&cursor.pointer, "patternProperties"),
-                                    pattern,
+                                    &pattern.source,
                                 ),
                                 alternative: cursor.alternative,
                             },
@@ -601,6 +614,44 @@ fn append_pointer(pointer: &str, segment: &str) -> String {
     format!("{pointer}/{escaped}")
 }
 
+fn compile_patterns(schema: &JsonValue) -> HashMap<String, Vec<CompiledPattern>> {
+    let mut compiled = HashMap::new();
+    let mut pending = vec![(String::new(), schema)];
+    while let Some((pointer, node)) = pending.pop() {
+        match node {
+            JsonValue::Array(items) => {
+                for (index, value) in items.iter().enumerate().rev() {
+                    pending.push((append_pointer(&pointer, &index.to_string()), value));
+                }
+            }
+            JsonValue::Object(object) => {
+                if let Some(patterns) = object
+                    .get("patternProperties")
+                    .and_then(JsonValue::as_object)
+                {
+                    let patterns = patterns
+                        .keys()
+                        .filter_map(|source| {
+                            Regex::new(source).ok().map(|regex| CompiledPattern {
+                                source: source.clone(),
+                                regex,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if !patterns.is_empty() {
+                        compiled.insert(pointer.clone(), patterns);
+                    }
+                }
+                for (key, value) in object.iter().rev() {
+                    pending.push((append_pointer(&pointer, key), value));
+                }
+            }
+            _ => {}
+        }
+    }
+    compiled
+}
+
 fn pointer_from_scope_root<'pointer>(pointer: &'pointer str, root: &str) -> Option<&'pointer str> {
     if root.is_empty() {
         return Some(pointer);
@@ -634,5 +685,38 @@ fn render_location(uri: &str, pointer: &str) -> String {
         uri.to_owned()
     } else {
         format!("{uri}#{pointer}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::NavigationIndex;
+
+    #[test]
+    fn navigation_index_retains_compiled_property_patterns() {
+        let index = NavigationIndex::single(
+            json!({
+                "patternProperties": {
+                    "^x-": {"type": "string"},
+                    "[": {"type": "integer"}
+                }
+            }),
+            None,
+            None,
+        );
+        let resource = index
+            .resources
+            .get("urn:yamalgam:schema:root")
+            .expect("root resource is indexed");
+        let patterns = resource
+            .patterns
+            .get("")
+            .expect("root property patterns are compiled");
+
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].source, "^x-");
+        assert!(patterns[0].regex.is_match("x-name"));
     }
 }
