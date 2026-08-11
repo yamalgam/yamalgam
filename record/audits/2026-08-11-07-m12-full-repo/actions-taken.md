@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 9
+  fixed: 10
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 11
+  open: 10
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -170,5 +170,24 @@ Schema validation now rejects instances deeper than
 excessive instance path. Native equality and JSON materialization use explicit
 work stacks; a 1,024-level regression covers both fallbacks. All 43 schema
 tests, all 29 LSP tests, and workspace Clippy pass.
+
+---
+
+## 2026-08-11 — Bound schema diagnostic work
+
+**Disposition:** fixed
+
+**Addresses:** [schema-diagnostic-cap-does-not-bound-work](README.md#schema-diagnostic-cap-does-not-bound-work)
+
+**Commit:** ad9668ea3c5fb949f0b7aea4eb9b464aed9ea9e3
+
+**Author:** Codex
+
+Representation scanning and schema error iteration now stop after
+`max_diagnostics` plus one sentinel. Only the retained errors incur diagnostic
+conversion and span lookup. Limit warnings intentionally report “more than N”
+instead of claiming an exact suppressed count, and a zero limit still reports
+an invalid result through the sentinel warning. All 46 schema tests, all 29 LSP
+tests, and workspace Clippy pass.
 
 ---
