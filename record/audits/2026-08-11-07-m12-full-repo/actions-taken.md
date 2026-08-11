@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 13
+  fixed: 14
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 7
+  open: 6
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -247,5 +247,23 @@ Completion and hover path traversal reuse those automata instead of recompiling
 patterns on every lookup. A structural regression covers retained valid
 patterns and ignored invalid patterns; all 51 schema tests, all 29 LSP tests,
 and workspace Clippy pass.
+
+---
+
+## 2026-08-11 — Normalize recovery spans in one pass
+
+**Disposition:** fixed
+
+**Addresses:** [recovering-cst-span-normalization-is-quadratic](README.md#recovering-cst-span-normalization-is-quadratic)
+
+**Commit:** fec2f80fdf4bc32d6c0ef67627dd714f39e9fa60
+
+**Author:** Codex
+
+Recovery assembly now retains a running source mark and shifts each parsed
+chunk's relative spans once. The completed tree no longer recomputes every
+node and token endpoint by rescanning from byte zero. The scaling regression
+drops the 4,096-line fixture from 3.37 seconds to 15 milliseconds; all 55 CST
+tests, all 29 LSP tests, and workspace Clippy pass.
 
 ---
