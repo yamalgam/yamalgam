@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 4
+  fixed: 5
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 16
+  open: 15
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -79,5 +79,24 @@ deterministic traversal order, including examples contributed by combinators.
 Hover renders those compact JSON values as plain text, so an example-only
 schema produces useful output. The regression passes with all 41 schema tests,
 all 22 LSP tests, and workspace Clippy.
+
+---
+
+## 2026-08-11 — Make LSP request cancellation responsive
+
+**Disposition:** fixed
+
+**Addresses:** [lsp-cancellation-cannot-interrupt-work-and-retains-request-ids](README.md#lsp-cancellation-cannot-interrupt-work-and-retains-request-ids)
+
+**Commit:** 8f5e87ff44ed9d539dd5ca3f29a2fd982a06897c
+
+**Author:** Codex
+
+The receiver loop now dispatches request work to a bounded four-worker queue
+over immutable document snapshots. Active request generations carry
+cooperative cancellation flags; cancellation responds immediately, suppresses
+stale completion, and removes the exact generation so reused IDs remain clean.
+Unknown and late cancellation IDs are ignored. The lifecycle and deterministic
+held-work regressions pass with all 23 LSP tests and workspace Clippy.
 
 ---
