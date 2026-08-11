@@ -39,20 +39,23 @@ pub fn parse_to_cst_recovering_with_config<'input>(
     options: RecoveryOptions,
 ) -> RecoveryReport<'input> {
     let mut offset = 0;
+    let mut base = Mark::default();
     let mut children = Vec::new();
     let mut diagnostics = Vec::new();
 
     while offset < input.len() {
         if diagnostics.len() >= options.max_diagnostics {
-            children.push(error_element(input, offset));
+            let end = advance_mark(base, &input[offset..]);
+            children.push(error_element(input, offset, Span { start: base, end }));
+            base = end;
             break;
         }
 
         let remaining = &input[offset..];
         let probe = parse_to_cst_report_with_config(remaining, config);
         let Some(first_error) = probe.diagnostics.into_iter().next() else {
-            append_shifted_children(&mut children, probe.cst, offset);
-            offset = input.len();
+            append_shifted_children(&mut children, probe.cst, base);
+            base = advance_mark(base, remaining);
             break;
         };
 
@@ -66,74 +69,50 @@ pub fn parse_to_cst_recovering_with_config<'input>(
             .drain(..)
             .next()
             .unwrap_or(first_error);
-        diagnostics.push(shift_error(diagnostic, mark_at_offset(input, offset)));
-        append_shifted_children(&mut children, chunk_report.cst, offset);
+        diagnostics.push(shift_error(diagnostic, base));
+        append_shifted_children(&mut children, chunk_report.cst, base);
+        base = advance_mark(base, chunk);
         offset += boundary;
     }
 
-    if input.is_empty() {
-        offset = 0;
-    }
-
-    let mut cst = CstNode {
+    let cst = CstNode {
         kind: NodeKind::Stream,
         span: Span {
             start: Mark::default(),
-            end: mark_at_offset(input, offset),
+            end: base,
         },
         children,
     };
-    normalize_spans(&mut cst, input);
     RecoveryReport { cst, diagnostics }
 }
 
 fn append_shifted_children<'input>(
     target: &mut Vec<CstElement<'input>>,
     mut root: CstNode<'input>,
-    base_offset: usize,
+    base: Mark,
 ) {
     let mut children = std::mem::take(&mut root.children);
     for child in &mut children {
-        shift_element_offsets(child, base_offset);
+        shift_element_spans(child, base);
     }
     target.extend(children);
 }
 
-fn shift_element_offsets(element: &mut CstElement<'_>, base_offset: usize) {
+fn shift_element_spans(element: &mut CstElement<'_>, base: Mark) {
     match element {
         CstElement::Node(node) => {
-            node.span.start.offset += base_offset;
-            node.span.end.offset += base_offset;
+            node.span = shift_span(node.span, base);
             for child in &mut node.children {
-                shift_element_offsets(child, base_offset);
+                shift_element_spans(child, base);
             }
         }
         CstElement::Token(token) => {
-            token.span.start.offset += base_offset;
-            token.span.end.offset += base_offset;
+            token.span = shift_span(token.span, base);
         }
     }
 }
 
-fn normalize_spans(node: &mut CstNode<'_>, input: &str) {
-    node.span.start = mark_at_offset(input, node.span.start.offset);
-    node.span.end = mark_at_offset(input, node.span.end.offset);
-    for child in &mut node.children {
-        match child {
-            CstElement::Node(child) => normalize_spans(child, input),
-            CstElement::Token(token) => {
-                token.span.start = mark_at_offset(input, token.span.start.offset);
-                token.span.end = mark_at_offset(input, token.span.end.offset);
-            }
-        }
-    }
-}
-
-fn error_element(input: &str, offset: usize) -> CstElement<'_> {
-    let span = Span {
-        start: mark_at_offset(input, offset),
-        end: mark_at_offset(input, input.len()),
-    };
+fn error_element(input: &str, offset: usize, span: Span) -> CstElement<'_> {
     CstElement::Node(CstNode {
         kind: NodeKind::Error,
         span,
@@ -195,9 +174,8 @@ fn next_line_start(input: &str, start: usize) -> usize {
     }
 }
 
-fn mark_at_offset(input: &str, offset: usize) -> Mark {
-    let mut mark = Mark::default();
-    let mut characters = input[..offset].chars().peekable();
+fn advance_mark(mut mark: Mark, input: &str) -> Mark {
+    let mut characters = input.chars().peekable();
     while let Some(character) = characters.next() {
         mark.offset += character.len_utf8();
         if character == '\r' {

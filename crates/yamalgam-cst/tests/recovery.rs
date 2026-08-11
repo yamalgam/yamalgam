@@ -1,5 +1,8 @@
 #![allow(missing_docs)]
 
+use std::fmt::Write as _;
+use std::time::{Duration, Instant};
+
 use yamalgam_core::LoaderConfig;
 use yamalgam_cst::{
     CstElement, CstNode, NodeKind, RecoveryOptions, TokenKind, parse_to_cst_recovering_with_config,
@@ -39,6 +42,20 @@ fn count_nodes(root: &CstNode<'_>, expected: NodeKind) -> usize {
 
 fn recovering(input: &str) -> yamalgam_cst::RecoveryReport<'_> {
     parse_to_cst_recovering_with_config(input, &LoaderConfig::default(), RecoveryOptions::default())
+}
+
+fn recovery_duration(lines: usize) -> Duration {
+    let mut input = String::with_capacity(lines * 24);
+    for index in 0..lines {
+        writeln!(input, "key_{index}: value_{index}").unwrap();
+    }
+
+    let started = Instant::now();
+    let report = recovering(&input);
+    let elapsed = started.elapsed();
+    assert!(report.diagnostics.is_empty());
+    assert_eq!(report.cst.to_text(), input);
+    elapsed
 }
 
 #[test]
@@ -112,4 +129,18 @@ fn diagnostic_cap_wraps_the_unparsed_remainder() {
 #[test]
 fn default_recovery_cap_is_sixty_four() {
     assert_eq!(RecoveryOptions::default().max_diagnostics, 64);
+}
+
+#[test]
+fn recovery_span_normalization_scales_linearly_with_tokens() {
+    let small = recovery_duration(256);
+    let large = recovery_duration(4_096);
+    let generous_linear_bound = small
+        .saturating_mul(64)
+        .saturating_add(Duration::from_millis(500));
+
+    assert!(
+        large <= generous_linear_bound,
+        "256 lines took {small:?}, but 4,096 lines took {large:?}"
+    );
 }
