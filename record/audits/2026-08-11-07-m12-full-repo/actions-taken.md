@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 11
+  fixed: 12
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 9
+  open: 8
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -209,5 +209,24 @@ unrelated keys can retrieve concurrently within disjoint byte reservations.
 RAII cleanup releases failed or panicked work, and same-thread re-entry returns
 a typed error instead of deadlocking. All 49 schema tests, all 29 LSP tests,
 and workspace Clippy pass.
+
+---
+
+## 2026-08-11 — Share cached schema document handles
+
+**Disposition:** fixed
+
+**Addresses:** [schema-session-cache-clones-located-documents](README.md#schema-session-cache-clones-located-documents)
+
+**Commit:** d07192d8a82e4f0de53dab6e5cbba32ae0c2e4e2
+
+**Author:** Codex
+
+The schema session now stores and returns `Arc<SchemaDocument>` handles, so a
+cache hit no longer clones the semantic value and location trees. Each
+document retains its semantic digest when parsed, and the LSP validator cache
+uses that retained value without another tree walk. The shared-handle
+regression passes with all 50 schema tests, all 29 LSP tests, and workspace
+Clippy.
 
 ---
