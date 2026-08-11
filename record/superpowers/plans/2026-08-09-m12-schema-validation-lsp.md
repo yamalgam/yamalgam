@@ -1005,7 +1005,7 @@ cargo nextest run -p yamalgam-cst --test recovery
 just test-compliance
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-scanner crates/yamalgam-parser crates/yamalgam-cst
@@ -1066,14 +1066,14 @@ impl IncrementalDocument {
 }
 ```
 
-- [ ] **Step 1: Write syntax compatibility tests**
+- [x] **Step 1: Write syntax compatibility tests**
 
 For all 351 YAML Test Suite inputs, assert `SyntaxTree::text() == input` and
 the existing `parse_to_cst(input).to_text() == input`. Compare legacy and
 Rowan node/token kind sequences on valid inputs. Test `node_at_offset` at
 token boundaries and Error nodes.
 
-- [ ] **Step 2: Write edit and position tests**
+- [x] **Step 2: Write edit and position tests**
 
 Cover insertion, replacement, deletion, CRLF, emoji/non-BMP UTF-16 columns,
 out-of-range positions, reverse-ordered edit batches, edits inside one
@@ -1081,20 +1081,20 @@ document of a stream, and an edit that changes document markers. Assert one
 document subtree is reparsed when safe and the full stream is the explicit
 fallback.
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-cst --test syntax --test incremental
 ```
 
-- [ ] **Step 4: Build Rowan from the recovery event stream**
+- [x] **Step 4: Build Rowan from the recovery event stream**
 
 Map existing node/token kinds to `SyntaxKind` and feed every original text
 slice to `GreenNodeBuilder`. Keep the legacy builder intact. Expose owned
 `SyntaxNode`/`SyntaxToken` aliases and byte ranges; do not leak LSP types into
 the CST crate.
 
-- [ ] **Step 5: Reparse one document when safe**
+- [x] **Step 5: Reparse one document when safe**
 
 Apply edits to Ropey in descending byte order. Find the smallest enclosing
 Document before the edit; reparse and replace that green subtree when document
@@ -1102,7 +1102,7 @@ markers and surrounding indentation remain stable. Fall back to full-stream
 reparse for cross-document edits, marker edits, or recovery-boundary changes.
 Return `ReparseOutcome::{Document, Full}` for tests and telemetry.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 ```bash
 cargo nextest run -p yamalgam-cst --test syntax --test incremental

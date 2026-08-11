@@ -217,7 +217,7 @@ fn mark_at_offset(input: &str, offset: usize) -> Mark {
     mark
 }
 
-fn shift_mark(mark: Mark, base: Mark) -> Mark {
+const fn shift_mark(mark: Mark, base: Mark) -> Mark {
     Mark {
         offset: base.offset + mark.offset,
         line: base.line + mark.line,
@@ -229,7 +229,7 @@ fn shift_mark(mark: Mark, base: Mark) -> Mark {
     }
 }
 
-fn shift_span(span: Span, base: Mark) -> Span {
+const fn shift_span(span: Span, base: Mark) -> Span {
     Span {
         start: shift_mark(span.start, base),
         end: shift_mark(span.end, base),
