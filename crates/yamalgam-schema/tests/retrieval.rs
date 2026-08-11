@@ -2,8 +2,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Duration;
 
 use serde_json::json;
@@ -219,6 +219,137 @@ impl ResourceRetriever for SpyRetriever {
             provenance: ResourceProvenance::default(),
         })
     }
+}
+
+struct BlockingRetriever {
+    entered: mpsc::Sender<ResourceRequest>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl ResourceRetriever for BlockingRetriever {
+    fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError> {
+        self.entered.send(request.clone()).unwrap();
+        self.release.lock().unwrap().recv().unwrap();
+        Ok(RetrievedResource {
+            id: request.id.clone(),
+            bytes: b"true".to_vec(),
+            provenance: ResourceProvenance::default(),
+        })
+    }
+}
+
+#[test]
+fn unrelated_schema_loads_can_retrieve_concurrently() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut loader = config(&["memory"]);
+    loader.limits.max_input_bytes = Some(6);
+    loader.resolution.limits.max_fetched_bytes = Some(10);
+    let session = Arc::new(SchemaSession::new(
+        Arc::new(BlockingRetriever {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        }),
+        loader,
+    ));
+    let first_id = ResourceId::new("memory://schemas/first.yaml").unwrap();
+    let second_id = ResourceId::new("memory://schemas/second.yaml").unwrap();
+
+    let first_session = Arc::clone(&session);
+    let first_load_id = first_id.clone();
+    let first = std::thread::spawn(move || first_session.load(&first_load_id).is_ok());
+    let first_request = entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(first_request.id, first_id);
+    assert_eq!(first_request.max_bytes, Some(6));
+
+    let second_session = Arc::clone(&session);
+    let second_load_id = second_id.clone();
+    let second = std::thread::spawn(move || second_session.load(&second_load_id).is_ok());
+    let second_entered = entered_rx.recv_timeout(Duration::from_millis(500));
+
+    release_tx.send(()).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(first.join().unwrap());
+    assert!(second.join().unwrap());
+    let second_request = second_entered.unwrap();
+    assert_eq!(second_request.id, second_id);
+    assert_eq!(second_request.max_bytes, Some(4));
+}
+
+#[test]
+fn same_schema_loads_share_one_in_flight_retrieval() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let session = Arc::new(SchemaSession::new(
+        Arc::new(BlockingRetriever {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        }),
+        config(&["memory"]),
+    ));
+    let id = ResourceId::new("memory://schemas/shared.yaml").unwrap();
+
+    let first_session = Arc::clone(&session);
+    let first_id = id.clone();
+    let first = std::thread::spawn(move || first_session.load(&first_id).is_ok());
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap().id,
+        id
+    );
+
+    let second_session = Arc::clone(&session);
+    let second = std::thread::spawn(move || second_session.load(&id).is_ok());
+    let duplicate = entered_rx.recv_timeout(Duration::from_millis(100));
+
+    release_tx.send(()).unwrap();
+    if duplicate.is_ok() {
+        release_tx.send(()).unwrap();
+    }
+    assert!(first.join().unwrap());
+    assert!(second.join().unwrap());
+    assert!(
+        duplicate.is_err(),
+        "same-key load reached the backend twice"
+    );
+}
+
+struct ReentrantRetriever {
+    session: OnceLock<Weak<SchemaSession>>,
+}
+
+impl ResourceRetriever for ReentrantRetriever {
+    fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError> {
+        let session = self.session.get().unwrap().upgrade().unwrap();
+        assert!(matches!(
+            session.load(&request.id),
+            Err(SchemaRetrieveError::ReentrantLoad { id }) if id == request.id
+        ));
+        Ok(resource(
+            request.id.as_url().unwrap().as_str(),
+            "type: string\n",
+        ))
+    }
+}
+
+#[test]
+fn same_thread_same_key_reentrancy_is_rejected() {
+    let retriever = Arc::new(ReentrantRetriever {
+        session: OnceLock::new(),
+    });
+    let session = Arc::new(SchemaSession::new(retriever.clone(), config(&["memory"])));
+    retriever.session.set(Arc::downgrade(&session)).unwrap();
+    let (result_tx, result_rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let id = ResourceId::new("memory://schemas/reentrant.yaml").unwrap();
+        result_tx.send(session.load(&id).is_ok()).unwrap();
+    });
+
+    assert!(
+        result_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("same-key reentrancy must return instead of deadlocking")
+    );
 }
 
 // r[verify validate.policy]

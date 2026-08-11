@@ -1,7 +1,8 @@
 //! Policy-bound loading for external JSON Schema resources.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::ThreadId;
 
 use serde_json::Value as JsonValue;
 use thiserror::Error;
@@ -79,6 +80,12 @@ pub enum SchemaRetrieveError {
     /// Checked graph accounting overflowed.
     #[error("schema resource accounting overflow for {0}")]
     ResourceOverflow(&'static str),
+    /// The active retriever re-entered the same session resource on one thread.
+    #[error("schema resource load re-entered the active request: {id}")]
+    ReentrantLoad {
+        /// Redacting resource identity.
+        id: ResourceId,
+    },
 }
 
 #[derive(Default)]
@@ -86,8 +93,10 @@ struct SchemaSessionState {
     documents: HashMap<ResourceId, SchemaDocument>,
     schemas: HashMap<ResourceId, JsonValue>,
     aliases: HashMap<ResourceId, ResourceId>,
+    in_flight: HashMap<ResourceId, ThreadId>,
     edges: usize,
     fetched_bytes: usize,
+    reserved_bytes: usize,
 }
 
 /// One policy and budget scope for loading and compiling a schema graph.
@@ -95,6 +104,83 @@ pub struct SchemaSession {
     retriever: Arc<dyn ResourceRetriever>,
     config: LoaderConfig,
     state: Mutex<SchemaSessionState>,
+    state_changed: Condvar,
+}
+
+enum LoadStart<'session> {
+    Cached(SchemaDocument),
+    Pending(LoadPermit<'session>),
+}
+
+struct LoadPermit<'session> {
+    session: &'session SchemaSession,
+    requested: ResourceId,
+    key: ResourceId,
+    max_bytes: Option<usize>,
+    reserved_bytes: usize,
+    budget_before: usize,
+    session_caps_request: bool,
+    active: bool,
+}
+
+impl LoadPermit<'_> {
+    fn commit_bytes(&mut self, bytes: usize) -> Result<(), SchemaRetrieveError> {
+        let mut state = self.session.lock_state();
+        let result = (|| {
+            state.reserved_bytes = state
+                .reserved_bytes
+                .checked_sub(self.reserved_bytes)
+                .ok_or(SchemaRetrieveError::ResourceOverflow("reserved byte count"))?;
+            self.reserved_bytes = 0;
+            let fetched_bytes = state
+                .fetched_bytes
+                .checked_add(bytes)
+                .ok_or(SchemaRetrieveError::ResourceOverflow("fetched byte count"))?;
+            let committed_and_reserved = fetched_bytes
+                .checked_add(state.reserved_bytes)
+                .ok_or(SchemaRetrieveError::ResourceOverflow("fetched byte count"))?;
+            check_limit(
+                ResourceLimit::FetchedBytes,
+                committed_and_reserved,
+                self.session.config.resolution.limits.max_fetched_bytes,
+            )?;
+            state.fetched_bytes = fetched_bytes;
+            Ok(())
+        })();
+        drop(state);
+        self.session.state_changed.notify_all();
+        result
+    }
+
+    fn publish(mut self, document: SchemaDocument) -> SchemaDocument {
+        let mut state = self.session.lock_state();
+        let canonical = document.id.clone();
+        let document = state.documents.get(&canonical).cloned().unwrap_or_else(|| {
+            state.documents.insert(canonical.clone(), document.clone());
+            document
+        });
+        if canonical != self.requested {
+            state.aliases.insert(self.requested.clone(), canonical);
+        }
+        state.in_flight.remove(&self.key);
+        self.active = false;
+        drop(state);
+        self.session.state_changed.notify_all();
+        document
+    }
+}
+
+impl Drop for LoadPermit<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut state = self.session.lock_state();
+        state.reserved_bytes = state.reserved_bytes.saturating_sub(self.reserved_bytes);
+        state.in_flight.remove(&self.key);
+        drop(state);
+        self.session.state_changed.notify_all();
+    }
 }
 
 impl SchemaSession {
@@ -105,6 +191,7 @@ impl SchemaSession {
             retriever,
             config,
             state: Mutex::new(SchemaSessionState::default()),
+            state_changed: Condvar::new(),
         }
     }
 
@@ -121,8 +208,7 @@ impl SchemaSession {
     /// Returns a typed policy, limit, retrieval, encoding, or document error.
     pub fn load(&self, id: &ResourceId) -> Result<SchemaDocument, SchemaRetrieveError> {
         self.enforce_policy(id, None)?;
-        let mut state = self.lock_state();
-        self.load_document(&mut state, id)
+        self.load_document(id)
     }
 
     /// Compile a root document and every reachable external schema.
@@ -235,8 +321,9 @@ impl SchemaSession {
                         depth,
                         self.config.resolution.limits.max_depth,
                     )?;
+                    drop(state);
                     self.enforce_policy(&target, Some(&work.id))?;
-                    self.load_document(&mut state, &target)?
+                    self.load_document(&target)?
                 };
                 if work.ancestors.contains(&document.id) {
                     continue;
@@ -264,59 +351,36 @@ impl SchemaSession {
         Ok(())
     }
 
-    fn load_document(
-        &self,
-        state: &mut SchemaSessionState,
-        requested: &ResourceId,
-    ) -> Result<SchemaDocument, SchemaRetrieveError> {
-        let canonical = state.aliases.get(requested).unwrap_or(requested).clone();
-        if let Some(document) = state.documents.get(&canonical) {
-            return Ok(document.clone());
-        }
-
-        let remaining = self
-            .config
-            .resolution
-            .limits
-            .max_fetched_bytes
-            .map(|maximum| maximum.saturating_sub(state.fetched_bytes));
-        let max_bytes = match (self.config.limits.max_input_bytes, remaining) {
-            (Some(input), Some(session)) => Some(input.min(session)),
-            (Some(input), None) => Some(input),
-            (None, Some(session)) => Some(session),
-            (None, None) => None,
+    fn load_document(&self, requested: &ResourceId) -> Result<SchemaDocument, SchemaRetrieveError> {
+        let mut load = match self.begin_load(requested)? {
+            LoadStart::Cached(document) => return Ok(document),
+            LoadStart::Pending(load) => load,
         };
-        let session_caps_request = remaining.is_some_and(|session| {
-            self.config
-                .limits
-                .max_input_bytes
-                .is_none_or(|input| session <= input)
-        });
         let retrieved = match self.retriever.retrieve(&ResourceRequest {
             id: requested.clone(),
-            max_bytes,
+            max_bytes: load.max_bytes,
         }) {
             Ok(resource) => resource,
-            Err(RetrieveError::TooLarge { observed, .. }) => {
-                let (limit, observed, maximum) = if session_caps_request {
+            Err(source @ RetrieveError::TooLarge { observed, .. }) => {
+                let (limit, observed, maximum) = if load.session_caps_request {
                     let maximum = self
                         .config
                         .resolution
                         .limits
                         .max_fetched_bytes
                         .expect("session request cap has a maximum");
-                    let observed = state
-                        .fetched_bytes
+                    let observed = load
+                        .budget_before
                         .checked_add(observed)
                         .ok_or(SchemaRetrieveError::ResourceOverflow("fetched byte count"))?;
                     (ResourceLimit::FetchedBytes, observed, maximum)
-                } else {
-                    let maximum = self
-                        .config
-                        .limits
-                        .max_input_bytes
-                        .expect("input request cap has a maximum");
+                } else if let Some(maximum) = self.config.limits.max_input_bytes {
                     (ResourceLimit::InputBytes, observed, maximum)
+                } else {
+                    return Err(SchemaRetrieveError::Backend {
+                        id: requested.clone(),
+                        source,
+                    });
                 };
                 return Err(LimitExceeded::new(limit, observed, maximum).into());
             }
@@ -328,21 +392,9 @@ impl SchemaSession {
             }
         };
         self.config.limits.check_input_size(retrieved.bytes.len())?;
-        let next_fetched = state
-            .fetched_bytes
-            .checked_add(retrieved.bytes.len())
-            .ok_or(SchemaRetrieveError::ResourceOverflow("fetched byte count"))?;
-        check_limit(
-            ResourceLimit::FetchedBytes,
-            next_fetched,
-            self.config.resolution.limits.max_fetched_bytes,
-        )?;
-        state.fetched_bytes = next_fetched;
+        load.commit_bytes(retrieved.bytes.len())?;
 
         let canonical = retrieved.id;
-        if canonical != *requested {
-            state.aliases.insert(requested.clone(), canonical.clone());
-        }
         let text = std::str::from_utf8(&retrieved.bytes).map_err(|source| {
             SchemaRetrieveError::InvalidUtf8 {
                 id: canonical.clone(),
@@ -358,11 +410,81 @@ impl SchemaSession {
             message: error.to_string(),
         })?;
         let document = SchemaDocument {
-            id: canonical.clone(),
+            id: canonical,
             document,
         };
-        state.documents.insert(canonical, document.clone());
-        Ok(document)
+        Ok(load.publish(document))
+    }
+
+    fn begin_load(&self, requested: &ResourceId) -> Result<LoadStart<'_>, SchemaRetrieveError> {
+        let owner = std::thread::current().id();
+        let mut state = self.lock_state();
+        loop {
+            let key = state.aliases.get(requested).unwrap_or(requested).clone();
+            if let Some(document) = state.documents.get(&key) {
+                let document = document.clone();
+                drop(state);
+                return Ok(LoadStart::Cached(document));
+            }
+            if let Some(active_owner) = state.in_flight.get(&key) {
+                if *active_owner == owner {
+                    drop(state);
+                    return Err(SchemaRetrieveError::ReentrantLoad { id: key });
+                }
+                state = self.wait_state(state);
+                continue;
+            }
+
+            let input_limit = self.config.limits.max_input_bytes;
+            let (max_bytes, reserved_bytes, budget_before, session_caps_request) =
+                if let Some(maximum) = self.config.resolution.limits.max_fetched_bytes {
+                    let committed_remaining = maximum.saturating_sub(state.fetched_bytes);
+                    let available = committed_remaining.saturating_sub(state.reserved_bytes);
+                    if committed_remaining > 0 && available == 0 {
+                        if state
+                            .in_flight
+                            .values()
+                            .any(|active_owner| *active_owner == owner)
+                        {
+                            return Err(SchemaRetrieveError::ReentrantLoad {
+                                id: requested.clone(),
+                            });
+                        }
+                        state = self.wait_state(state);
+                        continue;
+                    }
+                    let budget_before = state
+                        .fetched_bytes
+                        .checked_add(state.reserved_bytes)
+                        .ok_or(SchemaRetrieveError::ResourceOverflow("fetched byte count"))?;
+                    let max_bytes = input_limit.map_or(available, |input| input.min(available));
+                    let reserved_bytes = state
+                        .reserved_bytes
+                        .checked_add(max_bytes)
+                        .ok_or(SchemaRetrieveError::ResourceOverflow("reserved byte count"))?;
+                    state.reserved_bytes = reserved_bytes;
+                    (
+                        Some(max_bytes),
+                        max_bytes,
+                        budget_before,
+                        input_limit.is_none_or(|input| available <= input),
+                    )
+                } else {
+                    (input_limit, 0, state.fetched_bytes, false)
+                };
+            state.in_flight.insert(key.clone(), owner);
+            drop(state);
+            return Ok(LoadStart::Pending(LoadPermit {
+                session: self,
+                requested: requested.clone(),
+                key,
+                max_bytes,
+                reserved_bytes,
+                budget_before,
+                session_caps_request,
+                active: true,
+            }));
+        }
     }
 
     // r[impl validate.policy]
@@ -399,6 +521,15 @@ impl SchemaSession {
     fn lock_state(&self) -> MutexGuard<'_, SchemaSessionState> {
         self.state
             .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn wait_state<'state>(
+        &self,
+        state: MutexGuard<'state, SchemaSessionState>,
+    ) -> MutexGuard<'state, SchemaSessionState> {
+        self.state_changed
+            .wait(state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
