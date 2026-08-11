@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 10
+  fixed: 11
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 10
+  open: 9
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -189,5 +189,25 @@ conversion and span lookup. Limit warnings intentionally report “more than N�
 instead of claiming an exact suppressed count, and a zero limit still reports
 an invalid result through the sentinel warning. All 46 schema tests, all 29 LSP
 tests, and workspace Clippy pass.
+
+---
+
+## 2026-08-11 — Release the schema session lock during loads
+
+**Disposition:** fixed
+
+**Addresses:** [schema-session-holds-global-lock-across-retrieval](README.md#schema-session-holds-global-lock-across-retrieval)
+
+**Commit:** 60c143d8a6df70f1720e1a173ec0263d2ee2e2d3
+
+**Author:** Codex
+
+Schema loads now reserve per-key ownership and aggregate byte capacity under
+the session mutex, then release it for backend retrieval, UTF-8 decoding, and
+composition. Concurrent same-key callers share one published document;
+unrelated keys can retrieve concurrently within disjoint byte reservations.
+RAII cleanup releases failed or panicked work, and same-thread re-entry returns
+a typed error instead of deadlocking. All 49 schema tests, all 29 LSP tests,
+and workspace Clippy pass.
 
 ---
