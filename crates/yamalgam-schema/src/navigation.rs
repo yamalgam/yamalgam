@@ -30,8 +30,12 @@ pub struct SchemaContext {
     pub description: Option<String>,
     /// De-duplicated JSON Schema types in source order.
     pub types: Vec<String>,
+    /// Compact JSON representation of the first applicable default.
+    pub default: Option<String>,
     /// Compact JSON representations of allowed enum values.
     pub enum_values: Vec<String>,
+    /// Whether an applicable schema marks this value as deprecated.
+    pub deprecated: bool,
     /// Property candidates sorted required-first, then by source order.
     pub properties: Vec<PropertyCandidate>,
     /// Canonical schema locations contributing to this context.
@@ -401,6 +405,13 @@ impl NavigationIndex {
             if context.description.is_none() {
                 context.description = annotation(node, "description");
             }
+            if context.default.is_none() {
+                context.default = node.get("default").map(compact);
+            }
+            context.deprecated |= node
+                .get("deprecated")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
             collect_types(node, &mut context.types, &mut seen_types);
             if let Some(values) = node.get("enum").and_then(JsonValue::as_array) {
                 for value in values {

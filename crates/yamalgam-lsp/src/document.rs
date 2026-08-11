@@ -92,7 +92,13 @@ impl DocumentState {
             associations: config.schema_associations.clone(),
             schema_store: None,
         };
-        match selector.select(&self.syntax.text(), containing.as_ref(), None) {
+        let text = self.syntax.text();
+        let selection_text = if text.trim().is_empty() {
+            "null\n"
+        } else {
+            &text
+        };
+        match selector.select(selection_text, containing.as_ref(), None) {
             Ok(assignments) => {
                 self.selected_schemas = assignments.iter().flatten().cloned().collect();
                 self.schema_assignments = assignments;
@@ -114,6 +120,13 @@ impl DocumentState {
 
     pub(crate) fn schema_selection_error(&self) -> Option<&str> {
         self.schema_selection_error.as_deref()
+    }
+
+    /// Convert one negotiated UTF-16 position to an internal byte offset.
+    #[must_use]
+    pub fn offset_at(&self, position: Position) -> Option<usize> {
+        self.syntax
+            .utf16_to_byte_offset(position.line, position.character)
     }
 }
 

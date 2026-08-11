@@ -283,7 +283,7 @@ fn hash_value(value: &yamalgam_core::Value, hasher: &mut impl Hasher) {
     }
 }
 
-fn redacted_schema_uri(uri: &str) -> String {
+pub(super) fn redacted_schema_uri(uri: &str) -> String {
     schema_resource_id(uri).map_or_else(|_| "<invalid-schema-uri>".to_owned(), |id| id.to_string())
 }
 

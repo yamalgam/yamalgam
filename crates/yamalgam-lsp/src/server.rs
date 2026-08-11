@@ -5,8 +5,9 @@ use std::io;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CancelParams, CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, HoverProviderCapability, InitializeResult, NumberOrString, OneOf,
+    CancelParams, CompletionOptions, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    HoverParams, HoverProviderCapability, InitializeResult, NumberOrString, OneOf,
     PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities, ServerInfo,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Uri,
 };
@@ -14,7 +15,7 @@ use thiserror::Error;
 use tracing::warn;
 use yamalgam_core::LoaderConfig;
 
-use crate::{DocumentState, SchemaWorkspace, ServerConfig, document_diagnostics};
+use crate::{DocumentState, SchemaWorkspace, ServerConfig, complete, document_diagnostics, hover};
 
 /// Run the language server over standard input and standard output.
 pub fn run_stdio() -> Result<(), ServerError> {
@@ -115,9 +116,9 @@ impl Server {
         }
 
         let response = match request.method.as_str() {
-            "textDocument/completion" | "textDocument/hover" | "textDocument/definition" => {
-                Response::new_ok(request.id, serde_json::Value::Null)
-            }
+            "textDocument/completion" => self.completion_response(request),
+            "textDocument/hover" => self.hover_response(request),
+            "textDocument/definition" => Response::new_ok(request.id, serde_json::Value::Null),
             _ => Response::new_err(
                 request.id,
                 ErrorCode::MethodNotFound as i32,
@@ -125,6 +126,36 @@ impl Server {
             ),
         };
         send_response(connection, response)
+    }
+
+    fn completion_response(&self, request: Request) -> Response {
+        let id = request.id;
+        let params = match serde_json::from_value::<CompletionParams>(request.params) {
+            Ok(params) => params,
+            Err(error) => return invalid_params(id, error),
+        };
+        let position = params.text_document_position.position;
+        let uri = params.text_document_position.text_document.uri;
+        let response = self.documents.get(&uri).map_or_else(
+            || CompletionResponse::Array(Vec::new()),
+            |document| complete(document, position, &self.schemas),
+        );
+        serialized_response(id, response)
+    }
+
+    fn hover_response(&self, request: Request) -> Response {
+        let id = request.id;
+        let params = match serde_json::from_value::<HoverParams>(request.params) {
+            Ok(params) => params,
+            Err(error) => return invalid_params(id, error),
+        };
+        let position = params.text_document_position_params.position;
+        let uri = params.text_document_position_params.text_document.uri;
+        let response = self
+            .documents
+            .get(&uri)
+            .and_then(|document| hover(document, position, &self.schemas));
+        serialized_response(id, response)
     }
 
     fn handle_notification(
@@ -255,6 +286,25 @@ fn send_notification(
         .sender
         .send(Message::Notification(notification))
         .map_err(|error| ServerError::Transport(error.to_string()))
+}
+
+fn serialized_response(id: RequestId, value: impl serde::Serialize) -> Response {
+    match serde_json::to_value(value) {
+        Ok(value) => Response::new_ok(id, value),
+        Err(error) => Response::new_err(
+            id,
+            ErrorCode::InternalError as i32,
+            format!("response serialization failed: {error}"),
+        ),
+    }
+}
+
+fn invalid_params(id: RequestId, error: serde_json::Error) -> Response {
+    Response::new_err(
+        id,
+        ErrorCode::InvalidParams as i32,
+        format!("invalid request parameters: {error}"),
+    )
 }
 
 /// Language-server startup or transport failure.
