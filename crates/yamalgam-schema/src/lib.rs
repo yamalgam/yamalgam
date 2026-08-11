@@ -2,9 +2,10 @@
 
 #![deny(unsafe_code)]
 
-// Task 3 wires the private representation into the public validator API. Keep
-// Task 1 independently verifiable without exposing implementation types.
-#[allow(dead_code, reason = "the validator consumes this adapter in Task 3")]
+pub(crate) mod diagnostic;
 mod preflight;
-#[allow(dead_code, reason = "the validator consumes this adapter in Task 3")]
+mod schema;
 mod value;
+
+pub use diagnostic::{ValidationDiagnostic, ValidationReport};
+pub use schema::{SchemaError, SchemaOptions, SchemaRetrieveError, SchemaValidator};

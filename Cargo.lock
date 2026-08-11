@@ -3158,6 +3158,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "yamalgam-compose",
  "yamalgam-core",
 ]
 

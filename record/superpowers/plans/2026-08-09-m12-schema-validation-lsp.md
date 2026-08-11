@@ -401,7 +401,7 @@ impl SchemaValidator {
 }
 ```
 
-- [ ] **Step 1: Write compilation and validation tests**
+- [x] **Step 1: Write compilation and validation tests**
 
 Cover Boolean schemas, `type`, `required`, `properties`, `items`,
 `prefixItems`, `enum`, `const`, numeric bounds, string length, `pattern`,
@@ -420,13 +420,13 @@ keys and projected-name collisions stop validation before the schema engine.
 Keep the adapted upstream cases and provenance in `yaml_schema_compat.rs` so
 their source remains obvious without exposing the private adapter types.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-schema validation
 ```
 
-- [ ] **Step 3: Convert only schema documents to JSON-compatible data**
+- [x] **Step 3: Convert only schema documents to JSON-compatible data**
 
 Write a checked, iterative `schema_value_to_json` conversion. Return:
 
@@ -446,7 +446,7 @@ Compile through `jsonschema::options_for::<YamlJson>()` with
 `.should_validate_formats(options.validate_formats)`, and
 `.with_pattern_options(PatternOptions::regex())`.
 
-- [ ] **Step 4: Prepare YAML-only instance shapes**
+- [x] **Step 4: Prepare YAML-only instance shapes**
 
 Walk the instance iteratively with `PreparedInstance::new` before calling
 `jsonschema`. Borrow string keys and record canonical names for null, Boolean,
@@ -459,7 +459,7 @@ types and spans for diagnostics and future YAML-specific policy. Carry mapping
 entry ordinals in each representation error so `validate_located` can reach
 keys that an RFC 6901 pointer cannot name or names ambiguously.
 
-- [ ] **Step 5: Verify GREEN and dependency policy**
+- [x] **Step 5: Verify GREEN and dependency policy**
 
 ```bash
 just test-schema validation
@@ -467,7 +467,7 @@ just deny
 just clippy
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-schema Cargo.lock
