@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use lsp_types::{GotoDefinitionResponse, Position, Uri};
 use yamalgam_core::{LoaderConfig, ResolutionMode};
-use yamalgam_lsp::{DocumentState, SchemaWorkspace, ServerConfig, WorkspaceState, definition};
+use yamalgam_lsp::{
+    DocumentState, SchemaWorkspace, ServerConfig, WorkspaceResourceError, WorkspaceState,
+    definition,
+};
 use yamalgam_resolve::{MemoryRetriever, ResourceId, ResourceProvenance, RetrievedResource};
 use yamalgam_schema::SchemaAssociation;
 
@@ -39,7 +42,11 @@ fn definition_navigates_scalar_includes_and_data_ref_pointers() {
         "file:///workspace/root.yaml",
         "value: !include child.yaml\n",
     );
-    let include_link = link(definition(&include, Position::new(0, 18), &workspace).unwrap());
+    let include_link = link(
+        definition(&include, Position::new(0, 18), &workspace)
+            .unwrap()
+            .unwrap(),
+    );
     assert_eq!(
         include_link.target_uri.as_str(),
         "file:///workspace/child.yaml"
@@ -61,7 +68,11 @@ fn definition_navigates_scalar_includes_and_data_ref_pointers() {
         "file:///workspace/root.yaml",
         "selected:\n  $ref: child.yaml#/nested/value\n",
     );
-    let data_link = link(definition(&data_ref, Position::new(1, 17), &workspace).unwrap());
+    let data_link = link(
+        definition(&data_ref, Position::new(1, 17), &workspace)
+            .unwrap()
+            .unwrap(),
+    );
     assert_eq!(
         data_link.target_uri.as_str(),
         "file:///workspace/child.yaml"
@@ -77,7 +88,11 @@ fn definition_handles_same_document_refs_and_missing_or_denied_targets() {
         "file:///workspace/root.yaml",
         "target:\n  value: here\nselected:\n  $ref: '#/target/value'\n",
     );
-    let same_link = link(definition(&same, Position::new(3, 15), &workspace).unwrap());
+    let same_link = link(
+        definition(&same, Position::new(3, 15), &workspace)
+            .unwrap()
+            .unwrap(),
+    );
     assert_eq!(same_link.target_uri, same.uri);
     assert_eq!(same_link.target_selection_range.start, Position::new(1, 9));
 
@@ -85,7 +100,31 @@ fn definition_handles_same_document_refs_and_missing_or_denied_targets() {
         "file:///workspace/root.yaml",
         "selected: {$ref: missing.yaml#/value}\n",
     );
-    assert!(definition(&missing, Position::new(0, 25), &workspace).is_none());
+    assert!(
+        definition(&missing, Position::new(0, 25), &workspace)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn definition_returns_typed_workspace_retrieval_failures() {
+    let root = std::env::temp_dir();
+    let root_uri = format!("file://{}", root.display())
+        .trim_end_matches('/')
+        .to_owned();
+    let missing = format!("yamalgam-definition-missing-{}.yaml", std::process::id());
+    let source = document(
+        &format!("{root_uri}/source.yaml"),
+        &format!("selected: {{$ref: {missing}#/value}}\n"),
+    );
+    let schemas = Arc::new(SchemaWorkspace::empty(LoaderConfig::default()));
+    let workspace = WorkspaceState::new(schemas, vec![root]);
+
+    let error = definition(&source, Position::new(0, 20), &workspace)
+        .expect_err("missing target inside a workspace root is a retrieval failure");
+
+    assert!(matches!(error, WorkspaceResourceError::Retrieval(_)));
 }
 
 #[test]
@@ -117,7 +156,11 @@ fn definition_uses_the_schema_navigation_index_for_schema_refs() {
     };
     let mut document = document(uri, schema);
     document.select_schemas(&server).unwrap();
-    let link = link(definition(&document, Position::new(2, 18), &workspace).unwrap());
+    let link = link(
+        definition(&document, Position::new(2, 18), &workspace)
+            .unwrap()
+            .unwrap(),
+    );
     assert_eq!(link.target_uri.as_str(), uri);
     assert_eq!(link.target_selection_range.start.line, 1);
 }
@@ -153,7 +196,11 @@ fn definition_keeps_a_leading_document_marker_in_document_zero() {
     );
     document.select_schemas(&server).unwrap();
 
-    let link = link(definition(&document, Position::new(1, 16), &workspace).unwrap());
+    let link = link(
+        definition(&document, Position::new(1, 16), &workspace)
+            .unwrap()
+            .unwrap(),
+    );
 
     assert_eq!(link.target_uri.as_str(), uri);
 }

@@ -183,6 +183,93 @@ fn protocol_lifecycle_and_capabilities_work_over_an_in_memory_connection() {
 }
 
 #[test]
+fn protocol_definition_surfaces_resource_failures_without_leaking_paths() {
+    let (server, client) = Connection::memory();
+    let worker = std::thread::spawn(move || run(server));
+    let root = std::env::temp_dir();
+    let root_uri = format!("file://{}", root.display())
+        .trim_end_matches('/')
+        .to_owned();
+    let missing = format!("yamalgam-missing-{}.yaml", std::process::id());
+    let document_uri = format!("{root_uri}/definition-source.yaml");
+    let text = format!("selected: {{$ref: {missing}#/value}}\n");
+
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: RequestId::from(1),
+            method: "initialize".to_string(),
+            params: json!({
+                "processId": null,
+                "rootUri": root_uri,
+                "capabilities": {}
+            }),
+        }))
+        .unwrap();
+    assert!(response(&client, 1).response_result.is_ok());
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "initialized".to_string(),
+            params: json!({}),
+        }))
+        .unwrap();
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "textDocument/didOpen".to_string(),
+            params: json!({
+                "textDocument": {
+                    "uri": document_uri,
+                    "languageId": "yaml",
+                    "version": 1,
+                    "text": text
+                }
+            }),
+        }))
+        .unwrap();
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: RequestId::from(2),
+            method: "textDocument/definition".to_string(),
+            params: json!({
+                "textDocument": { "uri": document_uri },
+                "position": { "line": 0, "character": 20 }
+            }),
+        }))
+        .unwrap();
+
+    let error = response(&client, 2)
+        .response_result
+        .expect_err("missing workspace target should be a request failure");
+    assert_eq!(error.code, ErrorCode::RequestFailed as i32);
+    assert_eq!(error.message, "definition target could not be read");
+    assert!(!error.message.contains(&missing));
+
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: RequestId::from(3),
+            method: "shutdown".to_string(),
+            params: serde_json::Value::Null,
+        }))
+        .unwrap();
+    assert!(response(&client, 3).response_result.is_ok());
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "exit".to_string(),
+            params: serde_json::Value::Null,
+        }))
+        .unwrap();
+    worker
+        .join()
+        .expect("server thread should not panic")
+        .unwrap();
+}
+
+#[test]
 fn protocol_document_state_applies_changes_and_discards_stale_versions() {
     let config = LoaderConfig::default();
     let uri = Uri::from_str("file:///tmp/example.yaml").unwrap();

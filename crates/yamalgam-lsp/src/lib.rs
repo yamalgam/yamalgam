@@ -11,7 +11,8 @@ mod server;
 pub use completion::complete;
 pub use config::ServerConfig;
 pub use definition::{
-    NavigationIndex, SchemaReferenceSite, WorkspaceState, definition, navigation_index,
+    NavigationIndex, SchemaReferenceSite, WorkspaceResourceError, WorkspaceState, definition,
+    navigation_index,
 };
 pub use diagnostics::{SchemaWorkspace, document_diagnostics};
 pub use document::{DocumentError, DocumentState};

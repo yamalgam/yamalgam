@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use lsp_types::{GotoDefinitionResponse, LocationLink, Position, Range, Uri};
+use thiserror::Error;
 use yamalgam_core::{FilePolicy, LoaderConfig, Mark, ResolutionCapability, Span};
 use yamalgam_resolve::{
     FileRetriever, Fragment, ResolutionEdge, ResolutionErrorCategory, ResolutionOutcome,
@@ -41,6 +43,23 @@ pub struct WorkspaceState {
     resources: HashMap<ResourceId, (Uri, String)>,
 }
 
+/// Failure while loading a definition target from the configured workspace.
+#[derive(Debug, Error)]
+pub enum WorkspaceResourceError {
+    /// The target was outside every configured workspace capability root.
+    #[error("definition target is outside configured workspace roots")]
+    OutsideWorkspace(ResourceId),
+    /// The capability-scoped retriever rejected or could not read the target.
+    #[error("definition target retrieval failed")]
+    Retrieval(#[from] yamalgam_resolve::RetrieveError),
+    /// The target bytes were not valid UTF-8 source text.
+    #[error("definition target is not valid UTF-8")]
+    InvalidUtf8(#[from] FromUtf8Error),
+    /// The retrieved target could not be represented as an LSP URI.
+    #[error("definition target URI is invalid")]
+    InvalidUri(ResourceId),
+}
+
 impl WorkspaceState {
     /// Create a local-only workspace over shared schema state.
     #[must_use]
@@ -64,32 +83,35 @@ impl WorkspaceState {
         self.insert_resource(document.uri.clone(), document.syntax.text());
     }
 
-    fn resource(&self, id: &ResourceId) -> Option<(Uri, String)> {
+    fn resource(&self, id: &ResourceId) -> Result<Option<(Uri, String)>, WorkspaceResourceError> {
         if let Some((uri, text)) = self.resources.get(id) {
-            return Some((uri.clone(), text.clone()));
+            return Ok(Some((uri.clone(), text.clone())));
         }
-        let path = id.as_path()?;
-        for root in &self.roots {
-            if !path.starts_with(root) {
-                continue;
-            }
-            let retriever = FileRetriever::open(&FilePolicy {
-                root: Some(root.clone()),
-                allow: Vec::new(),
-                deny: Vec::new(),
-                follow_symlinks: false,
-            })
-            .ok()?;
-            let resource = retriever
-                .retrieve(&ResourceRequest {
-                    id: id.clone(),
-                    max_bytes: Some(16 * 1024 * 1024),
-                })
-                .ok()?;
-            let text = String::from_utf8(resource.bytes).ok()?;
-            return resource_uri(&resource.id).map(|uri| (uri, text));
-        }
-        None
+        let Some(path) = id.as_path() else {
+            return Ok(None);
+        };
+        let Some(root) = self.roots.iter().find(|root| path.starts_with(root)) else {
+            return if self.roots.is_empty() {
+                Ok(None)
+            } else {
+                Err(WorkspaceResourceError::OutsideWorkspace(id.clone()))
+            };
+        };
+        let retriever = FileRetriever::open(&FilePolicy {
+            root: Some(root.clone()),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            follow_symlinks: false,
+        })?;
+        let resource = retriever.retrieve(&ResourceRequest {
+            id: id.clone(),
+            max_bytes: Some(16 * 1024 * 1024),
+        })?;
+        let resource_id = resource.id.clone();
+        let text = String::from_utf8(resource.bytes)?;
+        let uri =
+            resource_uri(&resource_id).ok_or(WorkspaceResourceError::InvalidUri(resource_id))?;
+        Ok(Some((uri, text)))
     }
 }
 
@@ -120,7 +142,7 @@ pub fn navigation_index(document: &DocumentState, workspace: &WorkspaceState) ->
         let (child, fragment, outcome) = match resolved {
             Some(resolved) => {
                 let available = base.as_ref() == Some(&resolved.resource)
-                    || workspace.resource(&resolved.resource).is_some();
+                    || matches!(workspace.resource(&resolved.resource), Ok(Some(_)));
                 (
                     Some(resolved.resource),
                     resolved.fragment,
@@ -155,39 +177,64 @@ pub fn navigation_index(document: &DocumentState, workspace: &WorkspaceState) ->
 }
 
 /// Navigate the reference under one UTF-16 cursor position.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a typed workspace resource error when a referenced target exists
+/// within the navigation policy but cannot be read or decoded.
 pub fn definition(
     document: &DocumentState,
     position: Position,
     workspace: &WorkspaceState,
-) -> Option<GotoDefinitionResponse> {
-    let offset = document.offset_at(position)?;
+) -> Result<Option<GotoDefinitionResponse>, WorkspaceResourceError> {
+    let Some(offset) = document.offset_at(position) else {
+        return Ok(None);
+    };
     let text = document.syntax.text();
-    let site = reference_sites(document, &text)
+    let Some(site) = reference_sites(document, &text)
         .into_iter()
-        .find(|site| site.start <= offset && offset <= site.end)?;
-    let origin = byte_range(document, site.start, site.end)?;
+        .find(|site| site.start <= offset && offset <= site.end)
+    else {
+        return Ok(None);
+    };
+    let Some(origin) = byte_range(document, site.start, site.end) else {
+        return Ok(None);
+    };
 
     if site.kind == ReferenceKind::DataRef
         && let Some(selected) = document.schema_for_document(site.document_index)
         && let Ok(validator) = workspace.schemas.validator(selected, 64)
         && let Some(location) = validator.definition_for_ref(&selected.uri, &site.requested)
     {
-        let uri = Uri::from_str(&location.uri).ok()?;
-        let range = location.span.map_or_else(zero_range, |span| {
-            schema_location_id(&location.uri)
-                .and_then(|id| workspace.resource(&id))
-                .map_or_else(zero_range, |(_, target)| span_range(&target, span))
-        });
-        return Some(link(origin, uri, range, range));
+        let Some(uri) = Uri::from_str(&location.uri).ok() else {
+            return Ok(None);
+        };
+        let range = if let Some(span) = location.span {
+            let target = if let Some(id) = schema_location_id(&location.uri) {
+                workspace.resource(&id)?
+            } else {
+                None
+            };
+            target.map_or_else(zero_range, |(_, target)| span_range(&target, span))
+        } else {
+            zero_range()
+        };
+        return Ok(Some(link(origin, uri, range, range)));
     }
 
-    let base = ResourceId::new(document.uri.as_str()).ok()?;
-    let resolved = base.resolve(&site.requested).ok()?;
+    let Some(base) = ResourceId::new(document.uri.as_str()).ok() else {
+        return Ok(None);
+    };
+    let Some(resolved) = base.resolve(&site.requested).ok() else {
+        return Ok(None);
+    };
     let (target_uri, target_text) = if resolved.resource == base {
         (document.uri.clone(), text)
     } else {
-        workspace.resource(&resolved.resource)?
+        let Some(resource) = workspace.resource(&resolved.resource)? else {
+            return Ok(None);
+        };
+        resource
     };
     let target_range = full_range(&target_text);
     let selection = match resolved.fragment {
@@ -196,16 +243,23 @@ pub fn definition(
             let pointer = pointer.tokens().iter().fold(String::new(), |path, token| {
                 format!("{path}/{}", token.replace('~', "~0").replace('/', "~1"))
             });
-            let located = yamalgam_compose::from_str_located_with_config(
+            let Some(located) = yamalgam_compose::from_str_located_with_config(
                 &target_text,
                 &LoaderConfig::default(),
             )
-            .ok()?;
-            let span = located.first()?.span_at_pointer(&pointer)?;
+            .ok() else {
+                return Ok(None);
+            };
+            let Some(span) = located
+                .first()
+                .and_then(|document| document.span_at_pointer(&pointer))
+            else {
+                return Ok(None);
+            };
             span_range(&target_text, span)
         }
     };
-    Some(link(origin, target_uri, target_range, selection))
+    Ok(Some(link(origin, target_uri, target_range, selection)))
 }
 
 fn link(

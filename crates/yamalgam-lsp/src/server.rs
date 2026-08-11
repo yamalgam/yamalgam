@@ -225,11 +225,20 @@ impl Server {
             }
             workspace.insert_document(document);
         }
-        let response = self
-            .documents
-            .get(&uri)
-            .and_then(|document| definition(document, position, &workspace));
-        serialized_response(id, response)
+        let Some(document) = self.documents.get(&uri) else {
+            return serialized_response(id, serde_json::Value::Null);
+        };
+        match definition(document, position, &workspace) {
+            Ok(response) => serialized_response(id, response),
+            Err(error) => {
+                warn!(%error, "definition target lookup failed");
+                Response::new_err(
+                    id,
+                    ErrorCode::RequestFailed as i32,
+                    "definition target could not be read".to_string(),
+                )
+            }
+        }
     }
 
     fn handle_notification(
