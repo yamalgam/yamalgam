@@ -732,19 +732,19 @@ impl SchemaValidator {
 }
 ```
 
-- [ ] **Step 1: Write navigator tests**
+- [x] **Step 1: Write navigator tests**
 
 Cover property and item traversal, `prefixItems`, `patternProperties`,
 `additionalProperties`, all three combinators, conditionals, local and remote
 `$ref`, recursive refs, missing properties, and deterministic de-duplication.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-schema navigation
 ```
 
-- [ ] **Step 3: Index loaded schema resources**
+- [x] **Step 3: Index loaded schema resources**
 
 Retain the located root and every retrieved schema document in
 `SchemaValidator`. Index each `$id`, `$anchor`, `$dynamicAnchor`, and JSON
@@ -752,21 +752,21 @@ Pointer location together with its resource identity and source span.
 Navigate instance paths without rerunning validation. Follow applicators with
 a visited `(schema URI, pointer, instance path)` set so recursive schemas stop.
 
-- [ ] **Step 4: Produce completion and hover data**
+- [x] **Step 4: Produce completion and hover data**
 
 At mapping paths, return properties not already present. At scalar/sequence
 paths, return enum/default/type/description annotations. Union viable
 `anyOf`/`oneOf` branches, intersect `allOf` requirements, and sort candidates
 by required-first then source order then name.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ```bash
 just test-schema navigation
 just test-schema
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-schema

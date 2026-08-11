@@ -10,6 +10,7 @@ use yamalgam_resolve::{
     ResourceError, ResourceId, ResourceRequest, ResourceRetriever, RetrieveError,
 };
 
+use crate::navigation::{NavigationIndex, NavigationResource};
 use crate::schema::{SchemaError, SchemaOptions, SchemaValidator, schema_value_to_json};
 
 /// One loaded schema resource with semantic source locations.
@@ -138,22 +139,41 @@ impl SchemaSession {
         }
         self.preload_graph(&root.id, &root_schema)?;
 
-        let resources = {
+        let (resources, navigation) = {
             let state = self.lock_state();
             let mut resources = HashMap::with_capacity(state.schemas.len());
+            let mut navigation_resources = Vec::with_capacity(state.schemas.len());
             for (id, schema) in &state.schemas {
                 if let Some(uri) = resource_uri(id)? {
-                    resources.insert(uri, schema.clone());
+                    resources.insert(uri.clone(), schema.clone());
+                    navigation_resources.push(NavigationResource {
+                        uri,
+                        schema: schema.clone(),
+                        located: state
+                            .documents
+                            .get(id)
+                            .map(|document| document.document.clone()),
+                    });
                 }
             }
+            let mut navigation_aliases = HashMap::new();
             for (requested, canonical) in &state.aliases {
-                if let (Some(requested), Some(schema)) =
-                    (resource_uri(requested)?, state.schemas.get(canonical))
-                {
-                    resources.insert(requested, schema.clone());
+                if let (Some(requested_uri), Some(canonical_uri), Some(schema)) = (
+                    resource_uri(requested)?,
+                    resource_uri(canonical)?,
+                    state.schemas.get(canonical),
+                ) {
+                    resources.insert(requested_uri.clone(), schema.clone());
+                    navigation_aliases.insert(requested_uri, canonical_uri);
                 }
             }
-            resources
+            let root_uri = resource_uri(&root.id)?;
+            let navigation = NavigationIndex::from_resources(
+                root_uri.as_deref(),
+                navigation_resources,
+                navigation_aliases,
+            );
+            (resources, navigation)
         };
         let options = SchemaOptions {
             base_uri: resource_uri(&root.id)?,
@@ -163,6 +183,7 @@ impl SchemaSession {
             root_schema,
             options,
             CachedSchemaRetriever { resources },
+            navigation,
         )
     }
 
@@ -471,7 +492,10 @@ fn schema_children(object: &serde_json::Map<String, JsonValue>) -> Vec<&JsonValu
 }
 
 fn resolve(base: &ResourceId, reference: &str) -> Result<ResourceId, SchemaRetrieveError> {
-    base.resolve(reference)
+    let resource_reference = reference
+        .split_once('#')
+        .map_or(reference, |(resource, _)| resource);
+    base.resolve(resource_reference)
         .map(|resolved| resolved.resource)
         .map_err(|source| SchemaRetrieveError::InvalidReference {
             base: base.clone(),

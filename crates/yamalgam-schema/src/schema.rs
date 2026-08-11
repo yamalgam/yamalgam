@@ -8,6 +8,7 @@ use crate::diagnostic::{
     ValidationReport, diagnostic_limit_warning, representation_diagnostic, retain_diagnostic,
     schema_diagnostic,
 };
+use crate::navigation::{NavigationIndex, SchemaContext, SchemaLocation};
 use crate::preflight::PreparedInstance;
 use crate::retrieval::SchemaRetrieveError;
 use crate::value::YamlJson;
@@ -75,12 +76,14 @@ pub struct SchemaValidator {
     schema: JsonValue,
     validator: jsonschema::Validator<YamlJson>,
     options: SchemaOptions,
+    navigation: NavigationIndex,
 }
 
 impl SchemaValidator {
     /// Compile one semantic YAML value as a Draft 2020-12 schema.
     pub fn compile(schema: &Value, options: SchemaOptions) -> Result<Self, SchemaError> {
         let schema = schema_value_to_json(schema)?;
+        let navigation = NavigationIndex::single(schema.clone(), None, options.base_uri.as_deref());
         let builder = validator_options(&options);
         let validator = builder
             .build(&schema)
@@ -89,6 +92,7 @@ impl SchemaValidator {
             schema,
             validator,
             options,
+            navigation,
         })
     }
 
@@ -97,13 +101,28 @@ impl SchemaValidator {
         schema: &LocatedValue,
         options: SchemaOptions,
     ) -> Result<Self, SchemaError> {
-        Self::compile(&schema.value, options)
+        let json = schema_value_to_json(&schema.value)?;
+        let navigation = NavigationIndex::single(
+            json.clone(),
+            Some(schema.clone()),
+            options.base_uri.as_deref(),
+        );
+        let validator = validator_options(&options)
+            .build(&json)
+            .map_err(|error| compile_error(&json, &error))?;
+        Ok(Self {
+            schema: json,
+            validator,
+            options,
+            navigation,
+        })
     }
 
     pub(crate) fn compile_json_with_retriever(
         schema: JsonValue,
         options: SchemaOptions,
         retriever: impl jsonschema::Retrieve + 'static,
+        navigation: NavigationIndex,
     ) -> Result<Self, SchemaError> {
         let validator = validator_options(&options)
             .with_retriever(retriever)
@@ -113,6 +132,7 @@ impl SchemaValidator {
             schema,
             validator,
             options,
+            navigation,
         })
     }
 
@@ -132,6 +152,19 @@ impl SchemaValidator {
     #[must_use]
     pub const fn schema(&self) -> &JsonValue {
         &self.schema
+    }
+
+    /// Return schema annotations and property candidates applicable at an
+    /// RFC 6901 instance path.
+    #[must_use]
+    pub fn context_at(&self, instance_path: &str) -> SchemaContext {
+        self.navigation.context_at(instance_path)
+    }
+
+    /// Resolve a schema reference to its indexed resource, pointer, and span.
+    #[must_use]
+    pub fn definition_for_ref(&self, schema_uri: &str, reference: &str) -> Option<SchemaLocation> {
+        self.navigation.definition_for_ref(schema_uri, reference)
     }
 
     fn validate_inner(&self, instance: &Value, located: Option<&LocatedValue>) -> ValidationReport {
