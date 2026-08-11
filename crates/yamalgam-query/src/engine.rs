@@ -15,6 +15,7 @@ use yamalgam_parser::{ResolutionErrorCategory, ResolveError};
 
 use crate::error::YgError;
 use crate::resolution::{ResolutionHandle, ResolutionSessionKey, ResolvedInput};
+use crate::validation::QuerySchemaResolver;
 use crate::value::YamlVal;
 
 /// jaq data-kind marker for YAML values.
@@ -96,6 +97,7 @@ pub struct RunCtx {
     resolutions: RefCell<HashMap<ResolutionSessionKey, ResolutionHandle>>,
     resolution_context: Option<u64>,
     next_resolution_key: Cell<u64>,
+    schema_resolver: Option<std::sync::Arc<dyn QuerySchemaResolver>>,
 }
 
 static NEXT_RESOLUTION_CONTEXT: AtomicU64 = AtomicU64::new(1);
@@ -118,6 +120,7 @@ impl RunCtx {
                 })
                 .ok(),
             next_resolution_key: Cell::new(1),
+            schema_resolver: None,
         }
     }
 
@@ -126,6 +129,20 @@ impl RunCtx {
     pub fn with_variables(mut self, variables: impl IntoIterator<Item = YamlVal>) -> Self {
         self.variables = variables.into_iter().collect::<Vec<_>>();
         self
+    }
+
+    /// Attach schema lookup for the `validate` query filter.
+    #[must_use]
+    pub fn with_schema_resolver(
+        mut self,
+        resolver: std::sync::Arc<dyn QuerySchemaResolver>,
+    ) -> Self {
+        self.schema_resolver = Some(resolver);
+        self
+    }
+
+    pub(crate) fn schema_resolver(&self) -> Option<&dyn QuerySchemaResolver> {
+        self.schema_resolver.as_deref()
     }
 
     /// Stage metadata for the next input value yielded to the engine.
@@ -502,6 +519,14 @@ where
                                 })
                             })
                             .or_else(|| {
+                                crate::validation::take_failure(&error_value).map(|failure| {
+                                    contextualize_runtime_error(
+                                        context,
+                                        YgError::runtime_validation(failure, message.clone()),
+                                    )
+                                })
+                            })
+                            .or_else(|| {
                                 crate::runtime_limits::take_error().map(|error| {
                                     contextualize_runtime_error(context, pending_error(error))
                                 })
@@ -630,6 +655,20 @@ fn contextualize_runtime_error(context: &RunCtx, error: YgError) -> YgError {
                 .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
             YgError::runtime_resolution(
                 error,
+                format!(
+                    "{source} document {}: {message}",
+                    metadata.document_index + 1
+                ),
+            )
+        }
+        YgError::RuntimeValidation { failure, message } => {
+            let metadata = context.input_meta.borrow();
+            let source = metadata
+                .filename
+                .as_deref()
+                .map_or_else(|| "<stdin>".to_owned(), str::to_owned);
+            YgError::runtime_validation(
+                failure,
                 format!(
                     "{source} document {}: {message}",
                     metadata.document_index + 1

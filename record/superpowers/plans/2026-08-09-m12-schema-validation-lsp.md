@@ -802,7 +802,7 @@ impl YamlVal {
 }
 ```
 
-- [ ] **Step 1: Write filter tests**
+- [x] **Step 1: Write filter tests**
 
 Cover `validate("schema.yaml")`, no-argument `validate` using the input's
 pragma-selected schema, success returning the identical metadata-bearing
@@ -810,27 +810,27 @@ pragma-selected schema, success returning the identical metadata-bearing
 schema I/O, missing schemas, non-string arguments, deep values, and slurped
 inputs from different source files.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-query --test validation
 ```
 
-- [ ] **Step 3: Add a stack-safe query-to-core conversion**
+- [x] **Step 3: Add a stack-safe query-to-core conversion**
 
 Iteratively convert `YamlVal` data to `Value`, charging depth and collection
 limits. Preserve numeric kinds and mapping order. Reject aliases only if they
 have not already materialized into query data. Keep query metadata untouched
 on the original value.
 
-- [ ] **Step 4: Register both filter arities**
+- [x] **Step 4: Register both filter arities**
 
 Register `validate/0` and `validate/1`. Obtain `QuerySchemaResolver` from the
 run context, validate a converted core value, and return the original
 `YamlVal` on success. Attach `ValidationFailure` to the runtime error path so
 the CLI can recover the complete structured report after jaq stops.
 
-- [ ] **Step 5: Verify GREEN and query regressions**
+- [x] **Step 5: Verify GREEN and query regressions**
 
 ```bash
 cargo nextest run -p yamalgam-query --test validation
@@ -838,7 +838,7 @@ cargo nextest run -p yamalgam-query
 just clippy
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-query Cargo.lock

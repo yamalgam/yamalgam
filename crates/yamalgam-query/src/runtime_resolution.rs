@@ -9,7 +9,7 @@ use yamalgam_resolve::{
 };
 
 use crate::resolution::{QueryResolver, ResolutionSessionKey};
-use crate::value::YamlVal;
+use crate::value::{RuntimeErrorPayload, YamlVal};
 
 #[cfg(test)]
 thread_local! {
@@ -133,10 +133,13 @@ pub fn resolution_error(
 pub fn jaq_error(error: ResolveError) -> jaq_core::Error<YamlVal> {
     let message = error.to_string();
     let mut value = YamlVal::str(format!("external resolution failed: {message}"));
-    value.runtime_resolution_error = Some(Arc::new(error));
+    value.runtime_error = Some(Arc::new(RuntimeErrorPayload::Resolution(error)));
     jaq_core::Error::new(value)
 }
 
 pub fn take_error(value: &YamlVal) -> Option<Arc<ResolveError>> {
-    value.runtime_resolution_error.clone()
+    match value.runtime_error.as_deref()? {
+        RuntimeErrorPayload::Resolution(error) => Some(Arc::new(error.clone_structured())),
+        RuntimeErrorPayload::Validation(_) => None,
+    }
 }

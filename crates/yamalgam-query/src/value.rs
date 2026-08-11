@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use indexmap::{Equivalent, IndexMap, IndexSet};
+use yamalgam_core::{Mapping, ResourceLimits, Value};
 use yamalgam_parser::CollectionStyle;
 use yamalgam_scanner::{AtomFlags, Chomp, ScalarStyle};
 
@@ -97,7 +98,13 @@ pub enum Data {
 pub struct YamlVal {
     pub(crate) data: Data,
     pub(crate) meta: Option<Rc<Meta>>,
-    pub(crate) runtime_resolution_error: Option<Arc<yamalgam_parser::ResolveError>>,
+    pub(crate) runtime_error: Option<Arc<RuntimeErrorPayload>>,
+}
+
+#[derive(Debug)]
+pub enum RuntimeErrorPayload {
+    Resolution(yamalgam_parser::ResolveError),
+    Validation(crate::ValidationFailure),
 }
 
 #[derive(Default)]
@@ -222,9 +229,12 @@ fn drop_values(values: impl IntoIterator<Item = YamlVal>) {
 }
 
 #[derive(Debug, thiserror::Error)]
+/// Failure converting a query value into the core YAML value model.
 pub enum ValueLimitError {
+    /// A configured resource limit was exceeded.
     #[error("{0}")]
     Limit(#[from] yamalgam_core::LimitExceeded),
+    /// Internal resource accounting overflowed before allocation.
     #[error("{0} overflow")]
     ResourceOverflow(&'static str),
 }
@@ -262,13 +272,114 @@ impl YamlVal {
         Ok(())
     }
 
+    /// Convert query data to the core YAML value model without recursion.
+    ///
+    /// Presentation metadata remains on the original `YamlVal`; numeric kinds
+    /// and mapping insertion order are preserved in the returned value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured depth or collection limit failure, or a checked
+    /// accounting-overflow failure.
+    pub fn to_core_value(&self, limits: &ResourceLimits) -> Result<Value, ValueLimitError> {
+        enum ArenaNode {
+            Scalar(Value),
+            Sequence(Vec<usize>),
+            Mapping(Vec<(usize, usize)>),
+        }
+
+        let mut arena = vec![None];
+        let mut pending = vec![(self, 0_usize, 0_usize)];
+        while let Some((value, depth, index)) = pending.pop() {
+            limits.check_depth(depth)?;
+            let node = match &value.data {
+                Data::Null => ArenaNode::Scalar(Value::Null),
+                Data::Bool(value) => ArenaNode::Scalar(Value::Bool(*value)),
+                Data::Int(value) => ArenaNode::Scalar(Value::Integer(*value)),
+                Data::Float(value) => ArenaNode::Scalar(Value::Float(*value)),
+                Data::Str(value) => ArenaNode::Scalar(Value::String(value.to_string())),
+                Data::Seq(items) => {
+                    limits.check_collection_size(items.len())?;
+                    let child_depth = depth
+                        .checked_add(1)
+                        .ok_or(ValueLimitError::ResourceOverflow("value depth"))?;
+                    let mut children = Vec::with_capacity(items.len());
+                    let mut child_work = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        let child = arena.len();
+                        arena.push(None);
+                        children.push(child);
+                        child_work.push((item, child_depth, child));
+                    }
+                    pending.extend(child_work.into_iter().rev());
+                    ArenaNode::Sequence(children)
+                }
+                Data::Map(entries) => {
+                    limits.check_collection_size(entries.0.len())?;
+                    let child_depth = depth
+                        .checked_add(1)
+                        .ok_or(ValueLimitError::ResourceOverflow("value depth"))?;
+                    let child_count = entries
+                        .0
+                        .len()
+                        .checked_mul(2)
+                        .ok_or(ValueLimitError::ResourceOverflow("mapping child count"))?;
+                    let mut children = Vec::with_capacity(entries.0.len());
+                    let mut child_work = Vec::with_capacity(child_count);
+                    for (key, value) in &entries.0 {
+                        let key_index = arena.len();
+                        arena.push(None);
+                        let value_index = arena.len();
+                        arena.push(None);
+                        children.push((key_index, value_index));
+                        child_work.push((key, child_depth, key_index));
+                        child_work.push((value, child_depth, value_index));
+                    }
+                    pending.extend(child_work.into_iter().rev());
+                    ArenaNode::Mapping(children)
+                }
+            };
+            arena[index] = Some(node);
+        }
+
+        let mut converted = (0..arena.len()).map(|_| None).collect::<Vec<_>>();
+        for index in (0..arena.len()).rev() {
+            let value = match arena[index].take().expect("every arena node is visited") {
+                ArenaNode::Scalar(value) => value,
+                ArenaNode::Sequence(children) => Value::Sequence(
+                    children
+                        .into_iter()
+                        .map(|child| {
+                            converted[child]
+                                .take()
+                                .expect("child converted before parent")
+                        })
+                        .collect(),
+                ),
+                ArenaNode::Mapping(children) => {
+                    let mut mapping = Mapping::new();
+                    for (key, value) in children {
+                        let key = converted[key].take().expect("key converted before mapping");
+                        let value = converted[value]
+                            .take()
+                            .expect("value converted before mapping");
+                        mapping.insert(key, value);
+                    }
+                    Value::Mapping(mapping)
+                }
+            };
+            converted[index] = Some(value);
+        }
+        Ok(converted[0].take().expect("root value converted"))
+    }
+
     /// Construct null without source metadata.
     #[must_use]
     pub const fn null() -> Self {
         Self {
             data: Data::Null,
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         }
     }
 
@@ -278,7 +389,7 @@ impl YamlVal {
         Self {
             data: Data::Int(value),
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         }
     }
 
@@ -288,7 +399,7 @@ impl YamlVal {
         Self {
             data: Data::Float(value),
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         }
     }
 
@@ -298,7 +409,7 @@ impl YamlVal {
         Self {
             data: Data::Str(value.into()),
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         }
     }
 
@@ -308,7 +419,7 @@ impl YamlVal {
         Self {
             data: Data::Seq(Rc::new(YgSeq(items))),
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         }
     }
 
@@ -318,7 +429,7 @@ impl YamlVal {
         Self {
             data: Data::Map(Rc::new(pairs.into_iter().collect())),
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         }
     }
 
@@ -387,7 +498,7 @@ impl YamlVal {
 
     /// Return mutable value data after invalidating source identity and raw text.
     pub(crate) fn data_mut(&mut self) -> &mut Data {
-        self.runtime_resolution_error = None;
+        self.runtime_error = None;
         if let Some(metadata) = &mut self.meta {
             let metadata = Rc::make_mut(metadata);
             metadata.anchor = None;
@@ -501,7 +612,7 @@ impl YamlVal {
         Ok(Self {
             data: crate::build::core_value_to_data(schema.resolve_scalar(&text)),
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         })
     }
 
@@ -523,7 +634,7 @@ impl YamlVal {
                     Self {
                         data,
                         meta: tag.meta,
-                        runtime_resolution_error: tag.runtime_resolution_error,
+                        runtime_error: tag.runtime_error,
                     },
                     "string or null",
                 ));
@@ -555,7 +666,7 @@ impl YamlVal {
                     Self {
                         data,
                         meta: anchor.meta,
-                        runtime_resolution_error: anchor.runtime_resolution_error,
+                        runtime_error: anchor.runtime_error,
                     },
                     "string or null",
                 ));
@@ -636,7 +747,7 @@ impl YamlVal {
         Ok(Self {
             data: Data::Map(Rc::new(YgMap(output))),
             meta: self.meta.clone(),
-            runtime_resolution_error: None,
+            runtime_error: None,
         })
     }
 
@@ -704,7 +815,7 @@ impl YamlVal {
         Ok(Self {
             data,
             meta,
-            runtime_resolution_error: None,
+            runtime_error: None,
         })
     }
 
@@ -876,7 +987,7 @@ impl From<bool> for YamlVal {
         Self {
             data: Data::Bool(value),
             meta: None,
-            runtime_resolution_error: None,
+            runtime_error: None,
         }
     }
 }
