@@ -9,21 +9,8 @@ use yamalgam_lsp::{DocumentState, SchemaWorkspace, ServerConfig, hover};
 use yamalgam_resolve::{MemoryRetriever, ResourceId, ResourceProvenance, RetrievedResource};
 use yamalgam_schema::SchemaAssociation;
 
-fn fixture(text: &str) -> (SchemaWorkspace, DocumentState) {
+fn fixture_with_schema(schema: &str, text: &str) -> (SchemaWorkspace, DocumentState) {
     let schema_uri = "memory://schemas/hover";
-    let schema = r#"{
-      "type": "object",
-      "properties": {
-        "mode": {
-          "title": "Run mode",
-          "description": "Chooses <fast> or safe execution.",
-          "type": ["string", "null"],
-          "enum": ["fast", "safe", null],
-          "default": "safe",
-          "deprecated": true
-        }
-      }
-    }"#;
     let mut retriever = MemoryRetriever::default();
     retriever.insert(RetrievedResource {
         id: ResourceId::new(schema_uri).unwrap(),
@@ -51,6 +38,25 @@ fn fixture(text: &str) -> (SchemaWorkspace, DocumentState) {
     (workspace, document)
 }
 
+fn fixture(text: &str) -> (SchemaWorkspace, DocumentState) {
+    fixture_with_schema(
+        r#"{
+          "type": "object",
+          "properties": {
+            "mode": {
+              "title": "Run mode",
+              "description": "Chooses <fast> or safe execution.",
+              "type": ["string", "null"],
+              "enum": ["fast", "safe", null],
+              "default": "safe",
+              "deprecated": true
+            }
+          }
+        }"#,
+        text,
+    )
+}
+
 #[test]
 fn hover_renders_schema_annotations_as_safe_plain_text() {
     let (schemas, document) = fixture("mode: fast\n");
@@ -76,6 +82,26 @@ fn hover_keeps_a_leading_document_marker_in_document_zero() {
         panic!("expected plain-text hover");
     };
     assert!(text.contains("Run mode"));
+}
+
+#[test]
+fn hover_reaches_sequence_item_schemas() {
+    let schema = r#"{
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "mode": {"title": "Sequence mode", "enum": ["fast", "safe"]}
+        }
+      }
+    }"#;
+    let (schemas, document) = fixture_with_schema(schema, "- mode: fast\n");
+
+    let hover = hover(&document, Position::new(0, 10), &schemas).unwrap();
+    let HoverContents::Scalar(MarkedString::String(text)) = hover.contents else {
+        panic!("expected plain-text hover");
+    };
+    assert!(text.contains("Sequence mode"));
 }
 
 #[test]

@@ -124,6 +124,38 @@ fn completion_keeps_a_leading_document_marker_in_document_zero() {
 }
 
 #[test]
+fn completion_reaches_block_sequence_item_schemas() {
+    let schema = r#"{
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"mode": {"enum": ["fast", "safe"]}}
+      }
+    }"#;
+    let (schemas, document) = fixture(schema, "- \n");
+
+    let candidates = items(complete(&document, Position::new(0, 2), &schemas));
+
+    assert!(candidates.iter().any(|item| item.label == "mode"));
+}
+
+#[test]
+fn completion_reaches_flow_sequence_item_schemas() {
+    let schema = r#"{
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"mode": {"enum": ["fast", "safe"]}}
+      }
+    }"#;
+    let (schemas, document) = fixture(schema, "[{}]\n");
+
+    let candidates = items(complete(&document, Position::new(0, 2), &schemas));
+
+    assert!(candidates.iter().any(|item| item.label == "mode"));
+}
+
+#[test]
 fn completion_returns_no_candidates_without_an_active_schema() {
     let document = DocumentState::new(
         Uri::from_str("file:///workspace/plain.yaml").unwrap(),

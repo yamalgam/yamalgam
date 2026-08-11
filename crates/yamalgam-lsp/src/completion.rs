@@ -7,6 +7,7 @@ use lsp_types::{
     Position,
 };
 use yamalgam_core::Value;
+use yamalgam_cst::SyntaxKind;
 
 use crate::{DocumentState, SchemaWorkspace};
 
@@ -94,48 +95,13 @@ pub(super) fn editor_context(
     let text = document.syntax.text();
     let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
     let prefix = &text[line_start..offset];
-    let current_indent = prefix
-        .chars()
-        .take_while(|character| *character == ' ')
-        .count();
     let document_index = document.document_index_at_offset(offset);
-    let mut stack = Vec::<(usize, String)>::new();
-
-    for line in text[..line_start].lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("---") {
-            stack.clear();
-            continue;
-        }
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("...") {
-            continue;
-        }
-        let indent = line
-            .chars()
-            .take_while(|character| *character == ' ')
-            .count();
-        while stack.last().is_some_and(|(parent, _)| indent <= *parent) {
-            stack.pop();
-        }
-        if let Some((key, value)) = mapping_entry(trimmed)
-            && value.is_empty()
-        {
-            stack.push((indent, key));
-        }
-    }
-    while stack
-        .last()
-        .is_some_and(|(parent, _)| current_indent <= *parent)
-    {
-        stack.pop();
-    }
-
-    let mut path = stack
-        .iter()
-        .fold(String::new(), |path, (_, key)| append_pointer(&path, key));
+    let mut path = syntax_path(document, offset, line_start);
     let content = prefix.trim_start();
     let value_position = mapping_entry(content).is_some();
-    if let Some((key, _)) = mapping_entry(content) {
+    if let Some((key, _)) = mapping_entry(content)
+        && !path.ends_with(&format!("/{}", escape_pointer(&key)))
+    {
         path = append_pointer(&path, &key);
     }
     let existing_keys = mapping_at(document.located.get(document_index), &path)
@@ -153,6 +119,72 @@ pub(super) fn editor_context(
         value_position,
         existing_keys,
     })
+}
+
+fn syntax_path(document: &DocumentState, offset: usize, line_start: usize) -> String {
+    let syntax = document.syntax.syntax();
+    let mut probe = offset;
+    let node = loop {
+        if let Some(node) = syntax.node_at_offset(probe)
+            && node.kind() != SyntaxKind::Stream
+        {
+            break Some(node);
+        }
+        if probe == line_start {
+            break None;
+        }
+        probe -= 1;
+    };
+    let Some(node) = node else {
+        return String::new();
+    };
+    let mut ancestors = node.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+    let mut path = String::new();
+
+    for (position, node) in ancestors.iter().enumerate() {
+        match node.kind() {
+            SyntaxKind::MappingEntry => {
+                let text = node.text().to_string();
+                if let Some((key, _)) = mapping_entry(text.trim_start()) {
+                    path = append_pointer(&path, &key);
+                }
+            }
+            SyntaxKind::Sequence => {
+                let child = ancestors.get(position + 1);
+                let index = child.map_or_else(
+                    || flow_sequence_index(node, offset),
+                    |child| sequence_index(node, child, offset),
+                );
+                path = append_pointer(&path, &index.to_string());
+            }
+            _ => {}
+        }
+    }
+    path
+}
+
+fn sequence_index(
+    sequence: &yamalgam_cst::SyntaxNode,
+    child: &yamalgam_cst::SyntaxNode,
+    offset: usize,
+) -> usize {
+    if child.kind() == SyntaxKind::SequenceEntry {
+        return sequence
+            .children()
+            .filter(|candidate| candidate.kind() == SyntaxKind::SequenceEntry)
+            .take_while(|candidate| candidate.text_range().start() < child.text_range().start())
+            .count();
+    }
+    flow_sequence_index(sequence, offset)
+}
+
+fn flow_sequence_index(sequence: &yamalgam_cst::SyntaxNode, offset: usize) -> usize {
+    sequence
+        .children_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter(|token| token.text() == "," && usize::from(token.text_range().start()) < offset)
+        .count()
 }
 
 fn mapping_entry(line: &str) -> Option<(String, &str)> {
@@ -191,5 +223,9 @@ fn mapping_at<'value>(
 }
 
 fn append_pointer(path: &str, segment: &str) -> String {
-    format!("{path}/{}", segment.replace('~', "~0").replace('/', "~1"))
+    format!("{path}/{}", escape_pointer(segment))
+}
+
+fn escape_pointer(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
 }
