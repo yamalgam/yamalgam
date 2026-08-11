@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 15
+  fixed: 16
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 5
+  open: 4
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -284,5 +284,23 @@ prefix/suffix differencing retains document-local CST reparsing. Schema
 selection consumes those precomposed values and retained composition failures
 instead of copying and composing the source again. All 56 CST tests, all 52
 schema tests, all 30 LSP tests, and workspace Clippy pass.
+
+---
+
+## 2026-08-11 — Index diagnostic positions per document version
+
+**Disposition:** fixed
+
+**Addresses:** [lsp-diagnostic-positioning-recopies-source](README.md#lsp-diagnostic-positioning-recopies-source)
+
+**Commit:** 75b67d2e87ac1745b5f365cf0ba29a228abf334c
+
+**Author:** Codex
+
+Each accepted document snapshot now retains a CR/LF-aware line index used by
+diagnostic byte-to-UTF-16 conversion. Endpoint lookup no longer materializes
+the Rope, and the CST conversion APIs expose byte length directly while
+counting UTF-16 units over Rope slices instead of temporary strings. All 56
+CST tests, all 30 LSP tests, and workspace Clippy pass.
 
 ---
