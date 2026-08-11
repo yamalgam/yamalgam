@@ -8,6 +8,8 @@ use serde_json::Value as JsonValue;
 use url::Url;
 use yamalgam_core::{LocatedValue, Span};
 
+const MAX_CONTEXT_EXAMPLES: usize = 8;
+
 /// One property completion candidate.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PropertyCandidate {
@@ -34,6 +36,8 @@ pub struct SchemaContext {
     pub default: Option<String>,
     /// Compact JSON representations of allowed enum values.
     pub enum_values: Vec<String>,
+    /// Up to eight de-duplicated example values in source order.
+    pub examples: Vec<String>,
     /// Whether an applicable schema marks this value as deprecated.
     pub deprecated: bool,
     /// Property candidates sorted required-first, then by source order.
@@ -393,6 +397,7 @@ impl NavigationIndex {
         let mut candidate_indices = HashMap::<String, usize>::new();
         let mut seen_types = HashSet::new();
         let mut seen_enums = HashSet::new();
+        let mut seen_examples = HashSet::new();
         let mut seen_locations = HashSet::new();
 
         for cursor in cursors {
@@ -418,6 +423,17 @@ impl NavigationIndex {
                     let rendered = compact(value);
                     if seen_enums.insert(rendered.clone()) {
                         context.enum_values.push(rendered);
+                    }
+                }
+            }
+            if let Some(values) = node.get("examples").and_then(JsonValue::as_array) {
+                for value in values {
+                    if context.examples.len() == MAX_CONTEXT_EXAMPLES {
+                        break;
+                    }
+                    let rendered = compact(value);
+                    if seen_examples.insert(rendered.clone()) {
+                        context.examples.push(rendered);
                     }
                 }
             }

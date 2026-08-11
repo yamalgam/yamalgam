@@ -26,6 +26,7 @@ pub fn hover(
         && context.types.is_empty()
         && context.default.is_none()
         && context.enum_values.is_empty()
+        && context.examples.is_empty()
         && !context.deprecated
     {
         return None;
@@ -43,6 +44,9 @@ pub fn hover(
     }
     if let Some(default) = context.default {
         lines.push(format!("Default: {default}"));
+    }
+    if !context.examples.is_empty() {
+        lines.push(format!("Examples: {}", context.examples.join(", ")));
     }
     if !context.enum_values.is_empty() {
         lines.push(format!("Allowed: {}", context.enum_values.join(", ")));

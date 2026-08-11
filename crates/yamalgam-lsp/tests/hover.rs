@@ -74,6 +74,24 @@ fn hover_renders_schema_annotations_as_safe_plain_text() {
 }
 
 #[test]
+fn hover_renders_bounded_deduplicated_examples_for_example_only_schema() {
+    let schema = r#"{
+      "examples": ["alpha", "alpha", {"mode": "fast"}],
+      "allOf": [
+        {"examples": [{"mode": "fast"}, 1, 2, 3, 4, 5, 6, 7, 8]}
+      ]
+    }"#;
+    let (schemas, document) = fixture_with_schema(schema, "value\n");
+
+    let hover = hover(&document, Position::new(0, 2), &schemas).unwrap();
+    let HoverContents::Scalar(MarkedString::String(text)) = hover.contents else {
+        panic!("expected plain-text hover");
+    };
+    assert!(text.contains("Examples: \"alpha\", {\"mode\":\"fast\"}, 1, 2, 3, 4, 5, 6"));
+    assert!(!text.contains(", 7"));
+}
+
+#[test]
 fn hover_keeps_a_leading_document_marker_in_document_zero() {
     let (schemas, document) = fixture("---\nmode: fast\n");
 
