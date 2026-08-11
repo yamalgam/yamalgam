@@ -387,3 +387,26 @@ patch or vendored fork would make builds non-portable and is not an acceptable
 remediation.
 
 ---
+
+## 2026-08-11 — Correct Librebar Tokio split target
+
+**Disposition:** deferred
+
+**Addresses:** [librebar-http-enables-unused-tokio-subsystems](README.md#librebar-http-enables-unused-tokio-subsystems)
+
+**Author:** Codex
+
+**Target:** The next Librebar release containing feature-scoped Tokio requirements.
+
+This entry corrects the preceding deferral without changing its disposition.
+Yamalgam's synchronous `LibrebarRetriever` intentionally owns a private Tokio
+runtime to drive Librebar's asynchronous HTTP client for `$ref` resolution.
+The upstream change is therefore feature scoping, not removal of Tokio:
+Librebar's `http` feature should enable only the runtime and timing capabilities
+its HTTP path requires, while `shutdown` must retain `signal` and `macros`
+because production code uses OS signal handling and `tokio::select!`. Test and
+example macros may remain in Librebar's development dependency. Cargo feature
+unification prevents Yamalgam from subtracting the unrelated shutdown
+capabilities downstream.
+
+---
