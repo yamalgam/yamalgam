@@ -1232,7 +1232,7 @@ pub fn document_diagnostics(
 ) -> Vec<lsp_types::Diagnostic>;
 ```
 
-- [ ] **Step 1: Write protocol diagnostic tests**
+- [x] **Step 1: Write protocol diagnostic tests**
 
 Cover scanner, parser, recovery-limit, missing schema, invalid schema,
 required property, wrong type, a valid fix clearing diagnostics, multiple YAML
@@ -1241,13 +1241,13 @@ included-file syntax errors, and Unicode ranges.
 Assert every publish carries the current document version and stale work is
 not published.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-lsp diagnostics
 ```
 
-- [ ] **Step 3: Combine recovery and validation reports**
+- [x] **Step 3: Combine recovery and validation reports**
 
 Convert parse spans by byte offset through the document Rope. Validate only
 documents with a complete located semantic value; syntax diagnostics remain
@@ -1255,21 +1255,21 @@ available for partial documents. Select and compile schemas through one
 workspace `SchemaSession`, reusing cached validators by canonical schema URI
 and content digest.
 
-- [ ] **Step 4: Preserve typed metadata in LSP data**
+- [x] **Step 4: Preserve typed metadata in LSP data**
 
 Set `source = "yamalgam"`, use the stable diagnostic code, map error/warning
 severity, and place document index, instance path, schema path, and schema URI
 in `Diagnostic.data`. Never put retrieved bodies or unredacted URLs in
 messages or data.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ```bash
 just test-lsp diagnostics
 just test-schema diagnostics
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-lsp
@@ -1302,41 +1302,41 @@ pub fn hover(
 ) -> Option<Hover>;
 ```
 
-- [ ] **Step 1: Write completion tests**
+- [x] **Step 1: Write completion tests**
 
 Test missing property names, required-first ordering, duplicate suppression,
 enum values, Booleans/null/numbers without quotes, quoted strings, sequence
 items, default snippets, nested objects, multi-document paths, partial
 mappings, an Error node before the cursor, and no active schema.
 
-- [ ] **Step 2: Write hover tests**
+- [x] **Step 2: Write hover tests**
 
 Test title, description, type union, default, enum, deprecation, active schema
 URI, `$ref`-supplied annotations, YAML anchor/alias context, and a cursor on
 whitespace or comments.
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 ```bash
 just test-lsp completion
 just test-lsp hover
 ```
 
-- [ ] **Step 4: Derive the instance path from syntax**
+- [x] **Step 4: Derive the instance path from syntax**
 
 Walk from `node_at_offset` to the Document root. For mapping entries, decode
 the key token with the active YAML tag resolver; for sequences, count semantic
 siblings. When recovery prevents an exact path, retain the longest valid
 prefix and let `SchemaNavigator` provide candidates there.
 
-- [ ] **Step 5: Render safe completion and hover payloads**
+- [x] **Step 5: Render safe completion and hover payloads**
 
 Use plain text unless the client advertises snippets. Preserve the document's
 indent width and block/flow context. Return Markdown hover only when the
 client supports it; otherwise return plain text. Do not include HTML from
 schema descriptions.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 ```bash
 just test-lsp completion
@@ -1344,7 +1344,7 @@ just test-lsp hover
 just clippy
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/yamalgam-lsp
@@ -1375,7 +1375,7 @@ pub fn definition(
 ) -> Option<GotoDefinitionResponse>;
 ```
 
-- [ ] **Step 1: Write definition tests**
+- [x] **Step 1: Write definition tests**
 
 Cover scalar and structured `!include`, local and cross-file data `$ref`, JSON
 Pointer fragments, schema `$ref` into `$defs`, a remote schema already in
@@ -1383,27 +1383,27 @@ cache, same-document refs, missing targets, cyclic refs, denied paths, and a
 symlink escape. Assert `LocationLink.origin_selection_range` covers only the
 reference text and targets the selected node span when available.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-lsp definition
 ```
 
-- [ ] **Step 3: Build a local-only M11 navigation report**
+- [x] **Step 3: Build a local-only M11 navigation report**
 
 For each complete document, run a bounded resolution session with memory and
 workspace-rooted file retrievers. Record edges and source spans but keep HTTP,
 HTTPS, redirects, auth, and out-of-workspace files disabled. Rebuild only when
 the document version or referenced file digest changes.
 
-- [ ] **Step 4: Resolve target spans**
+- [x] **Step 4: Resolve target spans**
 
 Use `ResolutionEdge` for include/data-ref sites and `SchemaNavigator` for
 schema refs. Open cached target text through the workspace retriever, parse a
 located document, and map RFC 6901 fragments to spans. Return the target file
 start when an include selects a whole file without a semantic pointer.
 
-- [ ] **Step 5: Verify GREEN and policy regressions**
+- [x] **Step 5: Verify GREEN and policy regressions**
 
 ```bash
 just test-lsp definition
@@ -1411,7 +1411,7 @@ cargo nextest run -p yamalgam-resolve
 just clippy
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-lsp
