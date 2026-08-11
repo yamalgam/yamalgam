@@ -6,8 +6,13 @@ pub(crate) mod diagnostic;
 mod preflight;
 mod retrieval;
 pub(crate) mod schema;
+mod selection;
 mod value;
 
 pub use diagnostic::{ValidationDiagnostic, ValidationReport};
 pub use retrieval::{SchemaDocument, SchemaRetrieveError, SchemaSession};
 pub use schema::{SchemaError, SchemaOptions, SchemaValidator};
+pub use selection::{
+    SchemaAssociation, SchemaCatalog, SchemaCatalogEntry, SchemaSelectionError, SchemaSelector,
+    SchemaSource, SelectedSchema,
+};

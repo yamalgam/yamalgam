@@ -3154,6 +3154,7 @@ dependencies = [
 name = "yamalgam-schema"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "jsonschema",
  "serde",
  "serde_json",
@@ -3162,6 +3163,7 @@ dependencies = [
  "url",
  "yamalgam-compose",
  "yamalgam-core",
+ "yamalgam-cst",
  "yamalgam-resolve",
 ]
 

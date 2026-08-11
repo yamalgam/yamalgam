@@ -656,7 +656,7 @@ pub struct SchemaSelector {
 }
 ```
 
-- [ ] **Step 1: Write precedence and catalog tests**
+- [x] **Step 1: Write precedence and catalog tests**
 
 Assert this exact precedence, from highest to lowest: explicit caller
 selection, first-document `# yg-schema-validate:`, compatible
@@ -664,19 +664,19 @@ selection, first-document `# yg-schema-validate:`, compatible
 `$schema`, configured association, then SchemaStore match. `none` disables
 lower sources. Relative directive URIs resolve from the containing file.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 just test-schema selection
 ```
 
-- [ ] **Step 3: Parse directives from CST comments**
+- [x] **Step 3: Parse directives from CST comments**
 
 Inspect only comment tokens before the first semantic node in each document.
 Require exactly one URI token after the prefix. Return a structured selection
 error for malformed or conflicting same-priority directives.
 
-- [ ] **Step 4: Add SchemaStore catalog matching**
+- [x] **Step 4: Add SchemaStore catalog matching**
 
 Deserialize the official catalog fields used by M12 (`name`, `description`,
 `fileMatch`, `url`, `versions`). Compile patterns with `globset`. Normalize
@@ -684,14 +684,14 @@ paths to `/`, preserve catalog order as the final tie-breaker, and choose the
 longest literal pattern before that tie-breaker. Catalog and schema network
 retrieval remain absent unless the caller supplies an enabled `SchemaSession`.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ```bash
 just test-schema selection
 just deny
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-schema Cargo.lock
