@@ -2,12 +2,12 @@
 audit: 2026-08-11-07-m12-full-repo
 last_updated: 2026-08-11
 status:
-  fixed: 16
+  fixed: 17
   mitigated: 0
   accepted: 0
   disputed: 0
   deferred: 0
-  open: 4
+  open: 3
 ---
 
 # Actions Taken: M12 full-repository audit
@@ -302,5 +302,26 @@ diagnostic byte-to-UTF-16 conversion. Endpoint lookup no longer materializes
 the Rope, and the CST conversion APIs expose byte length directly while
 counting UTF-16 units over Rope slices instead of temporary strings. All 56
 CST tests, all 30 LSP tests, and workspace Clippy pass.
+
+---
+
+## 2026-08-11 — Enforce located-value tree shape
+
+**Disposition:** fixed
+
+**Addresses:** [located-value-allows-invalid-parallel-shapes](README.md#located-value-allows-invalid-parallel-shapes)
+
+**Commit:** 528edd0be8e61007163482788e4f75506cb63bf5
+
+**Author:** Codex
+
+`LocatedValue` now seals its semantic and location fields behind checked
+construction and read-only accessors. The checked constructor validates kind,
+cardinality, and every nested mapping key/value pair with an explicit work
+stack; bottom-up scalar, sequence, and mapping constructors preserve the same
+invariant without repeatedly walking completed subtrees. Composer merge,
+alias, schema, LSP, and CLI consumers now use that API. The invariant
+regression passes with all 77 core tests, all 66 composer tests, all 52 schema
+tests, all 30 LSP tests, and workspace Clippy.
 
 ---
