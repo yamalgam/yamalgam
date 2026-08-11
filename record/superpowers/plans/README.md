@@ -150,27 +150,41 @@ Draft-01 deviations are recorded in
 - Pre-CST `-i` edits lose comments and exact formatting.
 
 ## Milestone 11 — Built-in Resolvers
-**Status:** Not started
 
-`IncludeResolver` and `RefResolver` implementations. Filesystem sandboxing, URL policy, cycle detection, byte budgets. Wires into LoaderConfig's ResolutionPolicy.
+**Status:** Complete (PR #113)
+
+`IncludeResolver` and `RefResolver` implementations. Filesystem sandboxing,
+URL policy, cycle detection, byte budgets, source navigation, and redacted
+resolution reports wired through `LoaderConfig`.
+
+- Design: `../specs/2026-08-08-m11-external-resource-resolution-design.md`
+- Plan: `2026-08-09-m11-external-resource-resolution.md`
 
 ## Milestone 12 — Schema Validation + LSP
-**Status:** Not started
 
-Native schema validator operating directly on yamalgam's Value type, and a YAML Language Server that uses it for completions, hover, and diagnostics. These are the same thing — the LSP is the schema validator with a cursor position.
+**Status:** Planned
+
+- Plan: `2026-08-09-m12-schema-validation-lsp.md`
+
+Native YAML adaptation over the `jsonschema` Draft 2020-12 engine, operating
+directly on Yamalgam's `Value`, plus a YAML language server that uses the same
+schema session for completions, hover, diagnostics, and navigation.
 
 Schema validation:
-- `SchemaValidator` in yamalgam-core — validates `Value` against a schema `Value`
-- JSON Schema Draft 2020-12 keyword support (the subset that matters for YAML)
+
+- `SchemaValidator` in `yamalgam-schema` validates `Value` against a schema `Value`
+- JSON Schema Draft 2020-12 through `jsonschema`'s custom-value API
 - `$ref` within schemas for schema composition
 - Structured diagnostics: path to failing node, rule violated, expected vs actual
 - `validate(schema)` filter for yg (spec Section 10)
 - `yg validate` / `yg lint` subcommands
 - `# yg-schema-validate:` pragma support
 - SchemaStore integration for auto-detection (Kubernetes, GitHub Actions, etc.)
-- Not using `yaml-schema` crate (saphyr dep) or `jsonschema` crate (lossy JSON conversion)
+- Scalar YAML mapping keys use collision-checked canonical property names while retaining original type and span
+- Adapted MIT-licensed boundary cases from `yaml-schema`; no Saphyr or duplicate keyword engine
 
 LSP (powered by CST + schema validator):
+
 - Schema-aware completions (property names, enum values, type hints)
 - Hover info from schema descriptions
 - Real-time validation diagnostics
@@ -179,13 +193,15 @@ LSP (powered by CST + schema validator):
 - Error-recovering parser mode for in-progress typing
 
 Improvements over existing YAML language servers:
+
 - **Real parser, not heuristics.** Existing servers rely on JS YAML parsers that give up on partial/invalid documents (which is most of the time while typing). CST with error-recovery nodes produces a usable tree even for broken input.
 - **Comment-preserving edits.** Quickfixes and formatting in existing servers serialize/deserialize through a lossy path that strips comments. CST round-trip keeps unmodified nodes intact.
 - **`!include` and `$ref` awareness.** Existing servers flag custom tags as errors. yamalgam's resolver trait lets the LSP resolve includes, validate included content, and provide click-through navigation.
-- **Native schema validation.** Existing servers convert YAML to JSON for validation, losing YAML-specific features (tags, anchors, non-string keys, merge keys). Native validation on `Value` skips the conversion.
+- **Native schema adaptation.** Existing servers convert whole YAML documents to JSON before validation. Yamalgam adapts `Value` directly, preserves anchors/merges after composition, projects scalar keys without overwrites, and retains original source locations.
 - **Multi-document support.** Existing servers treat each file as one document. yamalgam handles `---`-separated streams natively.
 
 ## Milestone 13 — serde Serializer + Pretty Emitter
+
 **Status:** Not started
 
 YAML serialization with configurable style preferences. Round-trip editing via CST (parse → mutate → emit with comments intact).
