@@ -217,7 +217,41 @@ fn yg_natives() -> Box<[Filter<RunPtr<YgKind>>]> {
                     .map_err(crate::runtime_resolution::jaq_error),
             )
         }),
+        ("validate", v(0), |context_value| {
+            let context = context_value.0.data().context;
+            bome(validate_value(context, context_value.1, None))
+        }),
+        ("validate", v(1), |context_value| {
+            let context = context_value.0.data().context;
+            unary(context_value, move |value, schema| {
+                let Data::Str(schema) = &schema.data else {
+                    return Err(Error::typ(schema, "schema reference string"));
+                };
+                validate_value(context, value, Some(schema.as_ref()))
+            })
+        }),
     ])
+}
+
+fn validate_value(
+    context: &crate::engine::RunCtx,
+    value: YamlVal,
+    schema_ref: Option<&str>,
+) -> jaq_core::ValR<YamlVal> {
+    crate::validation::validate(
+        context.schema_resolver(),
+        &context.config.limits,
+        schema_ref,
+        value,
+    )
+    .map_err(|error| match error {
+        crate::validation::RuntimeValidationError::Value(error) => {
+            crate::runtime_limits::jaq_value_error(error)
+        }
+        crate::validation::RuntimeValidationError::Validation(error) => {
+            crate::validation::jaq_error(error)
+        }
+    })
 }
 
 fn parse_schema(value: &YamlVal) -> Result<yamalgam_core::TagResolution, Error<YamlVal>> {

@@ -1,0 +1,25 @@
+[package]
+name = "yamalgam-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Language Server Protocol frontend for Yamalgam"
+publish = false
+
+[dependencies]
+lsp-server = "0.10.0"
+lsp-types = "0.97.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+yamalgam-compose = { path = "../yamalgam-compose" }
+yamalgam-core = { path = "../yamalgam-core" }
+yamalgam-cst = { path = "../yamalgam-cst" }
+yamalgam-resolve = { path = "../yamalgam-resolve" }
+yamalgam-schema = { path = "../yamalgam-schema" }
+
+[lints]
+workspace = true

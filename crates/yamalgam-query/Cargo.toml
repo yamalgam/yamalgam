@@ -21,6 +21,7 @@ yamalgam-core = { path = "../yamalgam-core" }
 yamalgam-parser = { path = "../yamalgam-parser" }
 yamalgam-resolve = { path = "../yamalgam-resolve" }
 yamalgam-scanner = { path = "../yamalgam-scanner" }
+yamalgam-schema = { path = "../yamalgam-schema" }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

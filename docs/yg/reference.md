@@ -4,6 +4,8 @@
 
 ```text
 yg [OPTIONS] [FILTER] [FILE]...
+yg validate [OPTIONS] [FILE]...
+yg lint [OPTIONS] [FILE]...
 yg doctor [OPTIONS]
 yg info [OPTIONS]
 ```
@@ -76,6 +78,28 @@ must contain every initial file and file base. Standard input needs
 `--base-uri` for relative refs and `--resolution-root` for includes. A
 top-level URL is still treated as a file path.
 
+## Validation options
+
+```sh
+yg --format json validate --schema schema.yaml input.yaml
+```
+
+| Option | Effect |
+|--------|--------|
+| `--schema URI` | Apply one schema to every input document. |
+| `--schema-store` | Enable the configured SchemaStore-compatible catalog. |
+| `--max-diagnostics N` | Retain at most N findings per document. Default: 100. |
+| `--allow-refs=SCHEMES` | Permit additional schema retrieval schemes. Local files are already enabled. |
+| `--allow-ref-host=HOST` | Permit one exact HTTP or HTTPS schema host. Repeat for more hosts. |
+| `--resolution-root=DIR` | Confine local schema and catalog retrieval to this directory. |
+
+`validate` and its visible alias `lint` check each input document. Input order
+is kept. The command reads standard input when no file is given. A relative
+schema then has no file base. Use a file input or an absolute schema URI.
+
+Network schema use is off by default. Both its scheme and exact host must be
+allowed. Local schemas stay in the current directory by default.
+
 ## Shared CLI options
 
 | Option | Effect |
@@ -103,6 +127,8 @@ yg info --format json
 
 `doctor` checks config and log paths, then reports the active environment.
 `info` reports package and config details. Both accept the shared CLI options.
+`validate` and `lint` apply Draft 2020-12 schemas and emit ordered document
+reports.
 
 A first argument of `doctor` or `info` selects a subcommand. Use `yg -- FILTER`
 to force query mode, or start mapping keys with `.doctor` or `.info`.
@@ -118,7 +144,7 @@ mapping
 |-------|---------|
 | Node data | `tag`, `anchor`, `style`, `kind`, `is_alias`, `raw` |
 | Node updates | `set_tag(value)`, `set_anchor(value)`, `set_style(value)` |
-| Schema | `resolved_type`, `schema`, `resolve`, `resolve_as(schema)` |
+| Schema | `resolved_type`, `schema`, `resolve`, `resolve_as(schema)`, `validate`, `validate(schema)` |
 | Structure | `merge`, `explode_aliases`, `aliases`, `orphan_anchors` |
 | Input source | `filename`, `file_index`, `document_index` |
 | External YAML | `include`, `ref` |
@@ -131,11 +157,20 @@ YAML mapping insertion order. Use `keys_sorted` when you want sorted keys.
 ```toml
 log_level = "debug"
 log_dir = "/path/to/logs"
+
+[[schemas]]
+uri = "./schemas/service.yaml"
+file_match = ["services/*.yaml"]
+
+[schema_store]
+enabled = false
+url = "https://www.schemastore.org/api/json/catalog.json"
 ```
 
-Those are the only current config-file fields. Resolution policy is selected
-with CLI flags in M11. Unknown fields are errors. Config files
-may use TOML, YAML, or JSON.
+`schemas` entries are checked in order after local schema hints. The first
+match wins. `schema_store` sets an optional catalog and defaults to off.
+Resource policy remains a CLI concern. A catalog does not grant network
+access. Unknown fields are errors. Config files may use TOML, YAML, or JSON.
 
 Project discovery checks these names:
 
@@ -168,12 +203,12 @@ Run `yg doctor` to see the platform user config directory. Run
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success, or a truthy final value with `-e`. |
-| 1 | False or null final value with `-e`. |
+| 0 | Success, a truthy final value with `-e`, or all validation documents valid. |
+| 1 | False or null final value with `-e`, or validation findings. |
 | 2 | CLI usage, filter syntax, missing input, or config error. |
 | 3 | Filter compilation error, such as an unknown function. |
 | 4 | Successful filter produced no value with `-e`. |
-| 5 | YAML parse, query runtime, resource-limit, or output error. |
+| 5 | YAML parse, query runtime, schema/retrieval, resource-limit, or output error. |
 
 The jq `halt` filter may return other POSIX exit codes.
 
@@ -183,7 +218,10 @@ The jq `halt` filter may return other POSIX exit codes.
 - `===`, `!==`, `?//`, jq streaming filters, and `-L` do not currently ship.
 - Integers use `i64`; floats use IEEE 754 binary64.
 - Regex uses the `regex-bites` subset. It has no lookaround or backreferences.
-- A schema pragma in a YAML comment is not read. Use `--schema`.
+- The scalar-resolution pragma `# yg-schema:` remains deferred. Validation
+  recognizes the distinct `# yg-schema-validate:` pragma.
+- The no-argument query `validate` filter uses a top-level `$schema` selection;
+  use `yg validate` for comment pragmas, associations, and SchemaStore.
 - External resolution reports are library data; M11 has no dependency-report
   command or lockfile.
 - HTTP redirects, cookies, authentication, persistent caching, and HTTP
@@ -204,6 +242,12 @@ for flag in --config --null-input --slurp --raw-input --from-file --no-env \
   --allow-includes --resolve-includes --allow-refs --resolve-refs \
   --allow-ref-host --resolution-root --base-uri; do
   printf '%s\n' "$help" | grep -F -- "$flag" >/dev/null
+done
+
+validate_help="$("$YG_BIN" validate --help)"
+for flag in --schema --schema-store --max-diagnostics --allow-refs \
+  --allow-ref-host --resolution-root; do
+  printf '%s\n' "$validate_help" | grep -F -- "$flag" >/dev/null
 done
 
 check_status() {

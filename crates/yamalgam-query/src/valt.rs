@@ -451,7 +451,7 @@ const fn yaml_value(data: Data) -> YamlVal {
     YamlVal {
         data,
         meta: None,
-        runtime_resolution_error: None,
+        runtime_error: None,
     }
 }
 

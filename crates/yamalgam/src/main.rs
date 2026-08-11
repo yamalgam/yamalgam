@@ -91,6 +91,10 @@ fn run() -> Result<ExitCode, MainError> {
                 .map_err(MainError::runtime)?;
             Ok(ExitCode::SUCCESS)
         }
+        Some(Commands::Validate(args)) => {
+            commands::validate::cmd_validate(&args, subcommand_json, &config)
+                .map_err(MainError::runtime)
+        }
         None => {
             // Query output is YAML-native in auto mode, including in pipelines.
             // r[impl cli.json-output]

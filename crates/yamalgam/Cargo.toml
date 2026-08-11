@@ -26,6 +26,10 @@ exclude = [
 name = "yg"
 path = "src/main.rs"
 
+[[bin]]
+name = "yamalgam-lsp"
+path = "src/bin/yamalgam-lsp.rs"
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.tar.gz"
 bin-dir = "bin/{ bin }{ binary-ext }"
@@ -41,9 +45,12 @@ pkg-fmt = "zip"
 
 [dependencies]
 yamalgam-core = { version = "0.1", path = "../yamalgam-core" }
+yamalgam-compose = { path = "../yamalgam-compose" }
 yamalgam-query = { path = "../yamalgam-query" }
 yamalgam-resolve = { path = "../yamalgam-resolve" }
+yamalgam-schema = { path = "../yamalgam-schema" }
 yamalgam-serde = { path = "../yamalgam-serde" }
+yamalgam-lsp = { path = "../yamalgam-lsp" }
 # Trust boundary: logging/diagnostics add rust-zstd and leakguard; see the M10
 # implementation notes. Keep defaults off and this feature list explicit.
 librebar = { version = "0.6.0", default-features = false, features = ["cli", "config", "logging", "diagnostics"] }

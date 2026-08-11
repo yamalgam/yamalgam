@@ -1,0 +1,27 @@
+{
+  "schemas": [
+    {
+      "name": "Generic YAML",
+      "description": "Generic files",
+      "fileMatch": ["*.yaml"],
+      "url": "memory://catalog/generic",
+      "versions": {
+        "1.0": "memory://catalog/generic-v1"
+      }
+    },
+    {
+      "name": "Workflow",
+      "description": "GitHub workflow",
+      "fileMatch": [".github/workflows/*.yaml"],
+      "url": "memory://catalog/workflow",
+      "versions": {}
+    },
+    {
+      "name": "Workflow tie",
+      "description": "Should lose the catalog-order tie",
+      "fileMatch": [".github/workflows/*.yaml"],
+      "url": "memory://catalog/workflow-tie",
+      "versions": {}
+    }
+  ]
+}

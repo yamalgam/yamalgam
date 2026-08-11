@@ -71,6 +71,30 @@ update-test-suite:
 test-compliance:
     cargo nextest run -p yamalgam-compare --test compliance
 
+# Run schema tests, optionally filtered by test name.
+test-schema filter='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "{{filter}}" ]]; then
+        cargo nextest run -p yamalgam-schema -E 'test({{filter}})'
+    else
+        cargo nextest run -p yamalgam-schema
+    fi
+
+# Run language-server tests, optionally filtered by test name.
+test-lsp filter='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "{{filter}}" ]]; then
+        cargo nextest run -p yamalgam-lsp -E 'test({{filter}})'
+    else
+        cargo nextest run -p yamalgam-lsp
+    fi
+
+# Check every feature independently without dev dependencies.
+feature-matrix:
+    cargo hack check --workspace --each-feature --no-dev-deps
+
 check: fmt clippy deny test doc-test
 
 # Watch for changes and run tests (requires cargo-watch)

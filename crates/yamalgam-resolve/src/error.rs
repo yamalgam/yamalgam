@@ -156,6 +156,9 @@ pub enum RetrieveError {
     /// The private HTTP worker stopped unexpectedly.
     #[error("HTTP worker stopped before completing {0}")]
     WorkerStopped(ResourceId),
+    /// The private HTTP worker panicked.
+    #[error("HTTP worker panicked: {0}")]
+    WorkerPanicked(String),
     /// The private HTTP worker could not be started.
     #[error("HTTP worker failed to start: {0}")]
     WorkerStart(#[source] Box<dyn std::error::Error + Send + Sync>),

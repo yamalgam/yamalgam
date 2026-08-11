@@ -24,6 +24,14 @@ use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
 };
 
+mod incremental;
+mod recovery;
+mod syntax;
+
+pub use incremental::{EditError, IncrementalDocument, ReparseOutcome, TextEdit};
+pub use recovery::{RecoveryOptions, RecoveryReport, parse_to_cst_recovering_with_config};
+pub use syntax::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, SyntaxTree, YamlLanguage};
+
 fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
     result.map_err(ResolveError::Parse)
 }

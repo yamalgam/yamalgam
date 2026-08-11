@@ -14,6 +14,7 @@
 // y[impl overview.scalars.double-quoted-escapes]
 // y[impl overview.scalars.flow-multiline-fold]
 // y[impl overview.scalars.flow-plain]
+use std::borrow::Cow;
 use std::collections::{HashMap, hash_map::RandomState};
 use std::fmt;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -356,6 +357,23 @@ impl Value {
     pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
+
+    /// Returns the canonical property-name text for a scalar YAML value.
+    ///
+    /// Strings are borrowed. Null, Booleans, integers, and finite floats use
+    /// their canonical lowercase Rust display form. Collections and
+    /// non-finite floats have no JSON-compatible property-name projection.
+    #[must_use]
+    pub fn canonical_scalar_text(&self) -> Option<Cow<'_, str>> {
+        match self {
+            Self::Null => Some(Cow::Borrowed("null")),
+            Self::Bool(value) => Some(Cow::Owned(value.to_string())),
+            Self::Integer(value) => Some(Cow::Owned(value.to_string())),
+            Self::Float(value) if value.is_finite() => Some(Cow::Owned(value.to_string())),
+            Self::String(value) => Some(Cow::Borrowed(value)),
+            Self::Float(_) | Self::Sequence(_) | Self::Mapping(_) => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +710,29 @@ mod tests {
     #[test]
     fn as_f64_returns_float() {
         assert_eq!(Value::Float(2.5).as_f64(), Some(2.5));
+    }
+
+    #[test]
+    fn canonical_scalar_text_matches_the_yaml_property_boundary() {
+        assert_eq!(Value::Null.canonical_scalar_text().as_deref(), Some("null"));
+        assert_eq!(
+            Value::Bool(true).canonical_scalar_text().as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            Value::Integer(-42).canonical_scalar_text().as_deref(),
+            Some("-42")
+        );
+        assert_eq!(
+            Value::Float(1.0).canonical_scalar_text().as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            Value::from("borrowed").canonical_scalar_text(),
+            Some(std::borrow::Cow::Borrowed("borrowed"))
+        );
+        assert_eq!(Value::Sequence(Vec::new()).canonical_scalar_text(), None);
+        assert_eq!(Value::Mapping(Mapping::new()).canonical_scalar_text(), None);
     }
 
     #[test]

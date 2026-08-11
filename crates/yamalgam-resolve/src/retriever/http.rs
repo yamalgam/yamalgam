@@ -2,9 +2,10 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::io;
-use std::sync::Mutex;
+use std::io::{self, Write as _};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc::{self, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use librebar::error::HttpError;
@@ -19,6 +20,7 @@ use crate::{ResourceId, RetrieveError};
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type ClientFactory =
     Box<dyn FnOnce() -> Result<(tokio::runtime::Runtime, HttpClient), BoxError> + Send + 'static>;
+type WorkerTermination = Arc<Mutex<Option<String>>>;
 
 struct HttpWork {
     id: ResourceId,
@@ -35,6 +37,7 @@ pub struct LibrebarRetriever {
     allowed_hosts: BTreeSet<String>,
     work: Option<SyncSender<HttpWork>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    termination: WorkerTermination,
 }
 
 impl LibrebarRetriever {
@@ -69,12 +72,13 @@ impl LibrebarRetriever {
     fn with_factory(policy: &RefPolicy, factory: ClientFactory) -> Result<Self, RetrieveError> {
         let allowed_schemes = normalized_set(&policy.allow_schemes);
         let allowed_hosts = normalized_set(&policy.allow_hosts);
-        let (work, worker) = start_worker(factory)?;
+        let (work, worker, termination) = start_worker(factory)?;
         Ok(Self {
             allowed_schemes,
             allowed_hosts,
             work: Some(work),
             worker: Mutex::new(Some(worker)),
+            termination,
         })
     }
 
@@ -99,6 +103,46 @@ impl LibrebarRetriever {
         }
         Ok(url.as_str().to_owned())
     }
+
+    /// Stop the private worker and report an abnormal termination.
+    ///
+    /// Calling this method more than once is harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RetrieveError::WorkerPanicked`] when the worker panicked.
+    pub fn shutdown(&mut self) -> Result<(), RetrieveError> {
+        self.work.take();
+        self.join_worker();
+        self.termination_error().map_or(Ok(()), Err)
+    }
+
+    fn worker_stopped(&self, id: ResourceId) -> RetrieveError {
+        self.join_worker();
+        self.termination_error()
+            .unwrap_or(RetrieveError::WorkerStopped(id))
+    }
+
+    fn join_worker(&self) {
+        let worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(worker) = worker
+            && let Err(payload) = worker.join()
+        {
+            record_worker_panic(&self.termination, payload);
+        }
+    }
+
+    fn termination_error(&self) -> Option<RetrieveError> {
+        self.termination
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .map(RetrieveError::WorkerPanicked)
+    }
 }
 
 impl fmt::Debug for LibrebarRetriever {
@@ -116,7 +160,8 @@ impl ResourceRetriever for LibrebarRetriever {
     fn retrieve(&self, request: &ResourceRequest) -> Result<RetrievedResource, RetrieveError> {
         let url = self.approved_url(&request.id)?;
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        self.work
+        if self
+            .work
             .as_ref()
             .ok_or_else(|| RetrieveError::WorkerStopped(request.id.clone()))?
             .send(HttpWork {
@@ -124,10 +169,13 @@ impl ResourceRetriever for LibrebarRetriever {
                 url,
                 response: response_tx,
             })
-            .map_err(|_| RetrieveError::WorkerStopped(request.id.clone()))?;
+            .is_err()
+        {
+            return Err(self.worker_stopped(request.id.clone()));
+        }
         let resource = response_rx
             .recv()
-            .map_err(|_| RetrieveError::WorkerStopped(request.id.clone()))??;
+            .map_err(|_| self.worker_stopped(request.id.clone()))??;
         if let Some(maximum) = request.max_bytes
             && resource.bytes.len() > maximum
         {
@@ -143,26 +191,25 @@ impl ResourceRetriever for LibrebarRetriever {
 
 impl Drop for LibrebarRetriever {
     fn drop(&mut self) {
-        self.work.take();
-        let worker = self
-            .worker
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        if let Some(worker) = worker {
-            let _ = worker.join();
+        if let Err(error) = self.shutdown() {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "yamalgam_event=http_worker_shutdown status=error error={error}"
+            );
         }
     }
 }
 
 fn start_worker(
     factory: ClientFactory,
-) -> Result<(SyncSender<HttpWork>, JoinHandle<()>), RetrieveError> {
+) -> Result<(SyncSender<HttpWork>, JoinHandle<()>, WorkerTermination), RetrieveError> {
     let (work, receiver) = mpsc::sync_channel(1);
     let (ready_tx, ready_rx) = mpsc::sync_channel(0);
-    let worker = thread::Builder::new()
-        .name("yamalgam-librebar-http".to_owned())
-        .spawn(move || {
+    let termination = WorkerTermination::default();
+    let worker = spawn_recorded_worker(
+        "yamalgam-librebar-http",
+        Arc::clone(&termination),
+        move || {
             let (runtime, client) = match factory() {
                 Ok(parts) => parts,
                 Err(source) => {
@@ -177,11 +224,12 @@ fn start_worker(
                 let result = runtime.block_on(fetch(&client, id, &url));
                 let _ = response.send(result);
             }
-        })
-        .map_err(|source| RetrieveError::WorkerStart(Box::new(source)))?;
+        },
+    )
+    .map_err(|source| RetrieveError::WorkerStart(Box::new(source)))?;
 
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok((work, worker)),
+        Ok(Ok(())) => Ok((work, worker, termination)),
         Ok(Err(source)) => {
             let _ = worker.join();
             Err(RetrieveError::WorkerStart(source))
@@ -194,6 +242,29 @@ fn start_worker(
             ))))
         }
     }
+}
+
+fn spawn_recorded_worker(
+    name: &str,
+    termination: WorkerTermination,
+    worker: impl FnOnce() + Send + 'static,
+) -> io::Result<JoinHandle<()>> {
+    thread::Builder::new().name(name.to_owned()).spawn(move || {
+        if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(worker)) {
+            record_worker_panic(&termination, payload);
+        }
+    })
+}
+
+fn record_worker_panic(termination: &WorkerTermination, payload: Box<dyn std::any::Any + Send>) {
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_owned());
+    *termination
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message);
 }
 
 async fn fetch(
@@ -296,6 +367,7 @@ mod tests {
             allowed_hosts: BTreeSet::from(["example.com".into()]),
             work: Some(work),
             worker: Mutex::new(None),
+            termination: WorkerTermination::default(),
         };
         let request = ResourceRequest {
             id: ResourceId::new("http://example.com/data.yaml").unwrap(),
@@ -308,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_panic_closes_the_response_channel_without_panicking_the_caller() {
+    fn worker_panic_is_reported_without_panicking_the_caller() {
         let (work, receiver) = mpsc::sync_channel::<HttpWork>(1);
         let worker = thread::spawn(move || {
             let _accepted = receiver.recv().unwrap();
@@ -319,6 +391,7 @@ mod tests {
             allowed_hosts: BTreeSet::from(["example.com".into()]),
             work: Some(work),
             worker: Mutex::new(Some(worker)),
+            termination: WorkerTermination::default(),
         };
         let request = ResourceRequest {
             id: ResourceId::new("http://example.com/data.yaml").unwrap(),
@@ -326,7 +399,26 @@ mod tests {
         };
         assert!(matches!(
             retriever.retrieve(&request),
-            Err(RetrieveError::WorkerStopped(_))
+            Err(RetrieveError::WorkerPanicked(message)) if message == "injected worker panic"
         ));
+    }
+
+    #[test]
+    fn explicit_shutdown_reports_an_unobserved_worker_panic_once() {
+        let (work, _receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(|| panic!("shutdown worker panic"));
+        let mut retriever = LibrebarRetriever {
+            allowed_schemes: BTreeSet::new(),
+            allowed_hosts: BTreeSet::new(),
+            work: Some(work),
+            worker: Mutex::new(Some(worker)),
+            termination: WorkerTermination::default(),
+        };
+
+        assert!(matches!(
+            retriever.shutdown(),
+            Err(RetrieveError::WorkerPanicked(message)) if message == "shutdown worker panic"
+        ));
+        assert!(retriever.shutdown().is_ok());
     }
 }

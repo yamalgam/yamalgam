@@ -120,6 +120,15 @@ pub enum YgError {
         /// Rendered diagnostic, including input context when available.
         message: String,
     },
+    /// The `validate` filter could not select a schema or rejected its input.
+    #[error("{message}")]
+    RuntimeValidation {
+        /// Complete structured validation failure.
+        #[source]
+        failure: Arc<crate::ValidationFailure>,
+        /// Rendered diagnostic, including input context when available.
+        message: String,
+    },
     /// Resource-accounting arithmetic overflowed before a configured limit
     /// could be checked.
     #[error("{message}")]
@@ -267,6 +276,16 @@ impl YgError {
     ) -> Self {
         Self::RuntimeResolution {
             error,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn runtime_validation(
+        failure: Arc<crate::ValidationFailure>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::RuntimeValidation {
+            failure,
             message: message.into(),
         }
     }

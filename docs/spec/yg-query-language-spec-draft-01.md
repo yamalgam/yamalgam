@@ -743,21 +743,77 @@ r[output.multidoc.suppress]
 
 ---
 
-## 10. Schema Validation (Future)
+## 10. Schema Validation
 
 r[validate]
 
 r[validate.filter]
-`validate(schema)` validates the current value against a JSON Schema or YAML Schema document. The argument is a path to the schema file. Returns the input value if valid; produces an error with diagnostic information if invalid.
+`validate(schema)` MUST validate the current value against a JSON Schema
+document, which MAY itself be authored as JSON-compatible YAML. `schema` is a
+resource reference governed by Section 7 policy. The filter returns the
+identical metadata-bearing input when valid and raises a structured validation
+error when invalid.
 
 r[validate.filter.inline]
-`validate` (no argument) validates against the schema declared in the document's pragma (`# yg-schema-validate: path/to/schema.json`), if present.
+`validate` (no argument) MUST ask the query frontend for the schema selected for
+the current input. The `yg` query frontend uses a top-level string `$schema`
+property. Frontends that retain document-level selection MAY also supply a
+pragma or association result. Callers that require comment-pragma selection
+SHOULD use the validation command.
 
 r[validate.self-describing]
-A YAML document MAY declare its own schema for validation via a comment pragma: `# yg-schema-validate: ./schema.json`. yg SHOULD recognize this pragma and provide a CLI mode (`yg lint` or `yg validate`) that validates all input documents against their declared schemas.
+A YAML document MAY declare its own schema with
+`# yg-schema-validate: ./schema.json`, a compatible
+`yaml-language-server` modeline, or a top-level string `$schema` property.
+`yg validate` and its `lint` alias MUST validate every input document against
+its selected schema.
+
+r[validate.engine]
+Validation MUST use JSON Schema Draft 2020-12 semantics. Yamalgam MUST delegate
+keyword evaluation to the `jsonschema` engine through its custom value API; it
+MUST NOT round-trip the instance through JSON or implement a parallel keyword
+evaluator.
+
+r[validate.keys]
+String, null, Boolean, integer, and finite-float YAML mapping keys MUST project
+to canonical string property names while retaining the original key type and
+span. Complex keys, non-finite numbers, and distinct keys that project to the
+same property name MUST produce representation diagnostics. `propertyNames`
+MUST evaluate the projected string and MUST NOT gain typed-key semantics.
+
+r[validate.selection]
+Schema selection precedence is explicit command schema, pragma or compatible
+modeline, top-level `$schema`, ordered configured association, then an enabled
+SchemaStore catalog match. The literal `none` at a winning level MUST suppress
+lower sources. Selection MUST run independently for each YAML stream document.
+
+r[validate.policy]
+Every root schema, catalog, and schema `$ref` MUST use the shared
+`LoaderConfig` retrieval policy and budgets. Local retrieval MUST stay inside
+the configured capability root. SchemaStore and HTTP or HTTPS retrieval MUST
+be disabled by default. Network access requires both an allowed scheme and an
+exact allowed host.
+
+r[validate.cli]
+`yg validate` and `yg lint` MUST accept explicit or selected schemas, multiple
+files, standard input, multi-document streams, a diagnostic limit, and the
+shared text or JSON output format. Reports MUST preserve input-file and
+document order.
 
 r[validate.output]
-Validation errors are emitted as structured YAML diagnostics: path to the failing node, rule violated, expected vs actual value. The format MUST be machine-parseable for CI integration.
+Validation command output MUST be a machine-parseable array of document
+reports with `filename`, zero-based `document`, `valid`, and `diagnostics`.
+
+r[validate.output.fields]
+Each diagnostic MUST contain `code`, `severity`, `message`, `keyword`, RFC 6901
+`instance_path`, RFC 6901 `schema_path`, optional `expected` and `actual`, and
+source `span` and `labels` when available.
+
+r[validate.exit]
+The validation command MUST exit 0 when every report is valid, 1 when schemas
+loaded and at least one document has findings, 2 for usage or policy-argument
+errors, and 5 for input parsing, schema selection, retrieval, or compilation
+failure.
 
 ---
 
@@ -794,7 +850,10 @@ and parameterized includes remain future work.
 ### Phase 5: Schema Validation
 
 r[phases.validation]
-Implement `validate` filter. Implement `# yg-schema-validate:` pragma recognition. Implement `yg lint` / `yg validate` subcommands. Ship structured diagnostic output.
+Complete in Milestone 12: `validate` filters, schema selection including
+`# yg-schema-validate:`, `yg validate` / `yg lint`, Draft 2020-12 evaluation,
+structured diagnostics, policy-bound retrieval, and shared LSP schema
+services.
 
 ### Phase 6: jq Roundtrip Bridge
 
@@ -827,7 +886,7 @@ r[appendix.mfyq]
 r[appendix.filters]
 
 **YAML-native filters** (not in jq):
-`tag`, `set_tag(t)`, `anchor`, `set_anchor(n)`, `style`, `set_style(s)`, `chomping`, `kind`, `raw`, `resolved_type`, `is_alias`, `schema`, `resolve`, `resolve_as(s)`, `document_index`, `file_index`, `filename`, `leading_comments`, `inline_comment`, `trailing_comments`, `comments`, `set_inline_comment(s)`, `set_leading_comment(s)`, `merge`, `explode`, `aliases`, `orphan_anchors`, `include`, `ref`, `validate(schema)`, `to_entries_rich`, `keys_sorted`.
+`tag`, `set_tag(t)`, `anchor`, `set_anchor(n)`, `style`, `set_style(s)`, `chomping`, `kind`, `raw`, `resolved_type`, `is_alias`, `schema`, `resolve`, `resolve_as(s)`, `document_index`, `file_index`, `filename`, `leading_comments`, `inline_comment`, `trailing_comments`, `comments`, `set_inline_comment(s)`, `set_leading_comment(s)`, `merge`, `explode`, `aliases`, `orphan_anchors`, `include`, `ref`, `validate`, `validate(schema)`, `to_entries_rich`, `keys_sorted`.
 
 **jq filters with changed semantics:**
 `type` (returns YAML type names), `keys` (insertion order).

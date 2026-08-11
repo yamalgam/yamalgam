@@ -1,0 +1,59 @@
+---
+reviewed_at: 2026-08-11
+reviewed_commit: 7afeea1e98dd987fb8d014e46cc29cc57b2faca5
+status: DONE
+summary:
+  confirmed: 10
+  adjusted: 10
+  disputed: 0
+findings:
+  - slug: leading-document-marker-shifts-lsp-document-indexes
+    verdict: confirmed
+  - slug: sequence-item-schema-context-is-unreachable
+    verdict: confirmed
+  - slug: ropey-unicode-lines-desynchronize-lsp-positions
+    verdict: confirmed
+  - slug: documented-example-hover-is-not-implemented
+    verdict: confirmed
+  - slug: lsp-cancellation-cannot-interrupt-work-and-retains-request-ids
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; corrected the server.rs request-handler range and verbatim indentation."
+  - slug: stdio-error-path-can-hang-joining-reader
+    verdict: confirmed
+  - slug: lsp-definition-resource-errors-erased
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; restored source indentation in definition.rs:67."
+  - slug: schema-validator-cache-key-erases-identity-and-options
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; restored indentation and changed the clone relationship from causal to related."
+  - slug: schema-native-adapter-unbounded-recursion
+    verdict: confirmed
+  - slug: schema-diagnostic-cap-does-not-bound-work
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; restored source indentation in schema.rs:171 and diagnostic.rs:46."
+  - slug: schema-session-holds-global-lock-across-retrieval
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; completed retrieval evidence, cited parsing, and strengthened byte-budget/reentrancy remediation."
+  - slug: schema-session-cache-clones-located-documents
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; restored indentation and changed the cache-key relationship from causal to related."
+  - slug: schema-navigation-recompiles-patterns-per-request
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; restored source indentation in navigation.rs:351."
+  - slug: recovering-cst-span-normalization-is-quadratic
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; extended the normalize_spans range through its closing brace at recovery.rs:130."
+  - slug: lsp-didchange-rebuilds-full-document-stages
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; restored exact indentation across all four cited ranges."
+  - slug: lsp-diagnostic-positioning-recopies-source
+    verdict: confirmed
+  - slug: located-value-allows-invalid-parallel-shapes
+    verdict: confirmed
+  - slug: located-composition-clones-location-subtrees
+    verdict: adjusted
+    notes: "Mechanism and concern confirmed; restored exact indentation in both composer ranges."
+  - slug: http-worker-panic-result-discarded
+    verdict: confirmed
+  - slug: librebar-http-enables-unused-tokio-subsystems
+    verdict: confirmed

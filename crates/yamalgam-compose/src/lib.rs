@@ -9,7 +9,10 @@
 use std::collections::HashMap;
 
 use yamalgam_core::tag_resolution::TagResolver;
-use yamalgam_core::{LimitExceeded, LoaderConfig, Mapping, ResourceLimits, TagResolution, Value};
+use yamalgam_core::{
+    LimitExceeded, LoaderConfig, LocatedValue, LocationKind, LocationShapeError, ResourceLimits,
+    Span, TagResolution, Value,
+};
 use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
 };
@@ -29,6 +32,8 @@ pub enum ComposeError {
     /// Resource-accounting arithmetic overflowed before a configured limit
     /// could be checked.
     ResourceOverflow(&'static str),
+    /// An internal composition path produced mismatched value and location trees.
+    LocationShape(LocationShapeError),
 }
 
 impl std::fmt::Display for ComposeError {
@@ -41,6 +46,7 @@ impl std::fmt::Display for ComposeError {
             Self::ResourceOverflow(resource) => {
                 write!(f, "limit exceeded: {resource} overflow")
             }
+            Self::LocationShape(error) => write!(f, "invalid located value: {error}"),
         }
     }
 }
@@ -50,6 +56,7 @@ impl std::error::Error for ComposeError {
         match self {
             Self::Resolve(e) => Some(e),
             Self::LimitExceeded(error) => Some(error),
+            Self::LocationShape(error) => Some(error),
             Self::UndefinedAlias(_) | Self::UnexpectedEvent(_) | Self::ResourceOverflow(_) => None,
         }
     }
@@ -67,13 +74,113 @@ impl From<ParseError> for ComposeError {
     }
 }
 
+impl From<LocationShapeError> for ComposeError {
+    fn from(error: LocationShapeError) -> Self {
+        Self::LocationShape(error)
+    }
+}
+
 fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
     result.map_err(ResolveError::Parse)
 }
 
 struct AnchoredValue {
-    value: Value,
+    node: ComposedNode,
     materialized_weight: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompositionMode {
+    Value,
+    Located,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ComposedNode {
+    Value(Value),
+    Located(LocatedValue),
+}
+
+impl ComposedNode {
+    fn scalar(value: Value, span: Span, mode: CompositionMode) -> Result<Self, ComposeError> {
+        match mode {
+            CompositionMode::Value => Ok(Self::Value(value)),
+            CompositionMode::Located => LocatedValue::scalar(value, span)
+                .map(Self::Located)
+                .map_err(Into::into),
+        }
+    }
+
+    fn sequence(items: Vec<Self>, span: Span, mode: CompositionMode) -> Result<Self, ComposeError> {
+        match mode {
+            CompositionMode::Value => items
+                .into_iter()
+                .map(Self::into_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Sequence)
+                .map(Self::Value),
+            CompositionMode::Located => items
+                .into_iter()
+                .map(Self::into_located)
+                .collect::<Result<Vec<_>, _>>()
+                .map(|items| LocatedValue::sequence(items, span))
+                .map(Self::Located),
+        }
+    }
+
+    fn mapping(
+        entries: Vec<(Self, Self)>,
+        span: Span,
+        mode: CompositionMode,
+    ) -> Result<Self, ComposeError> {
+        match mode {
+            CompositionMode::Value => {
+                let mut mapping = yamalgam_core::Mapping::new();
+                for (key, value) in entries {
+                    mapping.insert(key.into_value()?, value.into_value()?);
+                }
+                Ok(Self::Value(Value::Mapping(mapping)))
+            }
+            CompositionMode::Located => entries
+                .into_iter()
+                .map(|(key, value)| Ok((key.into_located()?, value.into_located()?)))
+                .collect::<Result<Vec<_>, ComposeError>>()
+                .map(|entries| LocatedValue::mapping(entries, span))
+                .map(Self::Located),
+        }
+    }
+
+    const fn value(&self) -> &Value {
+        match self {
+            Self::Value(value) => value,
+            Self::Located(value) => value.value(),
+        }
+    }
+
+    fn into_value(self) -> Result<Value, ComposeError> {
+        match self {
+            Self::Value(value) => Ok(value),
+            Self::Located(_) => Err(mode_mismatch()),
+        }
+    }
+
+    fn into_located(self) -> Result<LocatedValue, ComposeError> {
+        match self {
+            Self::Located(value) => Ok(value),
+            Self::Value(_) => Err(mode_mismatch()),
+        }
+    }
+
+    fn with_root_span(self, span: Span) -> Self {
+        match self {
+            Self::Value(value) => Self::Value(value),
+            Self::Located(value) => Self::Located(value.with_root_span(span)),
+        }
+    }
+}
+
+fn mode_mismatch() -> ComposeError {
+    ComposeError::UnexpectedEvent("internal composition mode mismatch".into())
 }
 
 /// Builds [`Value`] documents from a resolved event stream.
@@ -105,6 +212,24 @@ impl<'input> Composer<'input, ResolvedEvents<'input, NoopResolver>> {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(input: &'input str) -> Result<Vec<Value>, ComposeError> {
         Self::with_resolver(input, NoopResolver)
+    }
+
+    /// Parse and compose all documents with parallel source-location trees.
+    pub fn from_str_located(input: &'input str) -> Result<Vec<LocatedValue>, ComposeError> {
+        let config = LoaderConfig::default();
+        Self::from_str_located_with_config(input, &config)
+    }
+
+    /// Parse and compose located documents with caller-selected resource limits.
+    pub fn from_str_located_with_config(
+        input: &'input str,
+        config: &LoaderConfig,
+    ) -> Result<Vec<LocatedValue>, ComposeError> {
+        let parser = Parser::with_config(input, config);
+        let events =
+            ResolvedEvents::new_with_config(parser.map(map_parse_error), NoopResolver, config);
+        let mut composer = Composer::new_with_config(events, config);
+        composer.compose_stream_located()
     }
 
     /// Parse and compose all documents with no resource limits.
@@ -246,6 +371,24 @@ where
     // y[impl model.loading.well-formed]
     // y[impl model.loading.reject-ill-formed]
     pub fn compose_stream(&mut self) -> Result<Vec<Value>, ComposeError> {
+        self.compose_stream_nodes(CompositionMode::Value)?
+            .into_iter()
+            .map(ComposedNode::into_value)
+            .collect()
+    }
+
+    /// Compose all documents with parallel semantic source-location trees.
+    pub fn compose_stream_located(&mut self) -> Result<Vec<LocatedValue>, ComposeError> {
+        self.compose_stream_nodes(CompositionMode::Located)?
+            .into_iter()
+            .map(ComposedNode::into_located)
+            .collect()
+    }
+
+    fn compose_stream_nodes(
+        &mut self,
+        mode: CompositionMode,
+    ) -> Result<Vec<ComposedNode>, ComposeError> {
         // Consume StreamStart.
         self.expect_event(|e| matches!(e, Event::StreamStart), "StreamStart")?;
 
@@ -270,7 +413,7 @@ where
                     self.next_event()?;
                     self.anchors.clear();
 
-                    let value = self.compose_document_content()?;
+                    let value = self.compose_document_content(mode)?;
 
                     // Consume DocumentEnd.
                     self.consume_document_end()?;
@@ -279,7 +422,7 @@ where
                 _ => {
                     // Implicit document.
                     self.anchors.clear();
-                    let value = self.compose_node(0)?;
+                    let value = self.compose_node(0, mode)?;
 
                     // Consume optional DocumentEnd.
                     if let Some(Event::DocumentEnd { .. }) = self.peek_event()? {
@@ -296,16 +439,19 @@ where
     /// Compose the content of an explicit document (after DocumentStart).
     ///
     /// If the next event is DocumentEnd, the document is empty (Null).
-    fn compose_document_content(&mut self) -> Result<Value, ComposeError> {
+    fn compose_document_content(
+        &mut self,
+        mode: CompositionMode,
+    ) -> Result<ComposedNode, ComposeError> {
         let Some(peeked) = self.peek_event()? else {
-            return Ok(Value::Null);
+            return ComposedNode::scalar(Value::Null, Span::default(), mode);
         };
 
-        if matches!(peeked, Event::DocumentEnd { .. }) {
-            return Ok(Value::Null);
+        if let Event::DocumentEnd { span, .. } = peeked {
+            return ComposedNode::scalar(Value::Null, *span, mode);
         }
 
-        self.compose_node(0)
+        self.compose_node(0, mode)
     }
 
     /// Compose a single YAML node from the event stream.
@@ -314,7 +460,11 @@ where
     // y[impl flow.alias.error-undefined-anchor]
     // y[impl flow.alias.must-anchor-first]
     // y[impl flow.alias.must-not-specify-properties]
-    fn compose_node(&mut self, depth: usize) -> Result<Value, ComposeError> {
+    fn compose_node(
+        &mut self,
+        depth: usize,
+        mode: CompositionMode,
+    ) -> Result<ComposedNode, ComposeError> {
         self.config
             .check_depth(depth)
             .map_err(ComposeError::LimitExceeded)?;
@@ -327,91 +477,107 @@ where
                 anchor,
                 value,
                 style,
+                span,
                 ..
             } => {
-                let resolved = self.resolve_scalar(&value, style);
+                let resolved =
+                    ComposedNode::scalar(self.resolve_scalar(&value, style), span, mode)?;
                 if let Some(name) = anchor {
                     self.remember_anchor(name.into_owned(), &resolved)?;
                 }
                 Ok(resolved)
             }
 
-            Event::SequenceStart { anchor, .. } => {
+            Event::SequenceStart {
+                anchor,
+                span: start_span,
+                ..
+            } => {
                 let mut items = Vec::new();
-                loop {
+                let end_span = loop {
                     let Some(peeked) = self.peek_event()? else {
                         return Err(ComposeError::UnexpectedEvent(
                             "unterminated sequence".into(),
                         ));
                     };
                     if matches!(peeked, Event::SequenceEnd { .. }) {
-                        self.next_event()?;
-                        break;
+                        let Some(Event::SequenceEnd { span }) = self.next_event()? else {
+                            unreachable!("peeked sequence end must remain next")
+                        };
+                        break span;
                     }
                     self.next_collection_size(items.len())?;
-                    items.push(self.compose_node(child_depth(depth)?)?);
-                }
-                let value = Value::Sequence(items);
+                    items.push(self.compose_node(child_depth(depth)?, mode)?);
+                };
+                let value =
+                    ComposedNode::sequence(items, encompassing_span(start_span, end_span), mode)?;
                 if let Some(name) = anchor {
                     self.remember_anchor(name.into_owned(), &value)?;
                 }
                 Ok(value)
             }
 
-            Event::MappingStart { anchor, .. } => {
-                let mut map = Mapping::new();
-                let mut merge_pairs: Vec<(Value, Value)> = Vec::new();
+            Event::MappingStart {
+                anchor,
+                span: start_span,
+                ..
+            } => {
+                let mut entries = Vec::new();
+                let mut merge_pairs = Vec::new();
                 let mut pair_count = 0_usize;
 
-                loop {
+                let end_span = loop {
                     let Some(peeked) = self.peek_event()? else {
                         return Err(ComposeError::UnexpectedEvent("unterminated mapping".into()));
                     };
                     if matches!(peeked, Event::MappingEnd { .. }) {
-                        self.next_event()?;
-                        break;
+                        let Some(Event::MappingEnd { span }) = self.next_event()? else {
+                            unreachable!("peeked mapping end must remain next")
+                        };
+                        break span;
                     }
 
                     pair_count = self.next_collection_size(pair_count)?;
                     let nested_depth = child_depth(depth)?;
-                    let key = self.compose_node(nested_depth)?;
-                    let val = self.compose_node(nested_depth)?;
+                    let key = self.compose_node(nested_depth, mode)?;
+                    let val = self.compose_node(nested_depth, mode)?;
 
                     // Merge key handling: `<<` key.
-                    if is_merge_key(&key) {
+                    if is_merge_key(key.value()) {
                         collect_merge_pairs(&val, &mut merge_pairs, &self.config, 0)?;
                     } else {
-                        map.insert(key, val);
+                        insert_pair(&mut entries, key, val);
                     }
-                }
+                };
 
                 // Apply merge pairs (explicit keys take precedence).
                 if !merge_pairs.is_empty() {
-                    let mut merged = Mapping::new();
-                    for (k, v) in merge_pairs {
-                        merged.insert(k, v);
+                    let mut merged = Vec::new();
+                    for (key, value) in merge_pairs {
+                        insert_pair(&mut merged, key, value);
                         self.config
                             .check_collection_size(merged.len())
                             .map_err(ComposeError::LimitExceeded)?;
                     }
                     // Explicit keys override merged ones.
-                    for (k, v) in map.iter() {
-                        merged.insert(k.clone(), v.clone());
+                    for (key, value) in entries {
+                        insert_pair(&mut merged, key, value);
                         self.config
                             .check_collection_size(merged.len())
                             .map_err(ComposeError::LimitExceeded)?;
                     }
-                    map = merged;
+                    entries = merged;
                 }
 
-                let value = Value::Mapping(map);
+                let value =
+                    ComposedNode::mapping(entries, encompassing_span(start_span, end_span), mode)?;
                 if let Some(name) = anchor {
                     self.remember_anchor(name.into_owned(), &value)?;
                 }
                 Ok(value)
             }
 
-            Event::Alias { name, .. } => {
+            Event::Alias { name, span } => {
                 self.alias_expansion_count = self
                     .alias_expansion_count
                     .checked_add(1)
@@ -432,7 +598,7 @@ where
                     anchored.materialized_weight,
                     &self.config,
                 )?;
-                Ok(anchored.value.clone())
+                Ok(anchored.node.clone().with_root_span(span))
             }
 
             other => Err(ComposeError::UnexpectedEvent(format!("{other:?}"))),
@@ -535,12 +701,12 @@ where
         Ok(next)
     }
 
-    fn remember_anchor(&mut self, name: String, value: &Value) -> Result<(), ComposeError> {
-        let materialized_weight = materialized_weight(value)?;
+    fn remember_anchor(&mut self, name: String, value: &ComposedNode) -> Result<(), ComposeError> {
+        let materialized_weight = materialized_weight(value.value())?;
         self.anchors.insert(
             name,
             AnchoredValue {
-                value: value.clone(),
+                node: value.clone(),
                 materialized_weight,
             },
         );
@@ -558,6 +724,32 @@ fn child_depth(depth: usize) -> Result<usize, ComposeError> {
     depth
         .checked_add(1)
         .ok_or(ComposeError::ResourceOverflow("depth"))
+}
+
+fn located_scalar(value: Value, span: Span) -> Result<LocatedValue, ComposeError> {
+    LocatedValue::scalar(value, span).map_err(ComposeError::from)
+}
+
+const fn encompassing_span(start: Span, end: Span) -> Span {
+    Span {
+        start: start.start,
+        end: end.end,
+    }
+}
+
+fn insert_pair(
+    entries: &mut Vec<(ComposedNode, ComposedNode)>,
+    key: ComposedNode,
+    value: ComposedNode,
+) {
+    let existing = entries
+        .iter()
+        .position(|(candidate, _)| candidate.value() == key.value());
+    if let Some(index) = existing {
+        entries[index] = (key, value);
+    } else {
+        entries.push((key, value));
+    }
 }
 
 fn materialized_weight(value: &Value) -> Result<usize, ComposeError> {
@@ -607,17 +799,10 @@ fn is_merge_key(key: &Value) -> bool {
     matches!(key, Value::String(s) if s == "<<")
 }
 
-/// Collect key-value pairs from a merge source into `pairs`.
-///
-/// If `val` is a Mapping, its entries are collected. If `val` is a Sequence of
-/// Mappings, all entries from all mappings are collected (in order). Non-mapping
-/// values are rejected as errors per the YAML merge-key spec.
-///
-/// The `depth` parameter tracks recursion into sequences; `config` enforces
-/// [`max_merge_depth`](ResourceLimits::max_merge_depth).
+/// Collect key-value pairs from a merge source without changing its mode.
 fn collect_merge_pairs(
-    val: &Value,
-    pairs: &mut Vec<(Value, Value)>,
+    val: &ComposedNode,
+    pairs: &mut Vec<(ComposedNode, ComposedNode)>,
     config: &ResourceLimits,
     depth: usize,
 ) -> Result<(), ComposeError> {
@@ -625,39 +810,96 @@ fn collect_merge_pairs(
         return Err(ComposeError::LimitExceeded(error));
     }
     match val {
-        Value::Mapping(m) => {
-            for (k, v) in m.iter() {
-                push_merge_pair(pairs, k, v, config)?;
+        ComposedNode::Value(Value::Mapping(mapping)) => {
+            for (key, value) in mapping.iter() {
+                push_merge_pair(
+                    pairs,
+                    ComposedNode::Value(key.clone()),
+                    ComposedNode::Value(value.clone()),
+                    config,
+                )?;
             }
             Ok(())
         }
-        Value::Sequence(seq) => {
-            for item in seq {
-                match item {
-                    Value::Mapping(m) => {
-                        for (k, v) in m.iter() {
-                            push_merge_pair(pairs, k, v, config)?;
-                        }
-                    }
-                    other => {
-                        return Err(ComposeError::UnexpectedEvent(format!(
-                            "merge key (<<) sequence item must be a mapping, got {other:?}"
-                        )));
-                    }
+        ComposedNode::Value(Value::Sequence(items)) => {
+            for item in items {
+                let Value::Mapping(mapping) = item else {
+                    return Err(ComposeError::UnexpectedEvent(format!(
+                        "merge key (<<) sequence item must be a mapping, got {item:?}"
+                    )));
+                };
+                for (key, value) in mapping.iter() {
+                    push_merge_pair(
+                        pairs,
+                        ComposedNode::Value(key.clone()),
+                        ComposedNode::Value(value.clone()),
+                        config,
+                    )?;
                 }
             }
             Ok(())
         }
-        _ => Err(ComposeError::UnexpectedEvent(
+        ComposedNode::Located(located) => match (located.value(), &located.locations().kind) {
+            (Value::Mapping(mapping), LocationKind::Mapping(locations)) => {
+                for ((key, value), entry_locations) in mapping.iter().zip(locations) {
+                    push_merge_pair(
+                        pairs,
+                        ComposedNode::Located(LocatedValue::new(
+                            key.clone(),
+                            entry_locations.key.clone(),
+                        )?),
+                        ComposedNode::Located(LocatedValue::new(
+                            value.clone(),
+                            entry_locations.value.clone(),
+                        )?),
+                        config,
+                    )?;
+                }
+                Ok(())
+            }
+            (Value::Sequence(items), LocationKind::Sequence(item_locations)) => {
+                for (item, locations) in items.iter().zip(item_locations) {
+                    match (item, &locations.kind) {
+                        (Value::Mapping(mapping), LocationKind::Mapping(entry_locations)) => {
+                            for ((key, value), locations) in mapping.iter().zip(entry_locations) {
+                                push_merge_pair(
+                                    pairs,
+                                    ComposedNode::Located(LocatedValue::new(
+                                        key.clone(),
+                                        locations.key.clone(),
+                                    )?),
+                                    ComposedNode::Located(LocatedValue::new(
+                                        value.clone(),
+                                        locations.value.clone(),
+                                    )?),
+                                    config,
+                                )?;
+                            }
+                        }
+                        other => {
+                            return Err(ComposeError::UnexpectedEvent(format!(
+                                "merge key (<<) sequence item must be a mapping, got {:?}",
+                                other.0
+                            )));
+                        }
+                    }
+                }
+                Ok(())
+            }
+            (_, _) => Err(ComposeError::UnexpectedEvent(
+                "merge key (<<) value must be a mapping or sequence of mappings".into(),
+            )),
+        },
+        ComposedNode::Value(_) => Err(ComposeError::UnexpectedEvent(
             "merge key (<<) value must be a mapping or sequence of mappings".into(),
         )),
     }
 }
 
 fn push_merge_pair(
-    pairs: &mut Vec<(Value, Value)>,
-    key: &Value,
-    value: &Value,
+    pairs: &mut Vec<(ComposedNode, ComposedNode)>,
+    key: ComposedNode,
+    value: ComposedNode,
     config: &ResourceLimits,
 ) -> Result<(), ComposeError> {
     let next = pairs
@@ -667,13 +909,26 @@ fn push_merge_pair(
     config
         .check_collection_size(next)
         .map_err(ComposeError::LimitExceeded)?;
-    pairs.push((key.clone(), value.clone()));
+    pairs.push((key, value));
     Ok(())
 }
 
 /// Parse a YAML string into a list of [`Value`] documents.
 pub fn from_str(input: &str) -> Result<Vec<Value>, ComposeError> {
     Composer::from_str(input)
+}
+
+/// Parse a YAML string into documents with parallel source-location trees.
+pub fn from_str_located(input: &str) -> Result<Vec<LocatedValue>, ComposeError> {
+    Composer::from_str_located(input)
+}
+
+/// Parse YAML documents with parallel source-location trees and resource limits.
+pub fn from_str_located_with_config(
+    input: &str,
+    config: &LoaderConfig,
+) -> Result<Vec<LocatedValue>, ComposeError> {
+    Composer::from_str_located_with_config(input, config)
 }
 
 /// Parse a YAML string into documents with no resource limits.
@@ -689,6 +944,33 @@ pub fn from_str_single(input: &str) -> Result<Value, ComposeError> {
     let mut docs = Composer::from_str(input)?;
     match docs.len() {
         0 => Ok(Value::Null),
+        1 => Ok(docs.remove(0)),
+        n => Err(ComposeError::UnexpectedEvent(format!(
+            "expected 1 document, got {n}",
+        ))),
+    }
+}
+
+/// Parse a YAML string into one value with a parallel source-location tree.
+pub fn from_str_single_located(input: &str) -> Result<LocatedValue, ComposeError> {
+    let mut docs = Composer::from_str_located(input)?;
+    match docs.len() {
+        0 => located_scalar(Value::Null, Span::default()),
+        1 => Ok(docs.remove(0)),
+        n => Err(ComposeError::UnexpectedEvent(format!(
+            "expected 1 document, got {n}",
+        ))),
+    }
+}
+
+/// Parse one located YAML value with caller-selected resource limits.
+pub fn from_str_single_located_with_config(
+    input: &str,
+    config: &LoaderConfig,
+) -> Result<LocatedValue, ComposeError> {
+    let mut docs = Composer::from_str_located_with_config(input, config)?;
+    match docs.len() {
+        0 => located_scalar(Value::Null, Span::default()),
         1 => Ok(docs.remove(0)),
         n => Err(ComposeError::UnexpectedEvent(format!(
             "expected 1 document, got {n}",
@@ -911,6 +1193,26 @@ mod tests {
             Err(ComposeError::LimitExceeded(error))
                 if error.limit == ResourceLimit::OutputBytes
         ));
+    }
+
+    #[test]
+    fn value_only_composition_keeps_anchor_cache_unlocated() {
+        let input = "base: &base [one, {two: 2}]\ncopy: *base";
+        let parser = Parser::new(input);
+        let events = ResolvedEvents::new(
+            Box::new(parser.map(|result| result.map_err(ResolveError::Parse))),
+            NoopResolver,
+        );
+        let mut composer = Composer::new(events);
+
+        composer.compose_stream().unwrap();
+
+        assert!(
+            composer
+                .anchors
+                .values()
+                .all(|anchor| matches!(anchor.node, ComposedNode::Value(_)))
+        );
     }
 
     #[test]

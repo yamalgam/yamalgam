@@ -16,7 +16,9 @@ use yamalgam_resolve::{
 
 use crate::error::{BuildError, YgError};
 use crate::runtime_resolution::SessionQueryResolver;
-use crate::value::{Data, Meta, NodeStyle, ScalarPresentation, YamlVal, YgMap, YgSeq};
+use crate::value::{
+    Data, Meta, NodeStyle, RuntimeErrorPayload, ScalarPresentation, YamlVal, YgMap, YgSeq,
+};
 
 /// Source resource and opaque query-session identity for one YAML node.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -290,7 +292,7 @@ pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey)
                 let YamlVal {
                     data,
                     mut meta,
-                    runtime_resolution_error,
+                    runtime_error,
                 } = value;
                 if let Some(metadata) = &mut meta
                     && let Some(origin) = &mut Rc::make_mut(metadata).origin
@@ -302,7 +304,7 @@ pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey)
                         let values = std::mem::take(&mut Rc::make_mut(&mut items).0);
                         pending.push(AssignSessionWork::FinishSequence {
                             meta,
-                            runtime_resolution_error,
+                            runtime_error,
                             resolved_start: resolved.len(),
                         });
                         pending.extend(values.into_iter().rev().map(AssignSessionWork::Visit));
@@ -311,7 +313,7 @@ pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey)
                         let entries = std::mem::take(&mut Rc::make_mut(&mut mapping).0);
                         pending.push(AssignSessionWork::FinishMapping {
                             meta,
-                            runtime_resolution_error,
+                            runtime_error,
                             resolved_start: resolved.len(),
                         });
                         for (key, value) in entries.into_iter().rev() {
@@ -322,25 +324,25 @@ pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey)
                     data => resolved.push(YamlVal {
                         data,
                         meta,
-                        runtime_resolution_error,
+                        runtime_error,
                     }),
                 }
             }
             AssignSessionWork::FinishSequence {
                 meta,
-                runtime_resolution_error,
+                runtime_error,
                 resolved_start,
             } => {
                 let items = resolved.split_off(resolved_start);
                 resolved.push(YamlVal {
                     data: Data::Seq(Rc::new(YgSeq(items))),
                     meta,
-                    runtime_resolution_error,
+                    runtime_error,
                 });
             }
             AssignSessionWork::FinishMapping {
                 meta,
-                runtime_resolution_error,
+                runtime_error,
                 resolved_start,
             } => {
                 let mut nodes = resolved.split_off(resolved_start).into_iter();
@@ -354,7 +356,7 @@ pub(crate) fn assign_session(value: &mut YamlVal, session: ResolutionSessionKey)
                 resolved.push(YamlVal {
                     data: Data::Map(Rc::new(mapping)),
                     meta,
-                    runtime_resolution_error,
+                    runtime_error,
                 });
             }
         }
@@ -547,12 +549,12 @@ enum AssignSessionWork {
     Visit(YamlVal),
     FinishSequence {
         meta: Option<Rc<Meta>>,
-        runtime_resolution_error: Option<Arc<ResolveError>>,
+        runtime_error: Option<Arc<RuntimeErrorPayload>>,
         resolved_start: usize,
     },
     FinishMapping {
         meta: Option<Rc<Meta>>,
-        runtime_resolution_error: Option<Arc<ResolveError>>,
+        runtime_error: Option<Arc<RuntimeErrorPayload>>,
         resolved_start: usize,
     },
 }
@@ -604,7 +606,7 @@ fn finish_owned_value(
                 session,
             }),
         })),
-        runtime_resolution_error: None,
+        runtime_error: None,
     };
     if let Some(anchor) = metadata.anchor {
         anchors.insert(anchor, value.clone());

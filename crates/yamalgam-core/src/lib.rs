@@ -41,6 +41,8 @@ pub mod diagnostic;
 
 pub mod loader;
 
+pub mod located;
+
 pub mod tag;
 
 pub mod tag_resolution;
@@ -52,6 +54,10 @@ pub use diagnostic::{Diagnostic, Label, Mark, Severity, Span};
 pub use loader::{
     FilePolicy, IncludePolicy, LimitExceeded, LoaderConfig, RefPolicy, ResolutionCapability,
     ResolutionLimits, ResolutionMode, ResolutionPolicy, ResourceLimit, ResourceLimits,
+};
+
+pub use located::{
+    LocatedValue, LocationKind, LocationShapeError, MappingLocations, ValueLocations,
 };
 
 pub use tag::{Yaml12TagResolver, resolve_plain_scalar};

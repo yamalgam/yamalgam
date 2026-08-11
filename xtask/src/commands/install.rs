@@ -28,15 +28,17 @@ pub fn cmd_install(args: InstallArgs) -> Result<(), String> {
         ));
     }
 
-    let bin_path = built_binary(&root, &args.profile);
-    if !bin_path.exists() {
-        return Err(format!("built binary not found at {}", bin_path.display()));
-    }
+    for name in ["yg", "yamalgam-lsp"] {
+        let bin_path = built_binary(&root, &args.profile, name);
+        if !bin_path.exists() {
+            return Err(format!("built binary not found at {}", bin_path.display()));
+        }
 
-    let dest = bin_dir.join("yg");
-    fs::copy(&bin_path, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-    set_executable(&dest)?;
-    println!("installed {}", dest.display());
+        let dest = bin_dir.join(name);
+        fs::copy(&bin_path, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        set_executable(&dest)?;
+        println!("installed {}", dest.display());
+    }
     Ok(())
 }
 
@@ -54,13 +56,13 @@ fn build_cli(root: &Path, profile: &str) -> Result<std::process::ExitStatus, Str
         .map_err(|e| format!("failed to run cargo: {e}"))
 }
 
-fn built_binary(root: &Path, profile: &str) -> PathBuf {
+fn built_binary(root: &Path, profile: &str, name: &str) -> PathBuf {
     let dir = match profile {
         "release" => "release",
         "dev" => "debug",
         _ => profile,
     };
-    root.join("target").join(dir).join("yg")
+    root.join("target").join(dir).join(name)
 }
 
 fn expand_tilde(path: &str) -> Result<PathBuf, String> {

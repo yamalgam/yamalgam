@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 
-use yamalgam_core::{LimitExceeded, ResourceLimits, Span};
+use yamalgam_core::{LimitExceeded, Mark, ResourceLimits, Span};
 
 use crate::Atom;
 use crate::reader::Reader;
@@ -45,6 +45,8 @@ pub struct ScanError {
     pub kind: ScanErrorKind,
     /// Human-readable error message.
     pub message: String,
+    /// Source range associated with the failure, when source content caused it.
+    span: Option<Span>,
 }
 
 impl ScanError {
@@ -54,13 +56,28 @@ impl ScanError {
         Self {
             kind,
             message: message.into(),
+            span: None,
         }
+    }
+
+    /// Attach a source span to this error.
+    #[must_use]
+    pub const fn with_span(mut self, span: Span) -> Self {
+        self.span = Some(span);
+        self
+    }
+
+    /// Return the source range associated with this error, if available.
+    #[must_use]
+    pub const fn span(&self) -> Option<Span> {
+        self.span
     }
 
     fn limit(error: LimitExceeded) -> Self {
         Self {
             kind: ScanErrorKind::LimitExceeded(error),
             message: error.to_string(),
+            span: None,
         }
     }
 }
@@ -226,6 +243,44 @@ pub struct Scanner<'input> {
 }
 
 impl<'input> Scanner<'input> {
+    fn current_char_span(&self) -> Span {
+        let start = self.reader.mark();
+        let mut end = start;
+        match self.reader.peek() {
+            Some('\r') => {
+                end.offset += 1 + usize::from(self.reader.peek_at(1) == Some('\n'));
+                end.line += 1;
+                end.column = 0;
+            }
+            Some('\n') => {
+                end.offset += 1;
+                end.line += 1;
+                end.column = 0;
+            }
+            Some(character) => {
+                end.offset += character.len_utf8();
+                end.column += 1;
+            }
+            None => {}
+        }
+        Span { start, end }
+    }
+
+    fn current_prefix_span(&self, characters: usize) -> Span {
+        let start = self.reader.mark();
+        let mut end = start;
+        for character in self.reader.input()[start.offset..].chars().take(characters) {
+            end.offset += character.len_utf8();
+            if character == '\n' || character == '\r' {
+                end.line += 1;
+                end.column = 0;
+            } else {
+                end.column += 1;
+            }
+        }
+        Span { start, end }
+    }
+
     fn current_depth(&self) -> Result<usize, ScanError> {
         self.indent_stack
             .len()
@@ -396,6 +451,7 @@ impl<'input> Scanner<'input> {
     fn set_static_error(&mut self, kind: ScanErrorKind, message: &'static str) {
         self.error = Some(ScanError {
             kind,
+            span: Some(self.current_char_span()),
             message: message.to_owned(),
         });
     }
@@ -557,6 +613,7 @@ impl<'input> Scanner<'input> {
         if self.document_start_line == Some(mark.line) {
             self.error = Some(ScanError {
                 kind: ScanErrorKind::UnexpectedContent,
+                span: Some(self.current_char_span()),
                 message: "block collection cannot start on the document start line".to_string(),
             });
             return;
@@ -576,7 +633,7 @@ impl<'input> Scanner<'input> {
             }
         };
         if let Err(error) = self.config.check_depth(depth) {
-            self.error = Some(ScanError::limit(error));
+            self.error = Some(ScanError::limit(error).with_span(self.current_char_span()));
             return;
         }
         self.indent = column;
@@ -705,6 +762,7 @@ impl<'input> Scanner<'input> {
                     };
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::InvalidIndentation,
+                        span: Some(self.current_char_span()),
                         message: format!("invalid {kind_name} indent"),
                     });
                     return;
@@ -841,9 +899,10 @@ impl<'input> Scanner<'input> {
     /// Scan a `%YAML` or `%TAG` directive.
     // cref: fy_scan_directive (fy-parse.c:2197)
     fn fetch_directive(&mut self) -> Result<Token<'input>, ScanError> {
+        let directive_start = self.reader.mark();
         self.reader.advance(); // skip '%'
         if self.check_prefix("YAML") && is_blank(self.reader.peek_at(4)) {
-            self.fetch_version_directive()
+            self.fetch_version_directive(directive_start)
         } else if self.check_prefix("TAG") && is_blank(self.reader.peek_at(3)) {
             self.fetch_tag_directive()
         } else {
@@ -852,6 +911,7 @@ impl<'input> Scanner<'input> {
             self.skip_to_next_line();
             Err(ScanError {
                 kind: ScanErrorKind::InvalidDirective,
+                span: Some(self.current_char_span()),
                 message: "unknown directive".to_string(),
             })
         }
@@ -865,11 +925,18 @@ impl<'input> Scanner<'input> {
     // y[impl struct.yaml-directive.should-warn-higher-minor] — minor version differences tolerated
     /// Scan `%YAML x.y`.
     // cref: fy_scan_directive (fy-parse.c:2275)
-    fn fetch_version_directive(&mut self) -> Result<Token<'input>, ScanError> {
+    fn fetch_version_directive(
+        &mut self,
+        directive_start: Mark,
+    ) -> Result<Token<'input>, ScanError> {
         // SF5V: duplicate %YAML directive in the same prologue.
         if self.seen_yaml_directive {
             return Err(ScanError {
                 kind: ScanErrorKind::InvalidDirective,
+                span: Some(Span {
+                    start: directive_start,
+                    end: self.reader.mark(),
+                }),
                 message: "duplicate %YAML directive".to_string(),
             });
         }
@@ -889,6 +956,7 @@ impl<'input> Scanner<'input> {
         if ver_start.offset == ver_end.offset {
             return Err(ScanError {
                 kind: ScanErrorKind::InvalidDirective,
+                span: Some(self.current_char_span()),
                 message: "expected version after %YAML".to_string(),
             });
         }
@@ -910,6 +978,7 @@ impl<'input> Scanner<'input> {
             {
                 return Err(ScanError {
                     kind: ScanErrorKind::InvalidDirective,
+                    span: Some(self.current_char_span()),
                     message: format!("unsupported version number '{version_str}'"),
                 });
             }
@@ -930,6 +999,7 @@ impl<'input> Scanner<'input> {
                 Some(c) => {
                     return Err(ScanError {
                         kind: ScanErrorKind::InvalidDirective,
+                        span: Some(self.current_char_span()),
                         message: format!("invalid character '{c}' after YAML version"),
                     });
                 }
@@ -966,6 +1036,7 @@ impl<'input> Scanner<'input> {
         if self.reader.peek() != Some('!') {
             return Err(ScanError {
                 kind: ScanErrorKind::InvalidTag,
+                span: Some(self.current_char_span()),
                 message: "expected '!' at start of tag handle".to_string(),
             });
         }
@@ -1034,10 +1105,13 @@ impl<'input> Scanner<'input> {
             self.flow_indent = self.indent;
         }
         let Some(flow_level) = self.flow_level.checked_add(1) else {
-            self.error = Some(ScanError::new(
-                ScanErrorKind::ResourceOverflow("flow depth accounting"),
-                "flow depth accounting overflow",
-            ));
+            self.error = Some(
+                ScanError::new(
+                    ScanErrorKind::ResourceOverflow("flow depth accounting"),
+                    "flow depth accounting overflow",
+                )
+                .with_span(Span { start, end }),
+            );
             return;
         };
         self.flow_level = flow_level;
@@ -1050,7 +1124,7 @@ impl<'input> Scanner<'input> {
             }
         };
         if let Err(error) = self.config.check_depth(depth) {
-            self.error = Some(ScanError::limit(error));
+            self.error = Some(ScanError::limit(error).with_span(Span { start, end }));
             return;
         }
         self.flow_is_mapping.push(c == '{');
@@ -1064,9 +1138,12 @@ impl<'input> Scanner<'input> {
     // y[impl flow.in-flow+3]
     fn fetch_flow_collection_end(&mut self, c: char) {
         if self.flow_level == 0 {
+            let start = self.reader.mark();
             self.reader.advance();
+            let end = self.reader.mark();
             self.error = Some(ScanError {
                 kind: ScanErrorKind::UnexpectedCharacter,
+                span: Some(Span { start, end }),
                 message: format!("unexpected '{c}' outside of flow collection"),
             });
             return;
@@ -1126,6 +1203,7 @@ impl<'input> Scanner<'input> {
                 Some(c) => {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::UnexpectedCharacter,
+                        span: Some(self.current_char_span()),
                         message: format!("invalid character '{c}' after flow collection close"),
                     });
                 }
@@ -1159,6 +1237,7 @@ impl<'input> Scanner<'input> {
         if self.tab_in_preceding_whitespace {
             self.error = Some(ScanError {
                 kind: ScanErrorKind::InvalidTab,
+                span: Some(self.current_char_span()),
                 message: "tab character used for indentation of block entry".to_string(),
             });
             return;
@@ -1171,6 +1250,7 @@ impl<'input> Scanner<'input> {
         if col > self.indent && self.last_block_token_line.is_some_and(|vl| vl == mark.line) {
             self.error = Some(ScanError {
                 kind: ScanErrorKind::UnexpectedContent,
+                span: Some(self.current_char_span()),
                 message: "block sequence entries not allowed in this context".to_string(),
             });
             return;
@@ -1202,6 +1282,7 @@ impl<'input> Scanner<'input> {
         if self.reader.peek() == Some('\t') {
             self.error = Some(ScanError {
                 kind: ScanErrorKind::InvalidTab,
+                span: Some(self.current_char_span()),
                 message: "tab character used for indentation".to_string(),
             });
         }
@@ -1289,6 +1370,10 @@ impl<'input> Scanner<'input> {
                 if reject {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::InvalidSimpleKey,
+                        span: Some(Span {
+                            start: sk.mark,
+                            end: mark,
+                        }),
                         message: "multiline simple key is not allowed".to_string(),
                     });
                     return;
@@ -1300,7 +1385,8 @@ impl<'input> Scanner<'input> {
                     // Enforce max_key_bytes limit on the key's scalar data.
                     if let Err(error) = self.config.check_key_size(self.queue[pos].atom.data.len())
                     {
-                        self.error = Some(ScanError::limit(error));
+                        self.error =
+                            Some(ScanError::limit(error).with_span(self.current_char_span()));
                         return;
                     }
 
@@ -1310,6 +1396,7 @@ impl<'input> Scanner<'input> {
                         if self.document_start_line == Some(sk.mark.line) {
                             self.error = Some(ScanError {
                                 kind: ScanErrorKind::UnexpectedContent,
+                                span: Some(self.current_char_span()),
                                 message: "block collection cannot start on the document start line"
                                     .to_string(),
                             });
@@ -1333,7 +1420,8 @@ impl<'input> Scanner<'input> {
                             }
                         };
                         if let Err(error) = self.config.check_depth(depth) {
-                            self.error = Some(ScanError::limit(error));
+                            self.error =
+                                Some(ScanError::limit(error).with_span(self.current_char_span()));
                             return;
                         }
                         self.indent = sk.mark.column as i32;
@@ -1371,6 +1459,7 @@ impl<'input> Scanner<'input> {
         if self.flow_level == 0 && self.reader.peek() == Some('\t') {
             self.error = Some(ScanError {
                 kind: ScanErrorKind::InvalidTab,
+                span: Some(self.current_char_span()),
                 message: "tab character used for indentation".to_string(),
             });
         }
@@ -1620,6 +1709,7 @@ impl<'input> Scanner<'input> {
             self.reader.advance();
             self.error = Some(ScanError {
                 kind: ScanErrorKind::UnexpectedCharacter,
+                span: Some(self.current_char_span()),
                 message: format!("unexpected character '{c}' in this context"),
             });
             return;
@@ -1643,6 +1733,10 @@ impl<'input> Scanner<'input> {
             {
                 self.error = Some(ScanError {
                     kind: ScanErrorKind::InvalidSimpleKey,
+                    span: Some(Span {
+                        start: start_mark,
+                        end: self.reader.mark(),
+                    }),
                     message: "invalid multiline plain key".to_string(),
                 });
                 return;
@@ -1651,7 +1745,7 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(error) = self.config.check_scalar_size(text.len()) {
-            self.error = Some(ScanError::limit(error));
+            self.error = Some(ScanError::limit(error).with_span(self.current_char_span()));
             return;
         }
 
@@ -1754,6 +1848,7 @@ impl<'input> Scanner<'input> {
             Some(c) => {
                 self.error = Some(ScanError {
                     kind: ScanErrorKind::InvalidTag,
+                    span: Some(self.current_char_span()),
                     message: format!("invalid character '{c}' after tag"),
                 });
                 return;
@@ -1773,6 +1868,10 @@ impl<'input> Scanner<'input> {
                 if handle != "!!" && !self.tag_handles.iter().any(|h| h == handle) {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::InvalidTag,
+                        span: Some(Span {
+                            start: start_mark,
+                            end: end_mark,
+                        }),
                         message: format!("undeclared tag handle '{handle}'"),
                     });
                     return;
@@ -1932,6 +2031,7 @@ impl<'input> Scanner<'input> {
                 Some(c) => {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::InvalidBlockScalarHeader,
+                        span: Some(self.current_char_span()),
                         message: format!("invalid character '{c}' in block scalar header"),
                     });
                     return;
@@ -1960,6 +2060,7 @@ impl<'input> Scanner<'input> {
                 if max_empty_spaces > indent {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::InvalidIndentation,
+                        span: Some(self.current_char_span()),
                         message: "block scalar with wrong indented line after spaces only"
                             .to_string(),
                     });
@@ -2067,7 +2168,7 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(error) = self.config.check_scalar_size(content.len()) {
-            self.error = Some(ScanError::limit(error));
+            self.error = Some(ScanError::limit(error).with_span(self.current_char_span()));
             return;
         }
 
@@ -2164,6 +2265,10 @@ impl<'input> Scanner<'input> {
                 None => {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::UnterminatedScalar,
+                        span: Some(Span {
+                            start: start_mark,
+                            end: self.reader.mark(),
+                        }),
                         message: "unterminated single-quoted scalar".to_string(),
                     });
                     return;
@@ -2203,6 +2308,7 @@ impl<'input> Scanner<'input> {
                         {
                             self.error = Some(ScanError {
                                 kind: ScanErrorKind::DocumentMarkerInScalar,
+                                span: Some(self.current_prefix_span(3)),
                                 message: "document marker inside single-quoted scalar".to_string(),
                             });
                             return;
@@ -2229,6 +2335,7 @@ impl<'input> Scanner<'input> {
                         {
                             self.error = Some(ScanError {
                                 kind: ScanErrorKind::InvalidIndentation,
+                                span: Some(self.current_char_span()),
                                 message: "single-quoted scalar continuation below block indent"
                                     .to_string(),
                             });
@@ -2266,7 +2373,7 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(error) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError::limit(error));
+            self.error = Some(ScanError::limit(error).with_span(self.current_char_span()));
             return;
         }
 
@@ -2329,6 +2436,10 @@ impl<'input> Scanner<'input> {
                 None => {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::UnterminatedScalar,
+                        span: Some(Span {
+                            start: start_mark,
+                            end: self.reader.mark(),
+                        }),
                         message: "unterminated double-quoted scalar".to_string(),
                     });
                     return;
@@ -2340,6 +2451,7 @@ impl<'input> Scanner<'input> {
                 Some('\\') => {
                     needs_owned = true;
                     has_escape = true;
+                    let escape_start = self.reader.mark();
                     self.reader.advance(); // skip backslash
                     match self.reader.peek() {
                         Some('\\') => {
@@ -2443,6 +2555,10 @@ impl<'input> Scanner<'input> {
                             self.reader.advance();
                             self.error = Some(ScanError {
                                 kind: ScanErrorKind::InvalidEscape,
+                                span: Some(Span {
+                                    start: escape_start,
+                                    end: self.reader.mark(),
+                                }),
                                 message: format!(
                                     "invalid escape character '\\{c}' in double-quoted scalar"
                                 ),
@@ -2452,6 +2568,10 @@ impl<'input> Scanner<'input> {
                         None => {
                             self.error = Some(ScanError {
                                 kind: ScanErrorKind::UnterminatedScalar,
+                                span: Some(Span {
+                                    start: escape_start,
+                                    end: self.reader.mark(),
+                                }),
                                 message: "unterminated escape in double-quoted scalar".to_string(),
                             });
                             return;
@@ -2489,6 +2609,7 @@ impl<'input> Scanner<'input> {
                         {
                             self.error = Some(ScanError {
                                 kind: ScanErrorKind::DocumentMarkerInScalar,
+                                span: Some(self.current_prefix_span(3)),
                                 message: "document marker inside double-quoted scalar".to_string(),
                             });
                             return;
@@ -2500,6 +2621,7 @@ impl<'input> Scanner<'input> {
                     if self.reader.peek() == Some('\t') && self.reader.mark().column == 0 {
                         self.error = Some(ScanError {
                             kind: ScanErrorKind::InvalidTab,
+                            span: Some(self.current_char_span()),
                             message: "invalid tab used as indentation".to_string(),
                         });
                         return;
@@ -2527,6 +2649,7 @@ impl<'input> Scanner<'input> {
                         {
                             self.error = Some(ScanError {
                                 kind: ScanErrorKind::InvalidIndentation,
+                                span: Some(self.current_char_span()),
                                 message: "double-quoted scalar continuation below block indent"
                                     .to_string(),
                             });
@@ -2564,7 +2687,7 @@ impl<'input> Scanner<'input> {
 
         // Enforce max_scalar_bytes limit.
         if let Err(error) = self.config.check_scalar_size(data.len()) {
-            self.error = Some(ScanError::limit(error));
+            self.error = Some(ScanError::limit(error).with_span(self.current_char_span()));
             return;
         }
 
@@ -2586,6 +2709,7 @@ impl<'input> Scanner<'input> {
             Err(message) => {
                 self.error = Some(ScanError {
                     kind: ScanErrorKind::InvalidEscape,
+                    span: Some(self.current_char_span()),
                     message,
                 });
                 false
@@ -2683,6 +2807,7 @@ impl<'input> Scanner<'input> {
                 Some(c) => {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::UnexpectedCharacter,
+                        span: Some(self.current_char_span()),
                         message: format!("invalid trailing content '{c}' after quoted scalar"),
                     });
                 }
@@ -2735,6 +2860,7 @@ impl<'input> Scanner<'input> {
             Some(c) => {
                 self.error = Some(ScanError {
                     kind: ScanErrorKind::UnexpectedCharacter,
+                    span: Some(self.current_char_span()),
                     message: format!("invalid character '{c}' after {context}"),
                 });
             }
@@ -2810,6 +2936,7 @@ impl<'input> Scanner<'input> {
                 {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::InvalidTab,
+                        span: Some(self.current_char_span()),
                         message: "tab character cannot be used as content".to_string(),
                     });
                     continue;
@@ -2818,6 +2945,7 @@ impl<'input> Scanner<'input> {
                 if self.seen_directive && self.in_directive_prologue {
                     self.error = Some(ScanError {
                         kind: ScanErrorKind::InvalidDirective,
+                        span: Some(self.current_char_span()),
                         message: "directives without a document".to_string(),
                     });
                     continue;
@@ -2869,6 +2997,7 @@ impl<'input> Scanner<'input> {
                     if !self.in_directive_prologue {
                         self.error = Some(ScanError {
                             kind: ScanErrorKind::InvalidDirective,
+                            span: Some(self.current_char_span()),
                             message: "directive without document end marker '...'".to_string(),
                         });
                         continue;
@@ -2909,6 +3038,7 @@ impl<'input> Scanner<'input> {
             if self.root_token_emitted && self.indent == -1 && self.flow_level == 0 {
                 self.error = Some(ScanError {
                     kind: ScanErrorKind::UnexpectedContent,
+                    span: Some(self.current_char_span()),
                     message: "extra content after document root node".to_string(),
                 });
                 continue;

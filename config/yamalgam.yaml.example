@@ -31,3 +31,22 @@ log_level: info
 # - YAMALGAM_LOG_DIR=/path/to/log/dir
 # Optional log directory override:
 # log_dir: /path/to/log/dir
+
+# ------------------------------------------------------------------------------
+# JSON Schema validation
+# ------------------------------------------------------------------------------
+
+# Ordered path associations used after document-local schema pragmas and
+# top-level $schema properties.
+# schemas:
+#   - uri: ./schemas/service.yaml
+#     file_match:
+#       - config/*.yaml
+#       - service.yaml
+
+# SchemaStore selection and catalog retrieval are disabled by default.
+# Network catalogs additionally require `yg validate --allow-refs https`
+# and an explicit `--allow-ref-host` entry.
+schema_store:
+  enabled: false
+  url: https://www.schemastore.org/api/json/catalog.json

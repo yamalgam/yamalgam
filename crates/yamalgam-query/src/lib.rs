@@ -47,6 +47,7 @@ mod ops;
 pub mod resolution;
 mod runtime_limits;
 mod runtime_resolution;
+mod validation;
 mod valt;
 pub(crate) mod value;
 
@@ -60,7 +61,8 @@ pub use resolution::{
     QueryResolver, ResolutionHandle, ResolutionSessionKey, ResolvedInput, ResourceOrigin,
     resolution_handle, resolve_document, resolve_documents,
 };
-pub use value::{Meta, NodeStyle, ScalarPresentation, YamlVal};
+pub use validation::{QuerySchemaResolver, ValidationFailure};
+pub use value::{Meta, NodeStyle, ScalarPresentation, ValueLimitError, YamlVal};
 
 /// Parse one strict JSON value under the supplied resource limits.
 pub fn parse_json_with_config(
