@@ -964,7 +964,7 @@ pub fn parse_to_cst_recovering_with_config<'input>(
 ) -> RecoveryReport<'input>;
 ```
 
-- [ ] **Step 1: Write span and recovery tests**
+- [x] **Step 1: Write span and recovery tests**
 
 Assert exact spans for every `ScanErrorKind` family. Add malformed documents
 with valid content before and after errors, multiple errors, multi-document
@@ -973,21 +973,21 @@ repeat the same failure. Assert byte-for-byte `to_text()`, monotonic recovery
 offsets, at most 64 diagnostics by default, and a valid CST node after the
 first error.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 cargo nextest run -p yamalgam-scanner --test error_kinds
 cargo nextest run -p yamalgam-cst --test recovery
 ```
 
-- [ ] **Step 3: Attach spans at scanner error construction**
+- [x] **Step 3: Attach spans at scanner error construction**
 
 Store an optional span in `ScanError`. Keep `kind` and `message` behavior.
 Capture the reader mark before consuming invalid content and the mark after it
 when known. Add `ParseError::span()` for every variant. Resource-policy errors
 without a source token may return `None`.
 
-- [ ] **Step 4: Add bounded island recovery**
+- [x] **Step 4: Add bounded island recovery**
 
 Run the ordinary parser on successive source slices. On error, preserve all
 events produced so far, wrap at least one complete failing line in an Error
@@ -997,7 +997,7 @@ marks by the original byte/line base. If the computed boundary does not
 advance, consume one Unicode scalar value. Stop at `max_diagnostics` and wrap
 the untouched remainder in one final Error node.
 
-- [ ] **Step 5: Verify GREEN and ordinary parser stability**
+- [x] **Step 5: Verify GREEN and ordinary parser stability**
 
 ```bash
 cargo nextest run -p yamalgam-scanner --test error_kinds

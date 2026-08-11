@@ -24,6 +24,10 @@ use yamalgam_parser::{
     Event, NoopResolver, ParseError, Parser, ResolveError, ResolvedEvents, Resolver,
 };
 
+mod recovery;
+
+pub use recovery::{RecoveryOptions, RecoveryReport, parse_to_cst_recovering_with_config};
+
 fn map_parse_error(result: Result<Event<'_>, ParseError>) -> Result<Event<'_>, ResolveError> {
     result.map_err(ResolveError::Parse)
 }

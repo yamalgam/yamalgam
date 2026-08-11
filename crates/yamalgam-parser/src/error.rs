@@ -77,3 +77,21 @@ pub enum ParseError {
         refs: bool,
     },
 }
+
+impl ParseError {
+    /// Return the source range associated with this error, when available.
+    #[must_use]
+    pub const fn span(&self) -> Option<Span> {
+        match self {
+            Self::Scan(error) => error.span(),
+            Self::UnexpectedToken { span, .. }
+            | Self::UnexpectedEof { span, .. }
+            | Self::DuplicateVersionDirective { span }
+            | Self::DuplicateTagDirective { span, .. }
+            | Self::UndefinedTagPrefix { span, .. } => Some(*span),
+            Self::LimitExceeded(_)
+            | Self::ResourceOverflow(_)
+            | Self::UnsupportedResolutionPolicy { .. } => None,
+        }
+    }
+}
