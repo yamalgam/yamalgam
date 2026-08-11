@@ -1,7 +1,6 @@
 //! Conversion of recovering parser and schema reports to LSP diagnostics.
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
@@ -59,10 +58,9 @@ impl SchemaWorkspace {
     ) -> Result<Arc<SchemaValidator>, SchemaError> {
         let id = schema_resource_id(&selected.uri)?;
         let document = self.session.load(&id)?;
-        let digest = semantic_digest(&document.document.value);
         let key = ValidatorCacheKey {
             resource: document.id.clone(),
-            semantic_digest: digest,
+            semantic_digest: document.semantic_digest(),
             max_diagnostics,
         };
         if let Some(validator) = self.lock_validators().get(&key) {
@@ -259,34 +257,6 @@ fn schema_resource_id(uri: &str) -> Result<ResourceId, SchemaError> {
         }
         .into()
     })
-}
-
-fn semantic_digest(value: &yamalgam_core::Value) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hash_value(value, &mut hasher);
-    hasher.finish()
-}
-
-fn hash_value(value: &yamalgam_core::Value, hasher: &mut impl Hasher) {
-    std::mem::discriminant(value).hash(hasher);
-    match value {
-        yamalgam_core::Value::Null => {}
-        yamalgam_core::Value::Bool(value) => value.hash(hasher),
-        yamalgam_core::Value::Integer(value) => value.hash(hasher),
-        yamalgam_core::Value::Float(value) => value.to_bits().hash(hasher),
-        yamalgam_core::Value::String(value) => value.hash(hasher),
-        yamalgam_core::Value::Sequence(values) => {
-            for value in values {
-                hash_value(value, hasher);
-            }
-        }
-        yamalgam_core::Value::Mapping(mapping) => {
-            for (key, value) in mapping.iter() {
-                hash_value(key, hasher);
-                hash_value(value, hasher);
-            }
-        }
-    }
 }
 
 pub(super) fn redacted_schema_uri(uri: &str) -> String {

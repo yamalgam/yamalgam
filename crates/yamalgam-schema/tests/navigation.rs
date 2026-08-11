@@ -253,13 +253,13 @@ fn navigation_follows_remote_refs_and_indexes_dynamic_anchors() {
     config.resolution.refs.mode = ResolutionMode::Automatic;
     config.resolution.refs.allow_schemes = vec!["memory".to_owned()];
     let session = SchemaSession::new(Arc::new(retriever), config);
-    let root = SchemaDocument {
-        id: ResourceId::new("memory://schemas/root.yaml").unwrap(),
-        document: yamalgam_compose::from_str_single_located(
+    let root = SchemaDocument::new(
+        ResourceId::new("memory://schemas/root.yaml").unwrap(),
+        yamalgam_compose::from_str_single_located(
             "type: object\nproperties:\n  count: {$ref: ./remote.yaml#count}\n",
         )
         .unwrap(),
-    };
+    );
     let validator = session.compile(root).unwrap();
 
     let context = validator.context_at("/count");

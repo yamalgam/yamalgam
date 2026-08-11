@@ -1,6 +1,7 @@
 //! Policy-bound loading for external JSON Schema resources.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
@@ -21,6 +22,26 @@ pub struct SchemaDocument {
     pub id: ResourceId,
     /// Parsed YAML schema document.
     pub document: LocatedValue,
+    semantic_digest: u64,
+}
+
+impl SchemaDocument {
+    /// Create a schema document and retain its semantic content identity.
+    #[must_use]
+    pub fn new(id: ResourceId, document: LocatedValue) -> Self {
+        let semantic_digest = semantic_digest(&document.value);
+        Self {
+            id,
+            document,
+            semantic_digest,
+        }
+    }
+
+    /// Return the retained digest of the semantic schema value.
+    #[must_use]
+    pub const fn semantic_digest(&self) -> u64 {
+        self.semantic_digest
+    }
 }
 
 /// Failure while loading or traversing an external schema graph.
@@ -90,7 +111,7 @@ pub enum SchemaRetrieveError {
 
 #[derive(Default)]
 struct SchemaSessionState {
-    documents: HashMap<ResourceId, SchemaDocument>,
+    documents: HashMap<ResourceId, Arc<SchemaDocument>>,
     schemas: HashMap<ResourceId, JsonValue>,
     aliases: HashMap<ResourceId, ResourceId>,
     in_flight: HashMap<ResourceId, ThreadId>,
@@ -108,7 +129,7 @@ pub struct SchemaSession {
 }
 
 enum LoadStart<'session> {
-    Cached(SchemaDocument),
+    Cached(Arc<SchemaDocument>),
     Pending(LoadPermit<'session>),
 }
 
@@ -152,11 +173,14 @@ impl LoadPermit<'_> {
         result
     }
 
-    fn publish(mut self, document: SchemaDocument) -> SchemaDocument {
+    fn publish(mut self, document: SchemaDocument) -> Arc<SchemaDocument> {
         let mut state = self.session.lock_state();
         let canonical = document.id.clone();
         let document = state.documents.get(&canonical).cloned().unwrap_or_else(|| {
-            state.documents.insert(canonical.clone(), document.clone());
+            let document = Arc::new(document);
+            state
+                .documents
+                .insert(canonical.clone(), Arc::clone(&document));
             document
         });
         if canonical != self.requested {
@@ -206,7 +230,7 @@ impl SchemaSession {
     /// # Errors
     ///
     /// Returns a typed policy, limit, retrieval, encoding, or document error.
-    pub fn load(&self, id: &ResourceId) -> Result<SchemaDocument, SchemaRetrieveError> {
+    pub fn load(&self, id: &ResourceId) -> Result<Arc<SchemaDocument>, SchemaRetrieveError> {
         self.enforce_policy(id, None)?;
         self.load_document(id)
     }
@@ -216,7 +240,10 @@ impl SchemaSession {
     /// # Errors
     ///
     /// Returns schema conversion/compilation failures or typed retrieval errors.
-    pub fn compile(&self, root: SchemaDocument) -> Result<SchemaValidator, SchemaError> {
+    pub fn compile(
+        &self,
+        root: impl Into<Arc<SchemaDocument>>,
+    ) -> Result<SchemaValidator, SchemaError> {
         self.compile_with_options(root, SchemaOptions::default())
     }
 
@@ -230,13 +257,14 @@ impl SchemaSession {
     /// Returns schema conversion/compilation failures or typed retrieval errors.
     pub fn compile_with_options(
         &self,
-        root: SchemaDocument,
+        root: impl Into<Arc<SchemaDocument>>,
         options: SchemaOptions,
     ) -> Result<SchemaValidator, SchemaError> {
+        let root = root.into();
         let root_schema = schema_value_to_json(&root.document.value)?;
         {
             let mut state = self.lock_state();
-            state.documents.insert(root.id.clone(), root.clone());
+            state.documents.insert(root.id.clone(), Arc::clone(&root));
             state.schemas.insert(root.id.clone(), root_schema.clone());
         }
         self.preload_graph(&root.id, &root_schema)?;
@@ -341,7 +369,7 @@ impl SchemaSession {
                 let mut ancestors = work.ancestors.clone();
                 ancestors.push(document.id.clone());
                 pending.push_back(GraphWork {
-                    id: document.id,
+                    id: document.id.clone(),
                     schema,
                     depth,
                     ancestors,
@@ -351,7 +379,10 @@ impl SchemaSession {
         Ok(())
     }
 
-    fn load_document(&self, requested: &ResourceId) -> Result<SchemaDocument, SchemaRetrieveError> {
+    fn load_document(
+        &self,
+        requested: &ResourceId,
+    ) -> Result<Arc<SchemaDocument>, SchemaRetrieveError> {
         let mut load = match self.begin_load(requested)? {
             LoadStart::Cached(document) => return Ok(document),
             LoadStart::Pending(load) => load,
@@ -409,10 +440,7 @@ impl SchemaSession {
             id: canonical.clone(),
             message: error.to_string(),
         })?;
-        let document = SchemaDocument {
-            id: canonical,
-            document,
-        };
+        let document = SchemaDocument::new(canonical, document);
         Ok(load.publish(document))
     }
 
@@ -663,6 +691,34 @@ fn resource_uri(id: &ResourceId) -> Result<Option<String>, SchemaRetrieveError> 
     url::Url::from_file_path(path)
         .map(|url| Some(url.into()))
         .map_err(|()| SchemaRetrieveError::InvalidBase(id.clone()))
+}
+
+fn semantic_digest(value: &yamalgam_core::Value) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_value(value, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_value(value: &yamalgam_core::Value, hasher: &mut impl Hasher) {
+    std::mem::discriminant(value).hash(hasher);
+    match value {
+        yamalgam_core::Value::Null => {}
+        yamalgam_core::Value::Bool(value) => value.hash(hasher),
+        yamalgam_core::Value::Integer(value) => value.hash(hasher),
+        yamalgam_core::Value::Float(value) => value.to_bits().hash(hasher),
+        yamalgam_core::Value::String(value) => value.hash(hasher),
+        yamalgam_core::Value::Sequence(values) => {
+            for value in values {
+                hash_value(value, hasher);
+            }
+        }
+        yamalgam_core::Value::Mapping(mapping) => {
+            for (key, value) in mapping.iter() {
+                hash_value(key, hasher);
+                hash_value(value, hasher);
+            }
+        }
+    }
 }
 
 fn charge_edge(

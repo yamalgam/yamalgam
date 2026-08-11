@@ -40,10 +40,10 @@ fn config(schemes: &[&str]) -> LoaderConfig {
 }
 
 fn document(id: &str, yaml: &str) -> SchemaDocument {
-    SchemaDocument {
-        id: ResourceId::new(id).expect("valid fixture URI"),
-        document: yamalgam_compose::from_str_single_located(yaml).expect("valid fixture schema"),
-    }
+    SchemaDocument::new(
+        ResourceId::new(id).expect("valid fixture URI"),
+        yamalgam_compose::from_str_single_located(yaml).expect("valid fixture schema"),
+    )
 }
 
 fn value(value: serde_json::Value) -> Value {
@@ -84,6 +84,23 @@ fn retrieval_resolves_relative_absolute_and_cyclic_schema_graphs() {
             .validate(&value(json!({"name": 1, "count": 0, "node": {}})))
             .valid
     );
+}
+
+#[test]
+fn retrieval_cache_returns_shared_document_handles() {
+    let id = ResourceId::new("memory://schemas/shared.yaml").unwrap();
+    let session = SchemaSession::new(
+        Arc::new(memory(&[(
+            "memory://schemas/shared.yaml",
+            "type: object\nproperties:\n  name: {type: string}\n",
+        )])),
+        config(&["memory"]),
+    );
+
+    let first = session.load(&id).unwrap();
+    let second = session.load(&id).unwrap();
+
+    assert!(std::ptr::eq(&first.document, &second.document));
 }
 
 #[test]
