@@ -195,7 +195,7 @@ impl Value {
 }
 ```
 
-- [ ] **Step 1: Write adapter conformance tests**
+- [x] **Step 1: Write adapter conformance tests**
 
 Build the document returned by `jsonschema::json::conformance::document()` as
 a `yamalgam_core::Value`, prepare it with `PreparedInstance`, and call:
@@ -219,7 +219,7 @@ where those interfaces exist. Record the upstream commit, original
 feature/source paths, semantic changes, and MIT license beside the tests. Do
 not add Cucumber or `yaml-schema` as a dependency.
 
-- [ ] **Step 2: Run the focused test to verify RED**
+- [x] **Step 2: Run the focused test to verify RED**
 
 ```bash
 just test-schema value_adapter
@@ -227,7 +227,7 @@ just test-schema value_adapter
 
 Expected: fail because the crate and adapter do not exist.
 
-- [ ] **Step 3: Add the crate with the exact dependency boundary**
+- [x] **Step 3: Add the crate with the exact dependency boundary**
 
 Use this dependency set:
 
@@ -252,7 +252,7 @@ cannot disagree. Put null/Boolean/integer/finite-float/string text conversion
 in `Value::canonical_scalar_text`; do not duplicate it in schema or located
 pointer code. Do not clone the instance tree.
 
-- [ ] **Step 4: Add focused Just recipes**
+- [x] **Step 4: Add focused Just recipes**
 
 ```make
 test-schema filter='':
@@ -268,7 +268,7 @@ feature-matrix:
 Make an empty filter run the whole selected crate by branching in the recipe,
 rather than passing `test()` to nextest.
 
-- [ ] **Step 5: Run the adapter tests to verify GREEN**
+- [x] **Step 5: Run the adapter tests to verify GREEN**
 
 ```bash
 just test-schema value_adapter
@@ -276,7 +276,7 @@ just test-schema yaml_schema_compat
 just clippy
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/yamalgam-core crates/yamalgam-schema .justfile Cargo.lock
