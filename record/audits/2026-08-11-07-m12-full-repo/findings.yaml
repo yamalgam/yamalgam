@@ -1,0 +1,1479 @@
+---
+audit_date: 2026-08-11
+scope: "Full Yamalgam workspace at the M12 schema-validation and language-server release boundary"
+commit: 7afeea1e98dd987fb8d014e46cc29cc57b2faca5
+assessment: |
+  M12 is functionally broad and its deterministic gates are clean, but the fresh
+  static review found release-relevant gaps at the editor/schema boundary. The
+  highest-risk cluster is semantic drift between YAML documents and LSP positions:
+  leading document markers and sequence ancestry can select the wrong schema, while
+  Ropey's default line model disagrees with the LSP. Schema compilation also has an
+  identity-unsafe validator cache, unbounded adapter recursion, and several hot paths
+  whose advertised limits bound retained output rather than work. The scanner,
+  parser, query engine, dependency advisories, license policy, and workspace unsafe
+  census were otherwise clean in the supplied evidence.
+
+narratives:
+  - slug: lsp-semantic-positioning
+    title: "LSP Semantic Positioning and Request Lifecycle"
+    thesis: "Editor features are wired end to end, but several independently implemented position and document-context paths disagree with YAML and LSP semantics."
+    verdict: "The defects are deterministic and user-visible: a conventional leading document marker disables or misroutes schema features, sequence items lose schema ancestry, and Unicode line separators can desynchronize client positions. The synchronous server also advertises cancellation it cannot honor during active work and can hang while joining its stdin reader after an error."
+    flow:
+      - id: client-edit
+        label: "Client edit or request"
+        type: start
+      - id: position-map
+        label: "Map UTF-16 position"
+        type: process
+        findings:
+          - slug: ropey-unicode-lines-desynchronize-lsp-positions
+            label: "Line model differs"
+      - id: document-context
+        label: "Select YAML document and path"
+        type: process
+        findings:
+          - slug: leading-document-marker-shifts-lsp-document-indexes
+            label: "Index shifted"
+          - slug: sequence-item-schema-context-is-unreachable
+            label: "Sequence ancestry lost"
+      - id: schema-feature
+        label: "Completion, hover, or definition"
+        type: process
+        findings:
+          - slug: documented-example-hover-is-not-implemented
+            label: "Examples absent"
+          - slug: lsp-definition-resource-errors-erased
+            label: "Failures become not found"
+      - id: response
+        label: "Return JSON-RPC response"
+        type: end
+    findings:
+      - slug: leading-document-marker-shifts-lsp-document-indexes
+        title: "A leading YAML document marker shifts every LSP document index"
+        criterion: "14.1"
+        surface: "Feature Completeness"
+        concern: significant
+        locations:
+          - path: docs/yg/language-server.md
+            start_line: 164
+            end_line: 171
+          - path: crates/yamalgam-lsp/src/completion.rs
+            start_line: 101
+            end_line: 109
+          - path: crates/yamalgam-lsp/src/definition.rs
+            start_line: 243
+            end_line: 252
+          - path: crates/yamalgam-lsp/src/diagnostics.rs
+            start_line: 229
+            end_line: 235
+          - path: crates/yamalgam-lsp/src/document.rs
+            start_line: 117
+            end_line: 119
+        evidence: |
+          - Draft 2020-12 schema diagnostics for every YAML stream document
+          - Property, enum, default, and type-aware completion
+          - Schema title, description, type, enum, default, deprecation, and example hover
+          - Go to definition for schema `$ref`, data `$ref`, and local `!include`
+          - UTF-16 client positions with byte-offset source tracking internally
+
+          Errors include the current file version. Their `data` object has
+          `documentIndex`, `instancePath`, `schemaPath`, and a safe `schemaUri`.
+              let mut document_index = 0;
+              let mut stack = Vec::<(usize, String)>::new();
+
+              for line in text[..line_start].lines() {
+                  let trimmed = line.trim();
+                  if trimmed.starts_with("---") {
+                      document_index += 1;
+                      stack.clear();
+                      continue;
+              let mut document_index = 0;
+              let mut structured_include_indent = None;
+              for line in text.split_inclusive('\n') {
+                  let content = line.trim_end_matches(['\r', '\n']);
+                  let trimmed = content.trim_start();
+                  let indent = content.len() - trimmed.len();
+                  if trimmed.starts_with("---") {
+                      document_index += 1;
+                      structured_include_indent = None;
+                  }
+          fn document_index_at(document: &DocumentState, offset: usize) -> usize {
+              let text = document.syntax.text();
+              let offset = offset.min(text.len());
+              text[..offset]
+                  .lines()
+                  .filter(|line| line.trim_start().starts_with("---"))
+                  .count()
+              pub(crate) fn schema_for_document(&self, index: usize) -> Option<&SelectedSchema> {
+                  self.schema_assignments.get(index).and_then(Option::as_ref)
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-5"
+            type: mark
+            label: "Documented features depend on the semantic stream-document index"
+          - lines: "9-17"
+            type: del
+            label: "Completion and hover advance for every marker before the cursor"
+          - lines: "18-27"
+            type: del
+            label: "Definition indexing repeats the unconditional increment"
+          - lines: "28-37"
+            type: del
+            label: "Diagnostics and schema lookup consume the shifted index"
+        mechanism: |
+          A stream beginning with the conventional `---` marker still has its first
+          semantic document at index zero. Completion, hover, reference navigation,
+          and diagnostic metadata count that marker as a completed document. Their
+          index is one too high for the first document and remains shifted, so schema
+          lookup returns no assignment or another document's assignment.
+        remediation: |
+          Derive one shared semantic document-boundary map from the recovering CST or
+          composed stream. Treat an initial marker as belonging to document zero and
+          use the shared map for completion, hover, definition, and diagnostics.
+        effort: small
+        effort_notes: "Localized logic, but four consumers need shared regression coverage."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [sequence-item-schema-context-is-unreachable]
+
+      - slug: sequence-item-schema-context-is-unreachable
+        title: "Sequence-item schemas are unreachable from completion and hover"
+        criterion: "14.1"
+        surface: "Feature Completeness"
+        concern: significant
+        locations:
+          - path: record/superpowers/plans/2026-08-09-m12-schema-validation-lsp.md
+            start_line: 1307
+            end_line: 1310
+          - path: crates/yamalgam-lsp/src/completion.rs
+            start_line: 23
+            end_line: 29
+          - path: crates/yamalgam-lsp/src/completion.rs
+            start_line: 134
+            end_line: 142
+          - path: crates/yamalgam-lsp/src/completion.rs
+            start_line: 159
+            end_line: 170
+        evidence: |
+          Test missing property names, required-first ordering, duplicate suppression,
+          enum values, Booleans/null/numbers without quotes, quoted strings, sequence
+          items, default snippets, nested objects, multi-document paths, partial
+          mappings, an Error node before the cursor, and no active schema.
+              let Some(selected) = document.schema_for_document(cursor.document_index) else {
+                  return CompletionResponse::Array(Vec::new());
+              };
+              let Ok(validator) = schemas.validator(selected, 64) else {
+                  return CompletionResponse::Array(Vec::new());
+              };
+              let context = validator.context_at(&cursor.path);
+              let mut path = stack
+                  .iter()
+                  .fold(String::new(), |path, (_, key)| append_pointer(&path, key));
+              let content = prefix.trim_start();
+              let value_position = mapping_entry(content).is_some();
+              if let Some((key, _)) = mapping_entry(content) {
+                  path = append_pointer(&path, &key);
+              }
+              let existing_keys = mapping_at(document.located.get(document_index), &path)
+          fn mapping_entry(line: &str) -> Option<(String, &str)> {
+              let line = line.strip_prefix("- ").unwrap_or(line);
+              let (key, value) = line.split_once(':')?;
+              let key = key.trim();
+              if key.is_empty() || key.starts_with(['[', '{']) {
+                  return None;
+              }
+              Some((
+                  key.trim_matches(|character| character == '\'' || character == '"')
+                      .to_owned(),
+                  value.trim(),
+              ))
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-4"
+            type: mark
+            label: "The accepted plan explicitly requires sequence-item context"
+          - lines: "12-20"
+            type: del
+            label: "The path contains mapping keys but no sequence indexes"
+          - lines: "21-32"
+            type: del
+            label: "A dash is discarded without adding its item index"
+        mechanism: |
+          Completion and hover derive RFC 6901 paths only from mapping keys. A block
+          sequence dash is stripped, but the semantic item index is never appended.
+          Navigation therefore receives the root or a mapping-only path instead of
+          `/0/...`, making `items` and `prefixItems` context unreachable.
+        remediation: |
+          Build editor paths from recovering CST ancestry, count semantic sequence
+          siblings, and share the path implementation across completion and hover.
+        effort: medium
+        effort_notes: "Recovery-aware CST ancestry replaces the current line stack."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [leading-document-marker-shifts-lsp-document-indexes]
+
+      - slug: ropey-unicode-lines-desynchronize-lsp-positions
+        title: "Ropey defaults broaden line splitting beyond the LSP position model"
+        criterion: "13.8"
+        surface: "Dependency Fitness"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-cst/Cargo.toml
+            start_line: 12
+            end_line: 12
+        evidence: |
+          ropey = "1.6.1"
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "1"
+            type: del
+            label: "Implicit defaults enable unicode_lines"
+        mechanism: |
+          Ropey's default `unicode_lines` feature treats VT, FF, NEL, U+2028, and
+          U+2029 as line boundaries. The LSP position model uses CR, LF, and CRLF.
+          Delegating line lookup to Ropey while trimming only LSP line endings shifts
+          diagnostics and navigation when those scalar characters occur in YAML.
+        remediation: |
+          Disable Ropey defaults and explicitly enable only `cr_lines` and `simd`.
+          Add UTF-16 conversion regressions for U+2028, U+2029, CR, LF, and CRLF.
+        effort: small
+        effort_notes: "One feature declaration plus focused position tests."
+        temporal:
+          introduced: 2026-08-10
+          last_modified: 2026-08-10
+          commit_count: 1
+
+      - slug: documented-example-hover-is-not-implemented
+        title: "Documented JSON Schema example hover is not implemented"
+        criterion: "14.1"
+        surface: "Feature Completeness"
+        concern: moderate
+        locations:
+          - path: docs/yg/language-server.md
+            start_line: 166
+            end_line: 166
+          - path: crates/yamalgam-schema/src/navigation.rs
+            start_line: 24
+            end_line: 43
+          - path: crates/yamalgam-lsp/src/hover.rs
+            start_line: 34
+            end_line: 53
+        evidence: |
+          - Schema title, description, type, enum, default, deprecation, and example hover
+          /// Schema annotations applicable at one instance path.
+          #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+          pub struct SchemaContext {
+              /// First applicable title.
+              pub title: Option<String>,
+              /// First applicable description.
+              pub description: Option<String>,
+              /// De-duplicated JSON Schema types in source order.
+              pub types: Vec<String>,
+              /// Compact JSON representation of the first applicable default.
+              pub default: Option<String>,
+              /// Compact JSON representations of allowed enum values.
+              pub enum_values: Vec<String>,
+              /// Whether an applicable schema marks this value as deprecated.
+              pub deprecated: bool,
+              /// Property candidates sorted required-first, then by source order.
+              pub properties: Vec<PropertyCandidate>,
+              /// Canonical schema locations contributing to this context.
+              pub schema_locations: Vec<String>,
+          }
+              let mut lines = Vec::new();
+              if let Some(title) = context.title {
+                  lines.push(title);
+              }
+              if let Some(description) = context.description {
+                  lines.push(description);
+              }
+              if !context.types.is_empty() {
+                  lines.push(format!("Type: {}", context.types.join(" | ")));
+              }
+              if let Some(default) = context.default {
+                  lines.push(format!("Default: {default}"));
+              }
+              if !context.enum_values.is_empty() {
+                  lines.push(format!("Allowed: {}", context.enum_values.join(", ")));
+              }
+              if context.deprecated {
+                  lines.push("Deprecated".to_owned());
+              }
+              lines.push(format!("Schema: {}", redacted_schema_uri(&selected.uri)));
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1"
+            type: mark
+            label: "The editor guide promises example annotations"
+          - lines: "2-21"
+            type: del
+            label: "Schema navigation exposes no examples field"
+          - lines: "22-41"
+            type: del
+            label: "Hover rendering has no example output"
+        mechanism: |
+          The schema context never captures `examples`, and hover never renders it.
+          An example-only schema can therefore produce no hover despite the documented
+          feature list.
+        remediation: |
+          Add bounded deterministic examples to `SchemaContext`, collect them through
+          existing combinator rules, and render safe plain text.
+        effort: small
+        effort_notes: "Extends the existing annotation pipeline."
+
+      - slug: lsp-cancellation-cannot-interrupt-work-and-retains-request-ids
+        title: "LSP cancellation cannot interrupt active work and retains completed request IDs"
+        criterion: "6 - Cancellation lifecycle"
+        surface: "Concurrency"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-lsp/src/server.rs
+            start_line: 52
+            end_line: 61
+          - path: crates/yamalgam-lsp/src/server.rs
+            start_line: 116
+            end_line: 143
+          - path: crates/yamalgam-lsp/src/server.rs
+            start_line: 197
+            end_line: 209
+        evidence: |2
+              while let Ok(message) = connection.receiver.recv() {
+                  match message {
+                      Message::Request(request) => {
+                          if connection.handle_shutdown(&request)? {
+                              return Ok(());
+                          }
+                          server.handle_request(&connection, request)?;
+                      }
+                      Message::Notification(notification) => {
+                          server.handle_notification(&connection, notification)?;
+              fn handle_request(
+                  &mut self,
+                  connection: &Connection,
+                  request: Request,
+              ) -> Result<(), ServerError> {
+                  if self.cancelled.remove(&request.id) {
+                      return send_response(
+                          connection,
+                          Response::new_err(
+                              request.id,
+                              ErrorCode::RequestCanceled as i32,
+                              "request cancelled".to_string(),
+                          ),
+                      );
+                  }
+
+                  let response = match request.method.as_str() {
+                      "textDocument/completion" => self.completion_response(request),
+                      "textDocument/hover" => self.hover_response(request),
+                      "textDocument/definition" => self.definition_response(request),
+                      _ => Response::new_err(
+                          request.id,
+                          ErrorCode::MethodNotFound as i32,
+                          format!("unknown request method {}", request.method),
+                      ),
+                  };
+                  send_response(connection, response)
+              }
+              fn handle_notification(
+                  &mut self,
+                  connection: &Connection,
+                  notification: Notification,
+              ) -> Result<(), ServerError> {
+                  match notification.method.as_str() {
+                      "$/cancelRequest" => {
+                          match serde_json::from_value::<CancelParams>(notification.params) {
+                              Ok(params) => {
+                                  self.cancelled.insert(request_id(params.id));
+                              }
+                              Err(error) => warn!(%error, "ignored malformed cancellation"),
+                          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "1-10"
+            type: mark
+            label: "Requests and cancellation notifications share one serial receiver"
+          - lines: "26-28"
+            type: del
+            label: "Request work completes synchronously before another message is read"
+          - lines: "43-50"
+            type: del
+            label: "Late cancellation IDs are retained indefinitely"
+        mechanism: |
+          Request handlers run synchronously in the only receiver loop, so a cancel
+          notification cannot be observed until active work has already completed.
+          A late cancellation is then retained until a future request reuses the ID,
+          causing ineffective cancellation, unbounded stale state, and false cancels.
+        remediation: |
+          Track active requests separately from completed IDs, execute cancellable work
+          outside the receiver loop, and remove cancellation state on every completion.
+        effort: medium
+        effort_notes: "Requires a bounded worker/cancellation lifecycle, not just a set cleanup."
+
+      - slug: stdio-error-path-can-hang-joining-reader
+        title: "The stdio error path can hang while joining the reader thread"
+        criterion: "6 - Shutdown lifecycle"
+        surface: "Concurrency"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-lsp/src/server.rs
+            start_line: 28
+            end_line: 33
+          - path: crates/yamalgam-lsp/src/server.rs
+            start_line: 52
+            end_line: 66
+        evidence: |
+          /// Run the language server over standard input and standard output.
+          pub fn run_stdio() -> Result<(), ServerError> {
+              let (connection, threads) = Connection::stdio();
+              let result = run(connection);
+              threads.join()?;
+              result
+              while let Ok(message) = connection.receiver.recv() {
+                  match message {
+                      Message::Request(request) => {
+                          if connection.handle_shutdown(&request)? {
+                              return Ok(());
+                          }
+                          server.handle_request(&connection, request)?;
+                      }
+                      Message::Notification(notification) => {
+                          server.handle_notification(&connection, notification)?;
+                      }
+                      Message::Response(_) => {}
+                  }
+              }
+              Ok(())
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "4-5"
+            type: del
+            label: "Every return path joins both stdio threads before returning the error"
+          - lines: "7-20"
+            type: mark
+            label: "Protocol and handler errors can leave stdin open"
+        mechanism: |
+          If `run` returns early on a protocol or handler error while the client keeps
+          stdin open, `IoThreads::join` waits for the blocking reader thread. The server
+          cannot report the original error or terminate.
+        remediation: |
+          Join only after clean shutdown or EOF, or use a transport lifecycle that can
+          explicitly stop the reader before joining on an error path.
+        effort: small
+        effort_notes: "The join policy is localized, but must preserve clean shutdown."
+
+      - slug: lsp-definition-resource-errors-erased
+        title: "Definition lookup converts resource failures into a successful not-found result"
+        criterion: "5.3"
+        surface: "Error Handling"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-lsp/src/definition.rs
+            start_line: 67
+            end_line: 93
+        evidence: |2
+              fn resource(&self, id: &ResourceId) -> Option<(Uri, String)> {
+                  if let Some((uri, text)) = self.resources.get(id) {
+                      return Some((uri.clone(), text.clone()));
+                  }
+                  let path = id.as_path()?;
+                  for root in &self.roots {
+                      if !path.starts_with(root) {
+                          continue;
+                      }
+                      let retriever = FileRetriever::open(&FilePolicy {
+                          root: Some(root.clone()),
+                          allow: Vec::new(),
+                          deny: Vec::new(),
+                          follow_symlinks: false,
+                      })
+                      .ok()?;
+                      let resource = retriever
+                          .retrieve(&ResourceRequest {
+                              id: id.clone(),
+                              max_bytes: Some(16 * 1024 * 1024),
+                          })
+                          .ok()?;
+                      let text = String::from_utf8(resource.bytes).ok()?;
+                      return resource_uri(&resource.id).map(|uri| (uri, text));
+                  }
+                  None
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "16-24"
+            type: del
+            label: "Policy, I/O, size, and encoding failures become None"
+        mechanism: |
+          Definition resource lookup collapses retriever construction, typed retrieval,
+          and UTF-8 failures into `None`. The server serializes that as a successful
+          JSON-RPC null response, indistinguishable from a genuinely absent target.
+        remediation: |
+          Return `Result<Option<_>, WorkspaceResourceError>` and preserve `Ok(None)`
+          only for a true no-target result; surface sanitized failures separately.
+        effort: medium
+        effort_notes: "Threads a typed error through definition and server response handling."
+
+  - slug: schema-runtime-boundaries
+    title: "Schema Compilation, Validation, and Retrieval Boundaries"
+    thesis: "Schema handling is correctly policy-gated, but cache identity, depth, work limits, and lock scope are not yet strong enough for untrusted editor workloads."
+    verdict: "The validator cache can return an object compiled for another identity or diagnostic cap, native error adapters can recurse without a depth ceiling, and a global session lock spans retrieval and parsing. Cached validators and navigation also retain avoidable full-schema work."
+    flow:
+      - id: schema-request
+        label: "Select schema resource"
+        type: start
+      - id: session-load
+        label: "Load through SchemaSession"
+        type: process
+        findings:
+          - slug: schema-session-holds-global-lock-across-retrieval
+            label: "Lock spans retrieval"
+          - slug: schema-session-cache-clones-located-documents
+            label: "Deep cache clone"
+      - id: validator-cache
+        label: "Lookup compiled validator"
+        type: process
+        findings:
+          - slug: schema-validator-cache-key-erases-identity-and-options
+            label: "Key loses identity"
+      - id: validate
+        label: "Validate instance"
+        type: process
+        findings:
+          - slug: schema-native-adapter-unbounded-recursion
+            label: "Unbounded recursion"
+          - slug: schema-diagnostic-cap-does-not-bound-work
+            label: "Cap does not bound work"
+      - id: report
+        label: "Return diagnostics"
+        type: end
+    findings:
+      - slug: schema-validator-cache-key-erases-identity-and-options
+        title: "The validator cache key drops canonical identity and diagnostic options"
+        criterion: "10.3"
+        surface: "Idiomatic Patterns"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-lsp/src/diagnostics.rs
+            start_line: 48
+            end_line: 58
+          - path: crates/yamalgam-resolve/src/resource.rs
+            start_line: 159
+            end_line: 169
+        evidence: |2
+              pub fn validator(
+                  &self,
+                  selected: &SelectedSchema,
+                  max_diagnostics: usize,
+              ) -> Result<Arc<SchemaValidator>, SchemaError> {
+                  let id = schema_resource_id(&selected.uri)?;
+                  let document = self.session.load(&id)?;
+                  let digest = semantic_digest(&document.document.value);
+                  let key = (document.id.to_string(), digest);
+                  if let Some(validator) = self.lock_validators().get(&key) {
+                      return Ok(Arc::clone(validator));
+              fn redacted(&self) -> String {
+                  match &self.0 {
+                      ResourceKind::Anonymous => "<anonymous>".to_owned(),
+                      ResourceKind::File(path) => path.display().to_string(),
+                      ResourceKind::Uri(url) => {
+                          let mut redacted = Url::clone(url);
+                          redacted.set_fragment(None);
+                          redacted.set_query(None);
+                          let _ = redacted.set_password(None);
+                          let _ = redacted.set_username("");
+                          redacted.to_string()
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2-4"
+            type: mark
+            label: "The requested diagnostic cap is not represented in the key"
+          - lines: "9"
+            type: del
+            label: "Canonical identity is reduced to redacted display text"
+          - lines: "19"
+            type: del
+            label: "Display text removes the query component"
+        mechanism: |
+          The ad-hoc `(String, u64)` key omits `max_diagnostics` and renders the
+          existing `ResourceId` newtype through a display method that removes URI
+          queries. Distinct schema identities with equal content, or callers using
+          different report caps, can therefore share a validator with the wrong base
+          identity, navigation graph, or diagnostic behavior.
+        remediation: |
+          Introduce a typed key containing `ResourceId`, semantic digest, and all
+          behavior-changing compile options. Use the canonical ID, not display text.
+        effort: small
+        effort_notes: "Replace the tuple and add identity/option collision coverage."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [schema-session-cache-clones-located-documents]
+
+      - slug: schema-native-adapter-unbounded-recursion
+        title: "Native schema materialization recurses without an input depth bound"
+        criterion: "11.5"
+        surface: "Panic & Program Flow"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-schema/src/value.rs
+            start_line: 318
+            end_line: 346
+        evidence: |
+          fn materialize(node: YamlNode<'_>) -> JsonValue {
+              match node.value {
+                  Value::Null => JsonValue::Null,
+                  Value::Bool(value) => JsonValue::Bool(*value),
+                  Value::Integer(value) => JsonValue::Number(JsonNumberValue::from(*value)),
+                  Value::Float(value) => JsonValue::Number(
+                      JsonNumberValue::from_f64(*value).expect("prepared YAML numbers must be finite"),
+                  ),
+                  Value::String(value) => JsonValue::String(value.clone()),
+                  Value::Sequence(items) => JsonValue::Array(
+                      items
+                          .iter()
+                          .map(|value| {
+                              materialize(YamlNode {
+                                  value,
+                                  projected_keys: node.projected_keys,
+                              })
+                          })
+                          .collect(),
+                  ),
+                  Value::Mapping(_) => {
+                      let members = YamlObject(node)
+                          .members()
+                          .map(|(name, value)| (name.into_owned(), materialize(value)))
+                          .collect::<JsonMap<_, _>>();
+                      JsonValue::Object(members)
+                  }
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "14-18"
+            type: del
+            label: "Sequence materialization consumes one stack frame per level"
+          - lines: "24"
+            type: del
+            label: "Mapping materialization is recursively unbounded"
+        mechanism: |
+          Public validation accepts programmatic `Value` trees with no input-depth
+          ceiling. Error construction can invoke this recursive materializer, and
+          `equals_json` is recursive as well, so deeply nested values can exhaust the
+          thread stack instead of returning a typed validation report.
+        remediation: |
+          Use explicit work stacks for materialization and equality, following the
+          existing iterative schema conversion, and enforce an instance-depth limit
+          before entering `jsonschema`.
+        effort: medium
+        effort_notes: "An iterative local pattern already exists; the public limit needs API coverage."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [schema-diagnostic-cap-does-not-bound-work]
+
+      - slug: schema-diagnostic-cap-does-not-bound-work
+        title: "Diagnostic limit caps retention but not validation work"
+        criterion: "12"
+        surface: "Performance"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-schema/src/schema.rs
+            start_line: 171
+            end_line: 206
+          - path: crates/yamalgam-schema/src/diagnostic.rs
+            start_line: 46
+            end_line: 68
+        evidence: |2
+              fn validate_inner(&self, instance: &Value, located: Option<&LocatedValue>) -> ValidationReport {
+                  let prepared = match PreparedInstance::new(instance) {
+                      Ok(prepared) => prepared,
+                      Err(errors) => {
+                          let mut diagnostics =
+                              Vec::with_capacity(errors.len().min(self.options.max_diagnostics));
+                          for error in &errors {
+                              retain_diagnostic(
+                                  &mut diagnostics,
+                                  representation_diagnostic(error, located),
+                                  self.options.max_diagnostics,
+                              );
+                          }
+                          if errors.len() > self.options.max_diagnostics {
+                              diagnostics.push(diagnostic_limit_warning(
+                                  self.options.max_diagnostics,
+                                  errors.len(),
+                              ));
+                          }
+                          return ValidationReport {
+                              valid: false,
+                              diagnostics,
+                          };
+                      }
+                  };
+
+                  let mut observed = 0_usize;
+                  let mut diagnostics = Vec::new();
+                  for error in self.validator.iter_errors(prepared.root()) {
+                      observed = observed.saturating_add(1);
+                      retain_diagnostic(
+                          &mut diagnostics,
+                          schema_diagnostic(&error, located),
+                          self.options.max_diagnostics,
+                      );
+                  }
+          pub fn schema_diagnostic(
+              error: &ValidationError<'_>,
+              located: Option<&LocatedValue>,
+          ) -> ValidationDiagnostic {
+              let keyword = error.kind().keyword();
+              let instance_path = error.instance_path().to_string();
+              let (expected, actual) = expected_actual(error);
+              ValidationDiagnostic {
+                  code: if keyword == "$ref" {
+                      "schema/ref".to_owned()
+                  } else {
+                      format!("schema/{keyword}")
+                  },
+                  severity: Severity::Error,
+                  message: error.masked().to_string(),
+                  keyword: keyword.to_owned(),
+                  schema_path: error.schema_path().to_string(),
+                  span: located.and_then(|value| value.span_at_pointer(&instance_path)),
+                  instance_path,
+                  expected,
+                  actual,
+                  labels: Vec::new(),
+              }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "7-13"
+            type: del
+            label: "Every representation error is converted before excess output is discarded"
+          - lines: "29-35"
+            type: del
+            label: "The validator enumerates and converts every schema error"
+          - lines: "41-54"
+            type: mark
+            label: "Each conversion allocates strings and performs a span lookup"
+        mechanism: |
+          `max_diagnostics` bounds retained output only. Invalid documents still
+          enumerate and fully convert every representation and schema error, including
+          allocations and pointer-to-span traversal, before discarding excess entries.
+        remediation: |
+          Stop enumeration after the cap plus one sentinel and record only whether
+          additional errors existed for the limit warning.
+        effort: medium
+        effort_notes: "Changes the suppressed-count contract and needs caller verification."
+
+      - slug: schema-session-holds-global-lock-across-retrieval
+        title: "SchemaSession holds its global cache lock across retrieval and parsing"
+        criterion: "6.2"
+        surface: "Concurrency"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-schema/src/retrieval.rs
+            start_line: 122
+            end_line: 126
+          - path: crates/yamalgam-schema/src/retrieval.rs
+            start_line: 267
+            end_line: 299
+          - path: crates/yamalgam-schema/src/retrieval.rs
+            start_line: 346
+            end_line: 365
+        evidence: |2
+              pub fn load(&self, id: &ResourceId) -> Result<SchemaDocument, SchemaRetrieveError> {
+                  self.enforce_policy(id, None)?;
+                  let mut state = self.lock_state();
+                  self.load_document(&mut state, id)
+              }
+              fn load_document(
+                  &self,
+                  state: &mut SchemaSessionState,
+                  requested: &ResourceId,
+              ) -> Result<SchemaDocument, SchemaRetrieveError> {
+                  let canonical = state.aliases.get(requested).unwrap_or(requested).clone();
+                  if let Some(document) = state.documents.get(&canonical) {
+                      return Ok(document.clone());
+                  }
+
+                  let remaining = self
+                      .config
+                      .resolution
+                      .limits
+                      .max_fetched_bytes
+                      .map(|maximum| maximum.saturating_sub(state.fetched_bytes));
+                  let max_bytes = match (self.config.limits.max_input_bytes, remaining) {
+                      (Some(input), Some(session)) => Some(input.min(session)),
+                      (Some(input), None) => Some(input),
+                      (None, Some(session)) => Some(session),
+                      (None, None) => None,
+                  };
+                  let session_caps_request = remaining.is_some_and(|session| {
+                      self.config
+                          .limits
+                          .max_input_bytes
+                          .is_none_or(|input| session <= input)
+                  });
+                  let retrieved = match self.retriever.retrieve(&ResourceRequest {
+                      id: requested.clone(),
+                      max_bytes,
+                  }) {
+                      Ok(resource) => resource,
+                  let text = std::str::from_utf8(&retrieved.bytes).map_err(|source| {
+                      SchemaRetrieveError::InvalidUtf8 {
+                          id: canonical.clone(),
+                          source,
+                      }
+                  })?;
+                  let mut parse_config = self.config.clone();
+                  parse_config.resolution.include.mode = ResolutionMode::Disabled;
+                  parse_config.resolution.refs.mode = ResolutionMode::Disabled;
+                  let document = yamalgam_compose::from_str_single_located_with_config(text, &parse_config)
+                      .map_err(|error| SchemaRetrieveError::InvalidDocument {
+                      id: canonical.clone(),
+                      message: error.to_string(),
+                  })?;
+                  let document = SchemaDocument {
+                      id: canonical.clone(),
+                      document,
+                  };
+                  state.documents.insert(canonical, document.clone());
+                  Ok(document)
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3-4"
+            type: del
+            label: "The state guard is passed into the complete load operation"
+          - lines: "34-38"
+            type: del
+            label: "Pluggable retrieval occurs while the guard is held"
+          - lines: "39-50"
+            type: del
+            label: "Decoding and composition also occur while the guard is held"
+        mechanism: |
+          One session-wide mutex remains held while a pluggable retriever performs I/O
+          and while the resource is decoded and parsed. Unrelated schema loads serialize,
+          and a retriever that re-enters the session can deadlock.
+        remediation: |
+          Use a two-phase per-key in-flight cache: inspect and reserve under the lock,
+          reserve the aggregate byte budget and reject same-key reentrancy, release the
+          lock for retrieval/parsing, then atomically reconcile and publish the result.
+        effort: medium
+        effort_notes: "Requires per-key in-flight coordination to prevent duplicate work."
+
+      - slug: schema-session-cache-clones-located-documents
+        title: "Schema cache hits deep-clone documents before checking the validator cache"
+        criterion: "3.2"
+        surface: "Ownership & Borrowing"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-schema/src/retrieval.rs
+            start_line: 272
+            end_line: 275
+          - path: crates/yamalgam-lsp/src/diagnostics.rs
+            start_line: 53
+            end_line: 58
+        evidence: |2
+                  let canonical = state.aliases.get(requested).unwrap_or(requested).clone();
+                  if let Some(document) = state.documents.get(&canonical) {
+                      return Ok(document.clone());
+                  }
+                  let document = self.session.load(&id)?;
+                  let digest = semantic_digest(&document.document.value);
+                  let key = (document.id.to_string(), digest);
+                  if let Some(validator) = self.lock_validators().get(&key) {
+                      return Ok(Arc::clone(validator));
+                  }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "A cache hit clones the value and location trees"
+          - lines: "6-9"
+            type: del
+            label: "Clone and full digest precede validator-cache lookup"
+        mechanism: |
+          Every editor request loading a cached schema deep-clones its semantic and
+          location trees and hashes the semantic tree before discovering that the
+          compiled validator is already cached.
+        remediation: |
+          Store schema documents behind `Arc` and retain the semantic digest at load
+          time so validator lookup requires no deep document work.
+        effort: medium
+        effort_notes: "Changes the session cache handle and threads a retained digest into LSP lookup."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [schema-validator-cache-key-erases-identity-and-options]
+
+      - slug: schema-navigation-recompiles-patterns-per-request
+        title: "Schema navigation recompiles every patternProperties regex on each lookup"
+        criterion: "10.4"
+        surface: "Idiomatic Patterns"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-schema/src/navigation.rs
+            start_line: 351
+            end_line: 355
+        evidence: |2
+                      if let Some(patterns) = node.get("patternProperties").and_then(JsonValue::as_object) {
+                          for pattern in patterns.keys() {
+                              if Regex::new(pattern).is_ok_and(|regex| regex.is_match(segment)) {
+                                  matched = true;
+                                  push_cursor(
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "3"
+            type: del
+            label: "Compilation occurs inside request traversal"
+        mechanism: |
+          Completion and hover repeatedly compile immutable `patternProperties`
+          expressions while walking instance paths. Pattern-rich schemas pay regex
+          parser and automaton construction costs on routine cursor movement.
+        remediation: |
+          Compile patterns while building the navigation index and retain them beside
+          their target cursors.
+        effort: small
+        effort_notes: "Adds a compiled-pattern index to each schema resource."
+
+  - slug: editor-update-cost
+    title: "Recovering CST and Editor Update Cost"
+    thesis: "The incremental document model localizes syntax reparsing, but surrounding span, composition, selection, and position work repeatedly scans or copies the full document."
+    verdict: "Recovery span normalization is quadratic in token-rich documents, each protocol edit performs multiple whole-document materializations and compositions, and diagnostic range conversion can recopy the complete Rope for every endpoint. These costs sit directly on the per-keystroke path."
+    flow:
+      - id: did-change
+        label: "textDocument/didChange"
+        type: start
+      - id: apply-edit
+        label: "Apply Rope edit"
+        type: process
+        findings:
+          - slug: lsp-didchange-rebuilds-full-document-stages
+            label: "Full copies and reparses"
+      - id: recover
+        label: "Recover CST"
+        type: process
+        findings:
+          - slug: recovering-cst-span-normalization-is-quadratic
+            label: "Prefix rescans"
+      - id: diagnose
+        label: "Publish diagnostics"
+        type: process
+        findings:
+          - slug: lsp-diagnostic-positioning-recopies-source
+            label: "Per-endpoint Rope copies"
+      - id: publish
+        label: "Send diagnostics"
+        type: end
+    findings:
+      - slug: recovering-cst-span-normalization-is-quadratic
+        title: "Recovery parsing recomputes spans with repeated prefix scans"
+        criterion: "12"
+        surface: "Performance"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-cst/src/recovery.rs
+            start_line: 78
+            end_line: 87
+          - path: crates/yamalgam-cst/src/recovery.rs
+            start_line: 118
+            end_line: 130
+          - path: crates/yamalgam-cst/src/recovery.rs
+            start_line: 198
+            end_line: 217
+        evidence: |2
+              let mut cst = CstNode {
+                  kind: NodeKind::Stream,
+                  span: Span {
+                      start: Mark::default(),
+                      end: mark_at_offset(input, offset),
+                  },
+                  children,
+              };
+              normalize_spans(&mut cst, input);
+              RecoveryReport { cst, diagnostics }
+          fn normalize_spans(node: &mut CstNode<'_>, input: &str) {
+              node.span.start = mark_at_offset(input, node.span.start.offset);
+              node.span.end = mark_at_offset(input, node.span.end.offset);
+              for child in &mut node.children {
+                  match child {
+                      CstElement::Node(child) => normalize_spans(child, input),
+                      CstElement::Token(token) => {
+                          token.span.start = mark_at_offset(input, token.span.start.offset);
+                          token.span.end = mark_at_offset(input, token.span.end.offset);
+                      }
+                  }
+              }
+          }
+          fn mark_at_offset(input: &str, offset: usize) -> Mark {
+              let mut mark = Mark::default();
+              let mut characters = input[..offset].chars().peekable();
+              while let Some(character) = characters.next() {
+                  mark.offset += character.len_utf8();
+                  if character == '\r' {
+                      if characters.peek() == Some(&'\n') {
+                          mark.offset += 1;
+                          characters.next();
+                      }
+                      mark.line += 1;
+                      mark.column = 0;
+                  } else if character == '\n' {
+                      mark.line += 1;
+                      mark.column = 0;
+                  } else {
+                      mark.column += 1;
+                  }
+              }
+              mark
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "9"
+            type: del
+            label: "Every recovery parse normalizes the completed tree"
+          - lines: "11-20"
+            type: del
+            label: "Both endpoints of every node and token are recomputed"
+          - lines: "25-41"
+            type: del
+            label: "Each endpoint scan starts at the beginning of the input"
+        mechanism: |
+          Normalization visits O(elements) endpoints and each `mark_at_offset` scans
+          an input prefix. Token-rich recovery parses can therefore grow quadratically,
+          including during incomplete LSP edits.
+        remediation: |
+          Preserve correct marks during parsing, or normalize all requested offsets in
+          one ordered linear scan.
+        effort: medium
+        effort_notes: "Restructures recovery span production without changing public span types."
+
+      - slug: lsp-didchange-rebuilds-full-document-stages
+        title: "Each LSP change repeats full-document copies and composition"
+        criterion: "12"
+        surface: "Performance"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-cst/src/incremental.rs
+            start_line: 82
+            end_line: 100
+          - path: crates/yamalgam-lsp/src/document.rs
+            start_line: 58
+            end_line: 76
+          - path: crates/yamalgam-lsp/src/document.rs
+            start_line: 91
+            end_line: 101
+          - path: crates/yamalgam-schema/src/selection.rs
+            start_line: 185
+            end_line: 195
+        evidence: |2
+              /// Apply a batch of byte edits and reparse the smallest safe scope.
+              pub fn apply(
+                  &mut self,
+                  edits: &[TextEdit],
+                  config: &LoaderConfig,
+              ) -> Result<ReparseOutcome, EditError> {
+                  let original = self.text.to_string();
+                  let ordered = validate_edits(edits, &original)?;
+                  let document = self.document_reparse_candidate(&ordered, &original);
+
+                  for edit in ordered.iter().rev() {
+                      let start = self.text.byte_to_char(edit.range.start);
+                      let end = self.text.byte_to_char(edit.range.end);
+                      self.text.remove(start..end);
+                      self.text.insert(start, &edit.replacement);
+                  }
+
+                  let updated = self.text.to_string();
+                  if let Some((old_document, old_range)) = document {
+                  let mut syntax = self.syntax.clone();
+                  for change in changes {
+                      let edit = match change.range {
+                          Some(range) => TextEdit {
+                              range: position_offset(&syntax, range.start)?
+                                  ..position_offset(&syntax, range.end)?,
+                              replacement: change.text.clone(),
+                          },
+                          None => TextEdit {
+                              range: 0..syntax.text().len(),
+                              replacement: change.text.clone(),
+                          },
+                      };
+                      syntax.apply(&[edit], config)?;
+                  }
+
+                  let text = syntax.text();
+                  self.syntax = syntax;
+                  self.located = from_str_located_with_config(&text, config).unwrap_or_default();
+                  let selector = yamalgam_schema::SchemaSelector {
+                      associations: config.schema_associations.clone(),
+                      schema_store: None,
+                  };
+                  let text = self.syntax.text();
+                  let selection_text = if text.trim().is_empty() {
+                      "null\n"
+                  } else {
+                      &text
+                  };
+                  match selector.select(selection_text, containing.as_ref(), None) {
+              pub fn select(
+                  &self,
+                  input: &str,
+                  containing: Option<&ResourceId>,
+                  explicit: Option<&str>,
+              ) -> Result<Vec<Option<SelectedSchema>>, SchemaSelectionError> {
+                  let documents = yamalgam_compose::from_str(input).map_err(|error| {
+                      SchemaSelectionError::InvalidDocument {
+                          message: error.to_string(),
+                      }
+                  })?;
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "7-8"
+            type: del
+            label: "Each edit materializes the complete original Rope"
+          - lines: "18"
+            type: del
+            label: "Each edit materializes the complete updated Rope"
+          - lines: "33-38"
+            type: del
+            label: "Protocol changes are applied separately before full composition"
+          - lines: "43-49"
+            type: del
+            label: "Schema selection materializes the text again"
+          - lines: "56-60"
+            type: del
+            label: "Selection reparses the same text into values"
+        mechanism: |
+          Each protocol edit can make two whole-Rope string copies, followed by full
+          located composition. Schema selection copies and composes the text again.
+          These O(document-size) stages sit on the per-keystroke path and negate much
+          of the incremental CST's locality.
+        remediation: |
+          Apply protocol changes as one batch against a shared snapshot, materialize
+          final text once, and let selection consume the already composed document.
+        effort: large
+        effort_notes: "Coordinates versioned snapshots across CST, composition, and selection."
+
+      - slug: lsp-diagnostic-positioning-recopies-source
+        title: "Diagnostic range conversion repeatedly allocates document strings"
+        criterion: "12.5"
+        surface: "Performance"
+        concern: significant
+        locations:
+          - path: crates/yamalgam-lsp/src/diagnostics.rs
+            start_line: 127
+            end_line: 143
+          - path: crates/yamalgam-lsp/src/diagnostics.rs
+            start_line: 211
+            end_line: 226
+          - path: crates/yamalgam-cst/src/incremental.rs
+            start_line: 70
+            end_line: 74
+          - path: crates/yamalgam-cst/src/incremental.rs
+            start_line: 139
+            end_line: 160
+        evidence: |2
+              for (document_index, instance) in document.located.iter().enumerate() {
+                  if diagnostics.len() >= config.max_diagnostics {
+                      break;
+                  }
+                  let Some(selected) = document.schema_for_document(document_index) else {
+                      continue;
+                  };
+                  let remaining = config.max_diagnostics.saturating_sub(diagnostics.len());
+                  match schemas.validator(selected, remaining) {
+                      Ok(validator) => {
+                          for diagnostic in validator.validate_located(instance).diagnostics {
+                              diagnostics.push(validation_diagnostic(
+                                  document,
+                                  document_index,
+                                  selected,
+                                  diagnostic,
+                              ));
+          fn span_range(document: &DocumentState, span: Option<Span>) -> Range {
+              let span = span.unwrap_or_default();
+              Range {
+                  start: byte_position(document, span.start.offset),
+                  end: byte_position(document, span.end.offset),
+              }
+          }
+
+          fn byte_position(document: &DocumentState, offset: usize) -> Position {
+              document
+                  .syntax
+                  .byte_offset_to_utf16(offset.min(document.syntax.text().len()))
+                  .map_or_else(
+                      || Position::new(0, 0),
+                      |(line, column)| Position::new(line, column),
+                  )
+              /// Return the current source text.
+              #[must_use]
+              pub fn text(&self) -> String {
+                  self.text.to_string()
+              }
+              pub fn byte_offset_to_utf16(&self, offset: usize) -> Option<(u32, u32)> {
+                  if offset > self.text.len_bytes() || self.text.try_byte_to_char(offset).is_err() {
+                      return None;
+                  }
+                  let line = self.text.try_byte_to_line(offset).ok()?;
+                  let line_start = self.text.try_line_to_byte(line).ok()?;
+                  let prefix = self.text.byte_slice(line_start..offset).to_string();
+                  Some((
+                      u32::try_from(line).ok()?,
+                      u32::try_from(prefix.encode_utf16().count()).ok()?,
+                  ))
+              }
+
+              /// Convert a zero-indexed UTF-16 line and column to a UTF-8 byte offset.
+              #[must_use]
+              pub fn utf16_to_byte_offset(&self, line: u32, character: u32) -> Option<usize> {
+                  let line = usize::try_from(line).ok()?;
+                  if line >= self.text.len_lines() {
+                      return None;
+                  }
+                  let line_start = self.text.try_line_to_byte(line).ok()?;
+                  let mut content = self.text.line(line).to_string();
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "11-17"
+            type: mark
+            label: "Range conversion runs inside the diagnostic loop"
+          - lines: "21-22"
+            type: mark
+            label: "Each diagnostic converts both endpoints"
+          - lines: "29"
+            type: del
+            label: "Each endpoint calls the allocating text API for length"
+          - lines: "36-38"
+            type: del
+            label: "The text API copies the entire Rope"
+          - lines: "45"
+            type: del
+            label: "UTF-16 conversion allocates a prefix String"
+          - lines: "60"
+            type: del
+            label: "Reverse conversion allocates the complete line"
+        mechanism: |
+          Every diagnostic converts two offsets. Each conversion calls `text().len()`,
+          and `text()` copies the whole Rope, then allocates a line prefix for UTF-16
+          counting. Dozens of diagnostics can therefore copy the document hundreds of
+          times after each validating edit.
+        remediation: |
+          Expose Rope byte length without materializing text, count UTF-16 units over
+          RopeSlice chunks, and batch conversions against a versioned line index.
+        effort: medium
+        effort_notes: "Local allocation removal is small; batching needs a shared versioned index."
+
+  - slug: located-value-model
+    title: "Located Value Representation"
+    thesis: "The parallel semantic and location trees enable precise diagnostics, but their public shape and construction path do not preserve the invariant efficiently."
+    verdict: "Callers can construct mismatched trees that misattribute spans, while the composer deep-clones owned location subtrees and value-only composition pays for locations it discards."
+    findings:
+      - slug: located-value-allows-invalid-parallel-shapes
+        title: "Public located values permit mismatched semantic and location trees"
+        criterion: "10.3"
+        surface: "Idiomatic Patterns"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-core/src/located.rs
+            start_line: 5
+            end_line: 20
+          - path: crates/yamalgam-core/src/located.rs
+            start_line: 60
+            end_line: 80
+        evidence: |
+          /// A semantic YAML value and its value-shaped source-location tree.
+          #[derive(Debug, Clone, PartialEq)]
+          pub struct LocatedValue {
+              /// Composed semantic value.
+              pub value: Value,
+              /// Source locations with the same shape and child order as `value`.
+              pub locations: ValueLocations,
+          }
+
+          /// Source location for one semantic value.
+          #[derive(Debug, Clone, PartialEq, Eq)]
+          pub struct ValueLocations {
+              /// Source span for this value.
+              pub span: Span,
+              /// Child locations matching the value's semantic kind.
+              pub kind: LocationKind,
+                      match (value, &locations.kind) {
+                          (Value::Sequence(items), LocationKind::Sequence(children)) => {
+                              let index = parse_sequence_index(&segment)?;
+                              value = items.get(index)?;
+                              locations = children.get(index)?;
+                          }
+                          (Value::Mapping(mapping), LocationKind::Mapping(entries)) => {
+                              let mut matched = None;
+                              for ((key, child), entry) in mapping.iter().zip(entries) {
+                                  if key.canonical_scalar_text().as_deref() != Some(segment.as_str()) {
+                                      continue;
+                                  }
+                                  if matched.is_some() {
+                                      return None;
+                                  }
+                                  matched = Some((child, &entry.value));
+                              }
+                              let (child, child_locations) = matched?;
+                              value = child;
+                              locations = child_locations;
+                          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "5-7"
+            type: del
+            label: "Callers can pair unrelated value and location trees"
+          - lines: "24-28"
+            type: mark
+            label: "Traversal assumes matching cardinality and order"
+        mechanism: |
+          Public independently writable fields permit mismatched variants, lengths,
+          and mapping order. Pointer traversal assumes the invariant and can return no
+          span or a span belonging to another key, misattributing schema diagnostics.
+        remediation: |
+          Make fields private, add checked construction and read-only accessors, or
+          adopt a recursive located-node representation coupling each value to its span.
+        effort: medium
+        effort_notes: "Seals construction and updates composer call sites."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [located-composition-clones-location-subtrees]
+
+      - slug: located-composition-clones-location-subtrees
+        title: "Value-only composition builds and repeatedly clones location subtrees"
+        criterion: "3.1"
+        surface: "Ownership & Borrowing"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-compose/src/lib.rs
+            start_line: 269
+            end_line: 276
+          - path: crates/yamalgam-compose/src/lib.rs
+            start_line: 392
+            end_line: 399
+        evidence: |2
+              pub fn compose_stream(&mut self) -> Result<Vec<Value>, ComposeError> {
+                  self.compose_stream_located().map(|documents| {
+                      documents
+                          .into_iter()
+                          .map(|document| document.value)
+                          .collect()
+                  })
+              }
+                          let locations = items.iter().map(|item| item.locations.clone()).collect();
+                          let value = LocatedValue {
+                              value: Value::Sequence(items.into_iter().map(|item| item.value).collect()),
+                              locations: ValueLocations {
+                                  span: encompassing_span(start_span, end_span),
+                                  kind: LocationKind::Sequence(locations),
+                              },
+                          };
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "2"
+            type: mark
+            label: "Value-only callers always take the located path"
+          - lines: "9"
+            type: del
+            label: "Owned child locations are deep-cloned before originals are dropped"
+        mechanism: |
+          The composer owns each `LocatedValue` but clones complete child location
+          subtrees before consuming only their values. Nested sequences repeat that
+          work, and value-only callers build the entire location tree only to discard it.
+        remediation: |
+          Move-unzip each `LocatedValue` once and provide a value-only accumulator path
+          that does not build locations.
+        effort: medium
+        effort_notes: "Move-unzip is small; avoiding location construction needs an accumulator refactor."
+        chains:
+          enables: []
+          enabled_by: []
+          related: [located-value-allows-invalid-parallel-shapes]
+
+  - slug: retrieval-and-dependency-lifecycle
+    title: "Retrieval and Dependency Lifecycle"
+    thesis: "The retrieval boundary is policy-conscious and dependency checks pass, but worker failure reporting and two dependency feature choices remain imperfect."
+    verdict: "No workspace FFI or advisory/license failure was found. The remaining issues are a silently discarded worker panic, Ropey defaults already captured in the LSP narrative, and upstream Librebar Tokio features that enlarge the shipped graph without serving Yamalgam's HTTP path."
+    findings:
+      - slug: http-worker-panic-result-discarded
+        title: "HTTP worker panics are silently discarded during shutdown"
+        criterion: "5.3"
+        surface: "Error Handling"
+        concern: moderate
+        locations:
+          - path: crates/yamalgam-resolve/src/retriever/http.rs
+            start_line: 144
+            end_line: 156
+        evidence: |
+          impl Drop for LibrebarRetriever {
+              fn drop(&mut self) {
+                  self.work.take();
+                  let worker = self
+                      .worker
+                      .get_mut()
+                      .unwrap_or_else(|poisoned| poisoned.into_inner())
+                      .take();
+                  if let Some(worker) = worker {
+                      let _ = worker.join();
+                  }
+              }
+          }
+        evidence_lang: rust
+        evidence_markers:
+          - lines: "10"
+            type: del
+            label: "The panic payload is discarded"
+        mechanism: |
+          A worker panic becomes a generic channel closure for the caller, then Drop
+          discards the join result and the remaining panic payload. Operators cannot
+          distinguish a worker defect from an ordinary shutdown.
+        remediation: |
+          Record typed worker termination in shared state, expose a fallible explicit
+          shutdown boundary, and emit a structured event from Drop as a final fallback.
+        effort: small
+        effort_notes: "Adds shared termination state and a non-Drop shutdown path."
+
+      - slug: librebar-http-enables-unused-tokio-subsystems
+        title: "Librebar HTTP activates Tokio signal and macro features unused by retrieval"
+        criterion: "13.8"
+        surface: "Dependency Fitness"
+        concern: advisory
+        locations:
+          - path: crates/yamalgam-resolve/Cargo.toml
+            start_line: 15
+            end_line: 18
+        evidence: |
+          librebar = { version = "0.6.0", default-features = false, features = ["http"] }
+          percent-encoding = "2.3"
+          thiserror = "2.0"
+          tokio = { version = "1.52", features = ["rt", "sync"] }
+        evidence_lang: toml
+        evidence_markers:
+          - lines: "1"
+            type: mark
+            label: "The upstream HTTP feature controls the transport graph"
+          - lines: "4"
+            type: mark
+            label: "Yamalgam itself requests only runtime and synchronization"
+        mechanism: |
+          Librebar's `http` feature enables Tokio macros, signal, sync, time, and rt.
+          Cargo feature unification adds signal and macro support even though neither
+          Yamalgam's retriever nor Librebar's production HTTP path uses them.
+        remediation: |
+          Narrow Librebar's base Tokio features upstream, move signal behind its
+          shutdown feature and macros to dev-dependencies, then update Yamalgam.
+        effort: medium
+        effort_notes: "Requires an upstream Librebar release; Yamalgam's boundary stays unchanged."
+
+summary:
+  counts:
+    critical: 0
+    significant: 8
+    moderate: 10
+    advisory: 2
+    note: 0
